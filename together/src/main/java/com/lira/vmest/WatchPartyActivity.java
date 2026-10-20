@@ -23,6 +23,10 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
+import android.webkit.WebChromeClient;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.webkit.WebViewClient;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -58,6 +62,7 @@ public final class WatchPartyActivity extends Activity {
     public static final String EXTRA_ROOM_ID = "room_id";
     public static final String EXTRA_HOST = "host";
     public static final String EXTRA_TITLE = "title";
+    public static final String EXTRA_PLAYER_URL = "player_url";
     private static final int REQUEST_CAPTURE = 7101;
     private static final int REQUEST_MIC = 7102;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -66,10 +71,12 @@ public final class WatchPartyActivity extends Activity {
     private final List<String> lines = new ArrayList<>();
     private SupabaseSync sync;
     private String roomId, title;
+    private String playerUrl;
     private boolean host, remoteReady, closed;
     private long lastSignalId;
     private LinearLayout root, chatLines;
     private TextView status, roomCode;
+    private WebView playerView;
     private SurfaceViewRenderer remoteView;
     private EglBase egl;
     private PeerConnectionFactory factory;
@@ -95,6 +102,7 @@ public final class WatchPartyActivity extends Activity {
         roomId = getIntent().getStringExtra(EXTRA_ROOM_ID);
         host = getIntent().getBooleanExtra(EXTRA_HOST, false);
         title = getIntent().getStringExtra(EXTRA_TITLE);
+        playerUrl = getIntent().getStringExtra(EXTRA_PLAYER_URL);
         if (roomId == null || roomId.isEmpty()) { finish(); return; }
         if (title == null) title = "Совместный просмотр";
         sync = new SupabaseSync(this);
@@ -120,6 +128,14 @@ public final class WatchPartyActivity extends Activity {
         roomCode = label("Код комнаты: " + roomId, 12, Color.GRAY, false); roomCode.setPadding(0, dp(4), 0, dp(4)); root.addView(roomCode);
         status = label(host ? "Подготовка трансляции…" : "Ожидаем трансляцию партнёра…", 14, Color.rgb(102, 77, 128), true);
         status.setPadding(0, dp(8), 0, dp(8)); root.addView(status);
+        LinearLayout playerControls=new LinearLayout(this);playerControls.setGravity(Gravity.CENTER_VERTICAL);playerControls.setPadding(0,dp(4),0,dp(4));
+        EditText playerAddress=new EditText(this);playerAddress.setSingleLine(true);playerAddress.setHint("Ссылка на видео для просмотра внутри приложения");if(playerUrl!=null)playerAddress.setText(playerUrl);
+        playerControls.addView(playerAddress,new LinearLayout.LayoutParams(0,dp(48),1));
+        Button play=new Button(this);play.setText("Открыть");playerControls.addView(play);root.addView(playerControls);
+        playerView=new WebView(this);playerView.setBackgroundColor(Color.BLACK);WebSettings webSettings=playerView.getSettings();webSettings.setJavaScriptEnabled(true);webSettings.setDomStorageEnabled(true);webSettings.setMediaPlaybackRequiresUserGesture(false);webSettings.setAllowFileAccess(false);webSettings.setAllowContentAccess(false);playerView.setWebChromeClient(new WebChromeClient());playerView.setWebViewClient(new WebViewClient());
+        root.addView(playerView,new LinearLayout.LayoutParams(-1,dp(220)));
+        play.setOnClickListener(v->{String link=playerAddress.getText().toString().trim();if(!link.startsWith("https://")&&!link.startsWith("http://")){playerAddress.setError("Укажите ссылку http или https");return;}playerUrl=link;playerView.loadUrl(link);});
+        if(playerUrl!=null&&!playerUrl.trim().isEmpty())playerView.loadUrl(playerUrl);
         remoteView = new SurfaceViewRenderer(this); remoteView.setBackgroundColor(Color.BLACK);
         root.addView(remoteView, new LinearLayout.LayoutParams(-1, 0, 1));
         if (host) remoteView.setVisibility(View.GONE);
@@ -332,5 +348,5 @@ public final class WatchPartyActivity extends Activity {
 
     @Override public void onBackPressed() { new AlertDialog.Builder(this).setMessage("Завершить комнату просмотра?")
             .setNegativeButton("Остаться", null).setPositiveButton("Завершить", (d,w) -> { sendSignal("close", new JSONObject()); finish(); }).show(); }
-    @Override protected void onDestroy() { stopRtc(); super.onDestroy(); }
+    @Override protected void onDestroy() { if(playerView!=null){playerView.stopLoading();playerView.loadUrl("about:blank");playerView.destroy();playerView=null;}stopRtc(); super.onDestroy(); }
 }

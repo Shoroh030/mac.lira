@@ -20,6 +20,7 @@ final class SupabaseSync {
 
     boolean configured(){return !url().isEmpty()&&!key().isEmpty();}
     boolean signedIn(){return !prefs.getString("sb_access","").isEmpty();}
+    boolean ready(){return configured()&&signedIn()&&!coupleId().isEmpty();}
     String coupleId(){return prefs.getString("sb_couple","");}
     String inviteCode(){return prefs.getString("sb_invite","");}
     String url(){String saved=prefs.getString("sb_url","");return (saved.isEmpty()?BuildConfig.SUPABASE_URL:saved).replaceAll("/+$","");}
@@ -66,12 +67,45 @@ final class SupabaseSync {
             request("POST","/rest/v1/couple_messages?on_conflict=id",row,true,true);
         }else{
             String kind=kindFor(keyName);if(kind==null)return;
-            JSONObject payload=new JSONObject();payload.put("title",localItem.optString("title"));
-            payload.put("detail",localItem.optString("detail",""));payload.put("done",localItem.optBoolean("done",false));
+            JSONObject payload=new JSONObject(localItem.toString());payload.remove("id");payload.put("app_key",keyName);
             if(keyName.startsWith("day_"))payload.put("date",keyName.substring(4));
             JSONObject row=new JSONObject();row.put("id",itemId);row.put("couple_id",couple);row.put("kind",kind);row.put("payload",payload);
             request("POST","/rest/v1/shared_items?on_conflict=id",row,true,true);
         }
+    }
+
+    void deleteItem(String id)throws Exception{
+        String couple=coupleId();if(couple.isEmpty()||id.isEmpty())return;
+        request("DELETE","/rest/v1/shared_items?id=eq."+id+"&couple_id=eq."+couple,null,true);
+    }
+
+    String uploadAttachment(android.net.Uri uri,String itemId,Context context)throws Exception{
+        String couple=coupleId();if(couple.isEmpty())throw new Exception("Сначала подключите пару");
+        String type=context.getContentResolver().getType(uri);if(type==null)type="image/jpeg";
+        byte[] data;
+        try(InputStream in=context.getContentResolver().openInputStream(uri);ByteArrayOutputStream out=new ByteArrayOutputStream()){
+            if(in==null)throw new Exception("Не удалось открыть выбранное фото");
+            byte[] buf=new byte[8192];int n;while((n=in.read(buf))!=-1){out.write(buf,0,n);if(out.size()>12*1024*1024)throw new Exception("Фото больше 12 МБ");}
+            data=out.toByteArray();
+        }
+        String ext="jpg";int dot=type.lastIndexOf('/');if(dot>=0&&dot+1<type.length())ext=type.substring(dot+1).replaceAll("[^A-Za-z0-9]","");
+        String path=couple+"/"+itemId+"-"+System.currentTimeMillis()+"."+ext;
+        HttpURLConnection c=(HttpURLConnection)new URL(url()+"/storage/v1/object/couple-files/"+path).openConnection();
+        c.setRequestMethod("POST");c.setConnectTimeout(12000);c.setReadTimeout(20000);c.setDoOutput(true);
+        c.setRequestProperty("apikey",key());c.setRequestProperty("Authorization","Bearer "+prefs.getString("sb_access",""));
+        c.setRequestProperty("Content-Type",type);
+        try(OutputStream out=c.getOutputStream()){out.write(data);}
+        int status=c.getResponseCode();if(status<200||status>=300)throw new Exception("Не удалось загрузить фото (HTTP "+status+")");
+        c.disconnect();return path;
+    }
+
+    byte[] downloadAttachment(String path)throws Exception{
+        String safe=path.replace("\\","/");
+        HttpURLConnection c=(HttpURLConnection)new URL(url()+"/storage/v1/object/authenticated/couple-files/"+safe).openConnection();
+        c.setRequestMethod("GET");c.setConnectTimeout(10000);c.setReadTimeout(16000);c.setRequestProperty("apikey",key());c.setRequestProperty("Authorization","Bearer "+prefs.getString("sb_access",""));
+        int status=c.getResponseCode();InputStream stream=status>=400?c.getErrorStream():c.getInputStream();ByteArrayOutputStream out=new ByteArrayOutputStream();
+        if(stream!=null){byte[] buffer=new byte[8192];int n;while((n=stream.read(buffer))!=-1)out.write(buffer,0,n);stream.close();}
+        c.disconnect();if(status<200||status>=300)throw new Exception("Не удалось открыть фото (HTTP "+status+")");return out.toByteArray();
     }
 
     JSONArray fetchItems()throws Exception{
@@ -137,10 +171,10 @@ final class SupabaseSync {
     void storeRemote(JSONObject row,SharedPreferences target)throws Exception{
         if(row.has("body")){
             JSONObject entry=new JSONObject();entry.put("id",row.optString("id"));entry.put("title",row.optString("body"));
-            entry.put("detail","Сообщение пары");entry.put("done",false);merge(target,"messages",entry);return;
+            entry.put("detail","Сообщение пары");entry.put("done",false);entry.put("sender_id",row.optString("sender_id"));merge(target,"messages",entry);return;
         }
         JSONObject payload=row.optJSONObject("payload");if(payload==null)return;
-        String key=keyFor(row.optString("kind"),payload.optString("date"));if(key==null)return;
+        String key=payload.optString("app_key","");if(key.isEmpty())key=keyFor(row.optString("kind"),payload.optString("date"));if(key==null)return;
         JSONObject entry=new JSONObject(payload.toString());entry.put("id",row.optString("id"));merge(target,key,entry);
     }
 
@@ -151,6 +185,9 @@ final class SupabaseSync {
     }
 
     private String kindFor(String key){
+        if("list_catalog".equals(key))return "task";
+        if("shared_timer".equals(key))return "event";
+        if(key.startsWith("list_"))return "task";
         if("tasks".equals(key))return "task";if(key.startsWith("day_"))return "calendar_task";if("movie_room".equals(key))return "movie_room";
         if("events".equals(key))return "event";if("wishes".equals(key))return "wish";
         if("notes".equals(key))return "note";if("gifts".equals(key))return "gift";

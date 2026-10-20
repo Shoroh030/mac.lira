@@ -48,6 +48,8 @@ public class MainActivity extends Activity {
     private LinearLayout root, body, nav;
     private String tab = "Главная";
     private String feature = null;
+    private String pendingPhotoKey = "", pendingPhotoItemId = "";
+    private Runnable sharedTimerTick, sharedTimerPoll;
     private Calendar visibleMonth = Calendar.getInstance();
     private Calendar selectedDay = Calendar.getInstance();
     private final ExecutorService network = Executors.newSingleThreadExecutor();
@@ -110,7 +112,8 @@ public class MainActivity extends Activity {
 
     private void render() {
         body.removeAllViews(); nav.removeAllViews();
-        if (feature != null) renderFeature();
+        if (feature != null && feature.startsWith("list:")) renderSharedList();
+        else if (feature != null) renderFeature();
         else if (tab.equals("Главная")) renderHome();
         else if (tab.equals("Дела")) renderTasks();
         else if (tab.equals("Календарь")) renderCalendar();
@@ -146,17 +149,21 @@ public class MainActivity extends Activity {
         heading("На сегодня", "Ваши общие дела");
         LinearLayout taskCard = card();
         JSONArray tasks = read("tasks");
-        if (tasks.length() == 0) {
-            addCheck(taskCard, "Выбрать фильм на вечер", false, 0);
-            addCheck(taskCard, "Купить что-нибудь вкусное", false, 0);
-        } else for (int i = 0; i < Math.min(tasks.length(), 3); i++) addTask(taskCard, tasks, i);
+        int shown = 0;
+        for (int i = 0; i < tasks.length() && shown < 3; i++) {
+            JSONObject item = tasks.optJSONObject(i);
+            if (item != null && !item.optBoolean("done")) { addTask(taskCard, tasks, i); shown++; }
+        }
+        if (shown == 0) simpleCard("✓", "Все общие дела закрыты", "Добавьте новое дело во вкладке «Дела»", null);
         TextView link = text("Все дела  →", 13, PURPLE, true); link.setPadding(0, dp(8), 0, 0);
         taskCard.addView(link); link.setOnClickListener(v -> { tab = "Дела"; render(); });
 
         heading("Скоро", "Чтобы ничего не забыть");
         JSONArray events = read("events");
-        if (events.length() == 0) simpleCard("🗓", "Планов пока нет", "Добавьте свидание или важную дату", () -> { tab = "Календарь"; render(); });
-        else simpleCard("🗓", events.optJSONObject(0).optString("title"), "Ваше ближайшее событие", () -> { tab = "Календарь"; render(); });
+        JSONObject nextEvent = null; long now = System.currentTimeMillis(), best = Long.MAX_VALUE;
+        for (int i=0;i<events.length();i++) { JSONObject event=events.optJSONObject(i); if(event==null)continue; long at=event.optLong("reminder_at",0); if(at>=now&&at<best){best=at;nextEvent=event;} }
+        if (nextEvent == null) simpleCard("🗓", "Ближайших событий нет", "Добавьте дату в календаре", () -> { tab = "Календарь"; render(); });
+        else simpleCard("🗓", nextEvent.optString("title"), new SimpleDateFormat("d MMMM · HH:mm",new Locale("ru")).format(new java.util.Date(best)), () -> { tab = "Календарь"; render(); });
 
         heading("Проведите время вместе", "Выбирайте настроение");
         simpleCard("🎬", "Кино-комната", "Соберитесь на совместный просмотр", () -> open("🎬  Комната просмотра"));
@@ -169,10 +176,57 @@ public class MainActivity extends Activity {
         TextView add = pill("＋  Добавить общее дело", PURPLE); body.addView(add); add.setOnClickListener(v -> addDialog("tasks", "Новое дело"));
         JSONArray list = read("tasks");
         LinearLayout box = card();
-        if (list.length() == 0) { addCheck(box, "Составить список покупок", false, 0); addCheck(box, "Запланировать вечер вдвоём", false, 0); }
+        if (list.length() == 0) simpleCard("＋", "Пока дел нет", "Добавьте дело для вас двоих", null);
         else for (int i=0;i<list.length();i++) addTask(box, list, i);
         heading("Списки на двоих", "Покупки, поездки, домашние дела");
-        for (String s : new String[]{"🛒  Покупки", "🧳  В поездку", "🏡  Для дома"}) simpleCard(s.substring(0, 2), s.substring(4), "Открыть общий список", () -> open("📋  " + s.substring(4)));
+        renderListLink("🛒", "Покупки", "list_shopping");
+        renderListLink("🧳", "В поездку", "list_trip");
+        renderListLink("🏡", "Для дома", "list_home");
+        TextView createList = pill("＋ Создать свой список", PURPLE); body.addView(createList);
+        createList.setOnClickListener(v -> createSharedList());
+        JSONArray customLists = read("list_catalog");
+        for (int i=0;i<customLists.length();i++) { JSONObject entry=customLists.optJSONObject(i); if(entry!=null) renderCustomList(entry); }
+    }
+
+    private void renderListLink(String icon,String title,String key) {
+        simpleCard(icon,title,"Открыть общий список · нажмите и удерживайте для управления",()->open("list:"+key));
+        View last=body.getChildAt(body.getChildCount()-1);last.setOnLongClickListener(v->{listActions(key,title,null);return true;});
+    }
+
+    private void renderCustomList(JSONObject entry) {
+        String key=entry.optString("list_key"),title=entry.optString("title");
+        if(key.isEmpty()||title.isEmpty())return;
+        simpleCard("📋",title,"Общий список · нажмите и удерживайте для управления",()->open("list:"+key));
+        View last=body.getChildAt(body.getChildCount()-1);last.setOnLongClickListener(v->{listActions(key,title,entry);return true;});
+    }
+
+    private void createSharedList() {
+        EditText title=new EditText(this);title.setSingleLine(true);title.setHint("Например, идеи для поездки");
+        new AlertDialog.Builder(this).setTitle("Новый список для двоих").setView(title).setNegativeButton("Отмена",null)
+                .setPositiveButton("Создать",(d,w)->{String value=title.getText().toString().trim();if(value.isEmpty())return;JSONObject row=new JSONObject();String id=UUID.randomUUID().toString();try{row.put("id",id);row.put("list_key","list_"+id);row.put("title",value);}catch(Exception ignored){}append("list_catalog",value,"");JSONArray rows=read("list_catalog");JSONObject saved=rows.optJSONObject(rows.length()-1);if(saved!=null)try{saved.put("list_key","list_"+id);save("list_catalog",rows);syncItem("list_catalog",saved);}catch(Exception ignored){}render();}).show();
+    }
+
+    private void listActions(String key,String title,JSONObject custom) {
+        String[] choices=custom==null?new String[]{"Открыть"}:new String[]{"Открыть", "Переименовать", "Удалить список"};
+        new AlertDialog.Builder(this).setTitle(title).setItems(choices,(d,which)->{
+            if(which==0){open("list:"+key);return;}
+            if(which==1){EditText input=new EditText(this);input.setSingleLine(true);input.setText(title);new AlertDialog.Builder(this).setTitle("Название списка").setView(input).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",(x,y)->{if(custom==null){Toast.makeText(this,"Встроенный список нельзя переименовать",Toast.LENGTH_SHORT).show();return;}try{custom.put("title",input.getText().toString().trim());replaceItem("list_catalog",custom);render();}catch(Exception ignored){}}).show();return;}
+            if(custom!=null)new AlertDialog.Builder(this).setMessage("Удалить список «"+title+"» вместе со всеми пунктами?").setNegativeButton("Отмена",null).setPositiveButton("Удалить",(x,y)->{removeItem("list_catalog",custom.optString("id"));JSONArray items=read(key);for(int i=items.length()-1;i>=0;i--){JSONObject item=items.optJSONObject(i);if(item!=null)removeRemoteItem(item.optString("id"));}prefs.edit().remove(key).apply();render();}).show();
+        }).show();
+    }
+
+    private void renderSharedList() {
+        String key=feature.substring("list:".length());String title=listTitle(key);
+        TextView back=text("‹  Назад к делам",14,PURPLE,true);body.addView(back);back.setOnClickListener(v->{feature=null;tab="Дела";render();});
+        heading(title,"Общий список — изменения видны у вас обоих");
+        TextView add=pill("＋ Добавить пункт",PURPLE);body.addView(add);add.setOnClickListener(v->addDialog(key,"Новый пункт"));
+        JSONArray items=read(key);if(items.length()==0)simpleCard("＋","Список пока пуст","Добавьте первый пункт",null);
+        else {LinearLayout box=card();for(int i=0;i<items.length();i++)addTask(box,items,i,key);}
+    }
+
+    private String listTitle(String key) {
+        if("list_shopping".equals(key))return "Покупки";if("list_trip".equals(key))return "В поездку";if("list_home".equals(key))return "Для дома";
+        JSONArray rows=read("list_catalog");for(int i=0;i<rows.length();i++){JSONObject row=rows.optJSONObject(i);if(row!=null&&key.equals(row.optString("list_key")))return row.optString("title");}return "Общий список";
     }
 
     private void renderCalendar() {
@@ -237,11 +291,10 @@ public class MainActivity extends Activity {
         add.setOnClickListener(v -> addDialog(key, action));
         JSONArray list = read(key);
         if (list.length() == 0) {
-            if (key.equals("wishes")) { simpleCard("🏕", "Уехать на выходные", "Мечта на двоих", () -> open("🏕  Уехать на выходные")); simpleCard("🍜", "Научиться готовить рамен", "Идея для свидания", () -> open("🍜  Научиться готовить рамен")); }
-            else simpleCard("💛", "Вечер без телефонов", "Суббота · идея для свидания", () -> open("💛  Вечер без телефонов"));
+            simpleCard("＋", "Пока записей нет", "Добавьте вашу первую общую запись", null);
         } else for (int i=0;i<list.length();i++) {
             JSONObject item = list.optJSONObject(i); if (item == null) continue;
-            simpleCard(key.equals("wishes") ? "♡" : "🗓", item.optString("title"), item.optString("detail", "Добавлено вами"), () -> open(item.optString("title")));
+            renderEditableEntry(key, list, i, key.equals("wishes") ? "♡" : "🗓");
         }
         if (key.equals("wishes")) simpleCard("🗳", "Голосование за идею", "Пусть каждый выберет, чего хочется", () -> open("🗳  Голосование"));
     }
@@ -252,6 +305,8 @@ public class MainActivity extends Activity {
             String icon = item.substring(0, 2);
             simpleCard(icon, item.substring(4), description(item), () -> open(item));
         }
+        simpleCard("⏱", "Общий таймер", "Запустите отсчёт и следите за ним вместе", () -> open("shared_timer"));
+        simpleCard("🔔", "Напомнить партнёру", "Общая дата и уведомление на телефонах пары", () -> open("shared_reminder"));
     }
     private String description(String title) {
         if (title.contains("Чат")) return "Сообщения, которые остаются между вами";
@@ -270,7 +325,11 @@ public class MainActivity extends Activity {
         TextView back = text("‹  Назад", 14, PURPLE, true); back.setPadding(0, dp(5), 0, dp(14)); body.addView(back);
         back.setOnClickListener(v -> { feature = null; render(); });
         heading(feature, description(feature));
-        if (feature.contains("Вопрос дня")) {
+        if ("shared_timer".equals(feature)) {
+            renderSharedTimer();
+        } else if ("shared_reminder".equals(feature)) {
+            renderSharedReminder();
+        } else if (feature.contains("Вопрос дня")) {
             simpleCard("💭", "Что из наших общих воспоминаний хочется пережить ещё раз?", "Вопрос для вас обоих", null);
             TextView answer = pill("Написать ответ", PURPLE); body.addView(answer); answer.setOnClickListener(v -> addDialog("answers", "Ваш ответ"));
             renderEntries("answers");
@@ -297,7 +356,7 @@ public class MainActivity extends Activity {
             attach.setOnClickListener(v -> { Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT); i.setType("*/*"); i.addCategory(Intent.CATEGORY_OPENABLE); startActivityForResult(i, 402); });
             renderEntries(keyFor(feature));
         } else if (feature.contains("Чат")) {
-            renderEntries("messages");
+            renderChat();
             LinearLayout composer = new LinearLayout(this); composer.setGravity(Gravity.CENTER_VERTICAL); body.addView(composer);
             EditText msg = new EditText(this); msg.setSingleLine(true); msg.setHint("Написать сообщение…"); composer.addView(msg, new LinearLayout.LayoutParams(0, dp(52), 1));
             TextView send = pill("Отправить", PURPLE); composer.addView(send); send.setOnClickListener(v -> { String s=msg.getText().toString().trim(); if(!s.isEmpty()){append("messages",s,"Сейчас"); ((InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(msg.getWindowToken(),0); feature=feature; render(); } });
@@ -309,6 +368,38 @@ public class MainActivity extends Activity {
             renderEntries(keyFor(feature));
         }
     }
+
+    private void renderSharedTimer() {
+        heading("Общий таймер","Отсчёт хранится в общем пространстве пары");
+        JSONArray current=read("shared_timer");JSONObject timer=current.length()==0?null:current.optJSONObject(0);
+        TextView counter=text("Таймер не запущен",24,PURPLE,true);counter.setGravity(Gravity.CENTER);LinearLayout timerCard=card();timerCard.addView(counter);
+        EditText minutes=new EditText(this);minutes.setSingleLine(true);minutes.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);minutes.setHint("Минуты");body.addView(minutes);
+        TextView start=pill("Запустить общий таймер",PURPLE);body.addView(start);start.setOnClickListener(v->{int value;try{value=Integer.parseInt(minutes.getText().toString());}catch(Exception e){minutes.setError("Введите минуты");return;}if(value<1||value>1440){minutes.setError("От 1 минуты до суток");return;}JSONObject next=new JSONObject();try{next.put("id",UUID.randomUUID().toString());next.put("title","Общий таймер");next.put("minutes",value);next.put("timer_end",System.currentTimeMillis()+value*60000L);next.put("started_by",sync.userId());}catch(Exception ignored){}JSONArray rows=new JSONArray();rows.put(next);save("shared_timer",rows);syncItem("shared_timer",next);scheduleReminder(next.optString("id"),next.optLong("timer_end"),"Таймер завершён","Ваш общий таймер закончился");render();});
+        if(timer!=null){TextView stop=pill("Остановить таймер",0xFFB44F69);body.addView(stop);stop.setOnClickListener(v->{removeRemoteItem(timer.optString("id"));prefs.edit().remove("shared_timer").apply();render();});}
+        if(sharedTimerTick!=null)gameHandler.removeCallbacks(sharedTimerTick);if(sharedTimerPoll!=null)gameHandler.removeCallbacks(sharedTimerPoll);
+        sharedTimerTick=new Runnable(){public void run(){if(!"shared_timer".equals(feature))return;JSONArray rows=read("shared_timer");JSONObject active=rows.length()==0?null:rows.optJSONObject(0);if(active==null)counter.setText("Таймер не запущен");else{long left=Math.max(0,active.optLong("timer_end")-System.currentTimeMillis());counter.setText(String.format(Locale.US,"%02d:%02d:%02d",left/3600000,(left/60000)%60,(left/1000)%60));if(left==0)counter.append("\nВремя вышло");}gameHandler.postDelayed(this,1000);}};gameHandler.post(sharedTimerTick);
+        sharedTimerPoll=new Runnable(){public void run(){if(!"shared_timer".equals(feature))return;if(sync.ready())network.execute(()->{try{JSONArray rows=sync.fetchItems();boolean found=false;for(int i=0;i<rows.length();i++){JSONObject row=rows.getJSONObject(i);JSONObject payload=row.optJSONObject("payload");if(payload!=null&&"shared_timer".equals(payload.optString("app_key")))found=true;sync.storeRemote(row,prefs);}if(!found)prefs.edit().remove("shared_timer").apply();runOnUiThread(()->{if("shared_timer".equals(feature)){if(sharedTimerTick!=null){gameHandler.removeCallbacks(sharedTimerTick);gameHandler.post(sharedTimerTick);}if(body!=null)render();}});}catch(Exception ignored){}});gameHandler.postDelayed(this,5000);}};gameHandler.postDelayed(sharedTimerPoll,5000);
+    }
+
+    private void renderSharedReminder() {
+        heading("Напоминание для партнёра","Напоминание синхронизируется в общем календаре");
+        TextView create=pill("＋ Выбрать дату и время",PURPLE);body.addView(create);create.setOnClickListener(v->{Calendar when=Calendar.getInstance();new android.app.DatePickerDialog(this,(picker,year,month,day)->{when.set(Calendar.YEAR,year);when.set(Calendar.MONTH,month);when.set(Calendar.DAY_OF_MONTH,day);new android.app.TimePickerDialog(this,(time,hour,minute)->{when.set(Calendar.HOUR_OF_DAY,hour);when.set(Calendar.MINUTE,minute);when.set(Calendar.SECOND,0);if(when.getTimeInMillis()<=System.currentTimeMillis()){toast("Выберите время в будущем");return;}EditText note=new EditText(this);note.setHint("Что напомнить партнёру?");new AlertDialog.Builder(this).setTitle("Общее напоминание").setView(note).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",(d,w)->{String value=note.getText().toString().trim();if(value.isEmpty())value="Пора выполнить ваш общий план";append("events",value,"Напоминание партнёру");JSONArray rows=read("events");JSONObject item=rows.optJSONObject(rows.length()-1);if(item!=null)try{item.put("reminder_at",when.getTimeInMillis());item.put("remind_partner",true);save("events",rows);syncItem("events",item);scheduleReminder(item.optString("id"),when.getTimeInMillis(),"Вместе",value);}catch(Exception ignored){}render();}).show();},when.get(Calendar.HOUR_OF_DAY),when.get(Calendar.MINUTE),true).show();},when.get(Calendar.YEAR),when.get(Calendar.MONTH),when.get(Calendar.DAY_OF_MONTH)).show();});
+        JSONArray events=read("events");for(int i=0;i<events.length();i++){JSONObject item=events.optJSONObject(i);if(item!=null&&item.optBoolean("remind_partner"))renderEditableEntry("events",events,i,"🔔");}
+    }
+
+    private void scheduleReminder(String id,long at,String title,String message) {
+        if(id.isEmpty()||at<=System.currentTimeMillis())return;
+        if(android.os.Build.VERSION.SDK_INT>=33&&checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS},8101);}
+        android.content.Intent intent=new android.content.Intent(this,ReminderReceiver.class);intent.putExtra("title",title);intent.putExtra("body",message);intent.putExtra("notification_id",id.hashCode());
+        android.app.PendingIntent pending=android.app.PendingIntent.getBroadcast(this,id.hashCode(),intent,android.app.PendingIntent.FLAG_UPDATE_CURRENT|android.app.PendingIntent.FLAG_IMMUTABLE);
+        android.app.AlarmManager alarm=(android.app.AlarmManager)getSystemService(ALARM_SERVICE);if(alarm!=null)alarm.setAndAllowWhileIdle(android.app.AlarmManager.RTC_WAKEUP,at,pending);
+    }
+
+    private void syncQuietly() {
+        if(!sync.ready())return;network.execute(()->{try{JSONArray rows=sync.fetchItems();boolean hasTimer=false;for(int i=0;i<rows.length();i++){JSONObject row=rows.getJSONObject(i);sync.storeRemote(row,prefs);JSONObject payload=row.optJSONObject("payload");if(payload!=null){if("shared_timer".equals(payload.optString("app_key")))hasTimer=true;if(payload.optBoolean("remind_partner"))scheduleReminder(row.optString("id"),payload.optLong("reminder_at"),"Вместе",payload.optString("title","Напоминание"));}}if(!hasTimer)prefs.edit().remove("shared_timer").apply();}catch(Exception ignored){}});
+    }
+
+    @Override protected void onResume(){super.onResume();syncQuietly();}
 
     private void renderCoupleSetup() {
         if (!sync.configured()) {
@@ -436,7 +527,7 @@ public class MainActivity extends Activity {
         JSONObject room = readMovieRoom(); String roomTitle = room == null ? "Совместный просмотр" : room.optString("title", "Совместный просмотр");
         String roomId = UUID.randomUUID().toString();
         this.<String>runNetwork(() -> { sync.createWatchRoom(roomId, roomTitle); return roomId; }, created -> {
-            Intent intent = WatchPartyActivity.intent(this, created, true, roomTitle);
+            Intent intent = WatchPartyActivity.intent(this, created, true, roomTitle).putExtra(WatchPartyActivity.EXTRA_PLAYER_URL, room == null ? "" : room.optString("url", ""));
             startActivity(intent);
         });
     }
@@ -447,9 +538,9 @@ public class MainActivity extends Activity {
         new AlertDialog.Builder(this).setTitle("Войти в парную трансляцию").setView(code).setNegativeButton("Отмена", null)
                 .setPositiveButton("Подключиться", (d,w) -> {
                     String roomId = code.getText().toString().trim();
-                    this.<JSONObject>runNetwork(() -> sync.getWatchRoom(roomId), room -> {
+                    this.<JSONObject>runNetwork(() -> { JSONObject found=sync.getWatchRoom(roomId);if(found!=null){JSONObject movie=sync.fetchMovieRoom();if(movie!=null)found.put("player_url",movie.optString("url",""));}return found; }, room -> {
                         if (room == null || !"active".equals(room.optString("state"))) { toast("Активная комната с таким кодом не найдена"); return; }
-                        startActivity(WatchPartyActivity.intent(this, roomId, false, room.optString("title", "Совместный просмотр")));
+                        startActivity(WatchPartyActivity.intent(this, roomId, false, room.optString("title", "Совместный просмотр")).putExtra(WatchPartyActivity.EXTRA_PLAYER_URL, room.optString("player_url", "")));
                     });
                 }).show();
     }
@@ -803,26 +894,89 @@ public class MainActivity extends Activity {
         JSONArray rows = read(key);
         for (int i=0;i<rows.length();i++) {
             JSONObject row=rows.optJSONObject(i); if (row == null) continue;
-            simpleCard("✦", row.optString("title"), row.optString("detail", "Добавлено вами"), null);
+            renderEditableEntry(key, rows, i, "✦");
         }
+    }
+
+    private void renderChat() {
+        JSONArray messages=read("messages");
+        LinearLayout box=column();box.setPadding(dp(12),dp(12),dp(12),dp(12));box.setBackground(shape(PAPER,22));body.addView(box);
+        if(messages.length()==0){TextView empty=text("Напишите первое сообщение — чат только для вас двоих",13,MUTED,false);empty.setGravity(Gravity.CENTER);box.addView(empty);}
+        for(int i=0;i<messages.length();i++){
+            JSONObject row=messages.optJSONObject(i);if(row==null)continue;
+            boolean mine=row.optString("sender_id",sync.userId()).equals(sync.userId());
+            LinearLayout line=new LinearLayout(this);line.setGravity(mine?Gravity.RIGHT:Gravity.LEFT);line.setPadding(dp(2),dp(4),dp(2),dp(4));
+            TextView avatar=text(mine?prefs.getString("profile_avatar","♡"):prefs.getString("partner_avatar","♡"),16,PURPLE,true);avatar.setGravity(Gravity.CENTER);avatar.setBackground(shape(PALE,18));
+            TextView bubble=text(row.optString("title"),14,INK,false);bubble.setPadding(dp(13),dp(10),dp(13),dp(10));bubble.setMaxWidth(dp(280));bubble.setBackground(shape(mine?0xFFEFE5F6:0xFFF3F4F6,18));
+            if(!mine)line.addView(avatar,new LinearLayout.LayoutParams(dp(32),dp(32)));
+            LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(-2,-2);bp.setMargins(dp(7),0,dp(7),0);line.addView(bubble,bp);
+            if(mine)line.addView(avatar,new LinearLayout.LayoutParams(dp(32),dp(32)));
+            box.addView(line);
+        }
+        LinearLayout composer=new LinearLayout(this);composer.setGravity(Gravity.CENTER_VERTICAL);body.addView(composer);
+        EditText input=new EditText(this);input.setSingleLine(true);input.setHint("Сообщение партнёру…");composer.addView(input,new LinearLayout.LayoutParams(0,dp(52),1));
+        TextView send=pill("Отправить",PURPLE);composer.addView(send);send.setOnClickListener(v->{String value=input.getText().toString().trim();if(!value.isEmpty()){append("messages",value,"Сейчас");render();}});
+        if(sync.ready())network.execute(()->{try{JSONArray remote=sync.fetchItems();for(int i=0;i<remote.length();i++)sync.storeRemote(remote.getJSONObject(i),prefs);runOnUiThread(()->{if(feature!=null&&feature.contains("чата"))render();});}catch(Exception ignored){}});
+    }
+
+    private void renderEditableEntry(String key,JSONArray list,int index,String icon) {
+        JSONObject item=list.optJSONObject(index);if(item==null)return;
+        LinearLayout row=card();
+        if("plans".equals(key)){
+            android.widget.CheckBox done=new android.widget.CheckBox(this);done.setText(item.optBoolean("done")?"Выполнено":"Отметить выполнение");done.setChecked(item.optBoolean("done"));done.setButtonTintList(android.content.res.ColorStateList.valueOf(PURPLE));row.addView(done);
+            done.setOnCheckedChangeListener((b,on)->{try{item.put("done",on);item.put("completed_at",on?System.currentTimeMillis():0);replaceItem(key,item);render();}catch(Exception ignored){}});
+        }
+        TextView title=text(icon+"  "+item.optString("title"),15,INK,true);row.addView(title);
+        String category=item.optString("category","");String detail=item.optString("detail","");
+        if(!category.isEmpty())row.addView(text("Раздел: "+category,12,PURPLE,true));
+        if(!detail.isEmpty())row.addView(text(detail,12,MUTED,false));
+        if(item.has("photo_path")){
+            row.addView(text("📷 Фото-отчёт",12,PURPLE,true));ImageView photo=new ImageView(this);photo.setScaleType(ImageView.ScaleType.CENTER_CROP);photo.setBackground(shape(PALE,16));LinearLayout.LayoutParams pp=new LinearLayout.LayoutParams(-1,dp(170));pp.topMargin=dp(8);row.addView(photo,pp);
+            if(sync.ready()){String path=item.optString("photo_path");network.execute(()->{try{byte[] bytes=sync.downloadAttachment(path);android.graphics.Bitmap bitmap=android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length);runOnUiThread(()->{if(bitmap!=null)photo.setImageBitmap(bitmap);});}catch(Exception e){android.util.Log.w("VmesteSync","Could not load plan photo",e);}});}
+        }
+        row.setOnClickListener(v->editItemDialog(key,item));
+        row.setOnLongClickListener(v->{itemActions(key,item);return true;});
     }
     private JSONArray read(String key) { try { return new JSONArray(prefs.getString(key, "[]")); } catch(Exception e) { return new JSONArray(); } }
     private void save(String key, JSONArray items) { prefs.edit().putString(key, items.toString()).apply(); }
+    private void syncItem(String key,JSONObject item){if(sync!=null&&sync.ready())network.execute(()->{try{sync.upsert(key,item);}catch(Exception e){android.util.Log.w("VmesteSync","Could not sync shared item",e);}});}
+    private void replaceItem(String key,JSONObject item){JSONArray rows=read(key);for(int i=0;i<rows.length();i++){JSONObject old=rows.optJSONObject(i);if(old!=null&&old.optString("id").equals(item.optString("id"))){try{rows.put(i,item);save(key,rows);syncItem(key,item);}catch(Exception ignored){}return;}}}
+    private void removeRemoteItem(String id){if(sync!=null&&sync.ready())network.execute(()->{try{sync.deleteItem(id);}catch(Exception e){android.util.Log.w("VmesteSync","Could not delete shared item",e);}});}
+    private void removeItem(String key,String id){JSONArray rows=read(key);for(int i=rows.length()-1;i>=0;i--){JSONObject item=rows.optJSONObject(i);if(item!=null&&id.equals(item.optString("id"))){rows.remove(i);break;}}save(key,rows);removeRemoteItem(id);}
     private void append(String key, String title, String detail) {
         JSONArray list=read(key); JSONObject item=new JSONObject();
         try { item.put("id", UUID.randomUUID().toString()); item.put("title", title); item.put("detail", detail); item.put("done", false); list.put(item); } catch(Exception ignored) { }
         save(key,list);
         if (sync != null && sync.configured() && sync.signedIn() && !sync.coupleId().isEmpty()) {
             JSONObject row = list.optJSONObject(list.length() - 1);
-            if (row != null) network.execute(() -> { try { sync.upsert(key, row); } catch (Exception e) { android.util.Log.w("VmesteSync", "Could not sync " + key, e); } });
+            if (row != null) syncItem(key,row);
         }
+    }
+
+    private void itemActions(String key,JSONObject item){
+        ArrayList<String> options=new ArrayList<>();options.add("Редактировать");if("plans".equals(key))options.add("Добавить фото-отчёт");options.add("Удалить");
+        String[] choices=options.toArray(new String[0]);new AlertDialog.Builder(this).setItems(choices,(d,which)->{
+            String choice=choices[which];if(choice.equals("Редактировать")){editItemDialog(key,item);return;}
+            if(choice.equals("Добавить фото-отчёт")){pendingPhotoKey=key;pendingPhotoItemId=item.optString("id");Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);pick.setType("image/*");pick.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(pick,403);return;}
+            new AlertDialog.Builder(this).setMessage("Удалить «"+item.optString("title")+"»?").setNegativeButton("Отмена",null).setPositiveButton("Удалить",(x,y)->{removeItem(key,item.optString("id"));render();}).show();
+        }).show();
+    }
+
+    private void editItemDialog(String key,JSONObject item){
+        LinearLayout form=column();form.setPadding(dp(18),0,dp(18),0);
+        EditText title=new EditText(this);title.setSingleLine(true);title.setHint("Название");title.setText(item.optString("title"));form.addView(title);
+        EditText detail=new EditText(this);detail.setHint("Описание или заметка");detail.setText(item.optString("detail"));form.addView(detail);
+        EditText category=new EditText(this);category.setSingleLine(true);category.setHint("Раздел / категория");category.setText(item.optString("category"));if("wishes".equals(key))form.addView(category);
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Изменить запись").setView(form).setNegativeButton("Отмена",null).setNeutralButton("Удалить",null).setPositiveButton("Сохранить",null).create();
+        dialog.setOnShowListener(v->{dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(x->{String value=title.getText().toString().trim();if(value.isEmpty()){title.setError("Введите название");return;}try{item.put("title",value);item.put("detail",detail.getText().toString().trim());if("wishes".equals(key))item.put("category",category.getText().toString().trim());replaceItem(key,item);dialog.dismiss();render();}catch(Exception ignored){}});dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(x->{removeItem(key,item.optString("id"));dialog.dismiss();render();});});dialog.show();
     }
     private void addDialog(String key, String title) {
         LinearLayout form = column(); form.setPadding(dp(22), dp(8), dp(22), dp(2));
         EditText name = new EditText(this); name.setHint("Что хотите сохранить?"); name.setSingleLine(true); form.addView(name);
         EditText detail = new EditText(this); detail.setHint("Заметка или дата (необязательно)"); form.addView(detail);
+        EditText category = new EditText(this); category.setSingleLine(true); category.setHint("Раздел / категория"); if ("wishes".equals(key)) form.addView(category);
         new AlertDialog.Builder(this).setTitle(title).setView(form).setNegativeButton("Отмена", null)
-                .setPositiveButton("Сохранить", (d,w) -> { String t=name.getText().toString().trim(); if (!t.isEmpty()) { append(key,t,detail.getText().toString().trim()); render(); } }).show();
+                .setPositiveButton("Сохранить", (d,w) -> { String t=name.getText().toString().trim(); if (!t.isEmpty()) { append(key,t,detail.getText().toString().trim()); if("wishes".equals(key)){JSONArray rows=read(key);JSONObject item=rows.optJSONObject(rows.length()-1);if(item!=null)try{item.put("category",category.getText().toString().trim());save(key,rows);syncItem(key,item);}catch(Exception ignored){}} render(); } }).show();
     }
     private void addTask(LinearLayout box, JSONArray list, int index) {
         addTask(box,list,index,"tasks");
@@ -833,8 +987,10 @@ public class MainActivity extends Activity {
         check.setText(item.optString("title")); check.setTextSize(14); check.setTextColor(INK);
         check.setButtonTintList(android.content.res.ColorStateList.valueOf(PURPLE));
         check.setChecked(item.optBoolean("done")); box.addView(check);
-        check.setOnCheckedChangeListener((b,on)->{JSONArray current=read(storeKey);JSONObject o=current.optJSONObject(index);if(o!=null){try{o.put("done",on);save(storeKey,current);}catch(Exception ignored){}}});
+        check.setOnCheckedChangeListener((b,on)->{JSONArray current=read(storeKey);JSONObject o=findItem(current,item.optString("id"));if(o!=null){try{o.put("done",on);o.put("completed_at",on?System.currentTimeMillis():0);replaceItem(storeKey,o);if("tasks".equals(storeKey))render();}catch(Exception ignored){}}});
+        check.setOnLongClickListener(v->{itemActions(storeKey,item);return true;});
     }
+    private JSONObject findItem(JSONArray rows,String id){for(int i=0;i<rows.length();i++){JSONObject row=rows.optJSONObject(i);if(row!=null&&id.equals(row.optString("id")))return row;}return null;}
     private void addCheck(LinearLayout box, String value, boolean checked, int index) {
         android.widget.CheckBox check=new android.widget.CheckBox(this); check.setText(value); check.setTextSize(14); check.setTextColor(INK);
         check.setButtonTintList(android.content.res.ColorStateList.valueOf(PURPLE)); check.setChecked(checked); box.addView(check);
@@ -862,6 +1018,11 @@ public class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent data) {
         super.onActivityResult(requestCode,resultCode,data);
+        if(requestCode==403&&resultCode==RESULT_OK&&data!=null&&data.getData()!=null){
+            Uri uri=data.getData();String key=pendingPhotoKey,id=pendingPhotoItemId;
+            if(!sync.ready()){toast("Фото-отчёт можно синхронизировать после подключения пары");return;}
+            toast("Загружаю фото-отчёт…");network.execute(()->{try{String path=sync.uploadAttachment(uri,id,this);runOnUiThread(()->{JSONObject item=findItem(read(key),id);if(item!=null)try{item.put("photo_path",path);item.put("reported_at",System.currentTimeMillis());replaceItem(key,item);render();toast("Фото прикреплено к плану для вас двоих");}catch(Exception e){toast(e.getMessage());}});}catch(Exception e){runOnUiThread(()->toast("Не удалось загрузить фото: "+e.getMessage()));}});return;
+        }
         if(requestCode==402&&resultCode==RESULT_OK&&data!=null&&data.getData()!=null) {
             Uri uri=data.getData(); String name=uri.getLastPathSegment(); append("files",name==null?"Выбранный файл":name,uri.toString()); render();
         }
