@@ -1,0 +1,27 @@
+plugins {
+    id 'com.android.application'
+}
+
+def supabaseUrl = System.getenv('SUPABASE_URL') ?: 'https://berhzzobuavjisrbbqrr.supabase.co'
+def supabasePublishableKey = System.getenv('SUPABASE_PUBLISHABLE_KEY') ?: 'sb_publishable_tXqTISD8h-85Api7UeOXcA_OHP38nYk'
+
+android {
+    namespace 'com.lira.vmest'
+    compileSdk 34
+
+    buildFeatures { buildConfig true }
+
+    defaultConfig {
+        applicationId 'com.lira.vmest'
+        minSdk 24
+        targetSdk 34
+        versionCode 2
+        versionName '1.1'
+        buildConfigField 'String', 'SUPABASE_URL', '"' + supabaseUrl + '"'
+        buildConfigField 'String', 'SUPABASE_PUBLISHABLE_KEY', '"' + supabasePublishableKey + '"'
+    }
+}
+
+dependencies {
+    implementation 'io.github.webrtc-sdk:android:150.7871.01'
+}
