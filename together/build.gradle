@@ -2,8 +2,10 @@ plugins {
     id 'com.android.application'
 }
 
-def supabaseUrl = System.getenv('SUPABASE_URL') ?: 'https://berhzzobuavjisrbbqrr.supabase.co'
-def supabasePublishableKey = System.getenv('SUPABASE_PUBLISHABLE_KEY') ?: 'sb_publishable_tXqTISD8h-85Api7UeOXcA_OHP38nYk'
+def supabaseUrl = System.getenv('SUPABASE_URL') ?: 'https://vdmcaltwnhlqrvwvchwi.supabase.co'
+def supabasePublishableKey = System.getenv('SUPABASE_PUBLISHABLE_KEY') ?: 'sb_publishable_76yRmXfDmV8TTvsCu9kW6Q_5VfHkay-'
+def appVersionName = System.getenv('APP_VERSION') ?: '1.2.0'
+def appVersionCode = (System.getenv('APP_VERSION_CODE') ?: '3') as Integer
 
 android {
     namespace 'com.lira.vmest'
@@ -15,13 +17,42 @@ android {
         applicationId 'com.lira.vmest'
         minSdk 24
         targetSdk 34
-        versionCode 2
-        versionName '1.1'
+        versionCode appVersionCode
+        versionName appVersionName
         buildConfigField 'String', 'SUPABASE_URL', '"' + supabaseUrl + '"'
         buildConfigField 'String', 'SUPABASE_PUBLISHABLE_KEY', '"' + supabasePublishableKey + '"'
+    }
+
+    signingConfigs {
+        release {
+            def keystorePath = System.getenv('VMEST_KEYSTORE_PATH')
+            def releaseStorePassword = System.getenv('VMEST_KEYSTORE_PASSWORD') ?: ''
+            def releaseKeyAlias = System.getenv('VMEST_KEY_ALIAS') ?: ''
+            def releaseKeyPassword = System.getenv('VMEST_KEY_PASSWORD') ?: ''
+            if (keystorePath != null && new File(keystorePath).exists()) {
+                storeFile file(keystorePath)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+    buildTypes {
+        release {
+            if (System.getenv('VMEST_KEYSTORE_PATH') != null && new File(System.getenv('VMEST_KEYSTORE_PATH')).exists()) {
+                signingConfig signingConfigs.release
+            }
+            minifyEnabled false
+            shrinkResources false
+        }
+        debug {
+            minifyEnabled false
+            shrinkResources false
+        }
     }
 }
 
 dependencies {
     implementation 'io.github.webrtc-sdk:android:150.7871.01'
+    testImplementation 'junit:junit:4.13.2'
 }

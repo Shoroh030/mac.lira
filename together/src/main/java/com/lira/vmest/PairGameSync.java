@@ -25,8 +25,23 @@ final class PairGameSync {
     JSONObject latest(String type) throws Exception {
         String path="/rest/v1/couple_games?select=id,couple_id,game_type,host_id,status,state,version&couple_id=eq."+coupleId()+
                 "&game_type=eq."+type+"&status=in.(waiting,active)&order=updated_at.desc&limit=1";
-        JSONArray rows=(JSONArray)request("GET",path,null);
+        Object resp=request("GET",path,null);
+        JSONArray rows=resp instanceof JSONArray?(JSONArray)resp:new JSONArray();
         return rows.length()==0?null:rows.getJSONObject(0);
+    }
+
+    JSONArray waitingInvites() throws Exception {
+        String path="/rest/v1/couple_games?select=id,game_type,host_id,status,state,updated_at&couple_id=eq."+coupleId()+
+                "&host_id=neq."+userId()+"&status=eq.waiting&order=updated_at.desc&limit=20";
+        Object resp=request("GET",path,null);
+        return resp instanceof JSONArray?(JSONArray)resp:new JSONArray();
+    }
+
+    JSONArray history() throws Exception {
+        String path="/rest/v1/couple_games?select=id,game_type,status,state,updated_at&couple_id=eq."+coupleId()+
+                "&status=eq.finished&order=updated_at.desc&limit=300";
+        Object resp=request("GET",path,null);
+        return resp instanceof JSONArray?(JSONArray)resp:new JSONArray();
     }
 
     void create(String id,String type,JSONObject state) throws Exception {
@@ -45,16 +60,19 @@ final class PairGameSync {
     }
 
     JSONObject fetch(String id) throws Exception {
-        JSONArray rows=(JSONArray)request("GET","/rest/v1/couple_games?select=id,couple_id,game_type,host_id,status,state,version&id=eq."+id+"&limit=1",null);
+        Object resp=request("GET","/rest/v1/couple_games?select=id,couple_id,game_type,host_id,status,state,version&id=eq."+id+"&limit=1",null);
+        JSONArray rows=resp instanceof JSONArray?(JSONArray)resp:new JSONArray();
         return rows.length()==0?null:rows.getJSONObject(0);
     }
 
     private Object request(String method,String path,JSONObject body)throws Exception {
-        String base=System.getenv("SUPABASE_URL");if(base==null||base.isEmpty())base=BuildConfig.SUPABASE_URL;
-        String key=System.getenv("SUPABASE_PUBLISHABLE_KEY");if(key==null||key.isEmpty())key=BuildConfig.SUPABASE_PUBLISHABLE_KEY;
-        String savedUrl=prefs.getString("sb_url","");if(!savedUrl.isEmpty())base=savedUrl;
-        String savedKey=prefs.getString("sb_key","");if(!savedKey.isEmpty())key=savedKey;
-        HttpURLConnection c=(HttpURLConnection)new URL(base.replaceAll("/+$","")+path).openConnection();
+        String base=prefs.getString("sb_url","");
+        if(base==null||base.isEmpty())base=BuildConfig.SUPABASE_URL;
+        String key=prefs.getString("sb_key","");
+        if(key==null||key.isEmpty())key=BuildConfig.SUPABASE_PUBLISHABLE_KEY;
+        base=base.replaceAll("/+$","");
+        if(base.isEmpty())throw new Exception("URL Supabase не настроен");
+        HttpURLConnection c=(HttpURLConnection)new URL(base+path).openConnection();
         c.setRequestMethod(method);c.setConnectTimeout(10000);c.setReadTimeout(12000);
         c.setRequestProperty("apikey",key);c.setRequestProperty("Authorization","Bearer "+prefs.getString("sb_access",""));
         c.setRequestProperty("Accept","application/json");

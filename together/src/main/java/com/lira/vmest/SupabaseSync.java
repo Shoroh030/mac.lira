@@ -12,11 +12,31 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 
 /** Small REST bridge; it only uses the public client key and the signed-in user's JWT. */
 final class SupabaseSync {
     private final SharedPreferences prefs;
-    SupabaseSync(Context context) { prefs=context.getSharedPreferences("vmeste_data",Context.MODE_PRIVATE); }
+    private boolean projectChanged;
+    SupabaseSync(Context context) {
+        prefs=context.getSharedPreferences("vmeste_data",Context.MODE_PRIVATE);
+        String target=normalizeUrl(BuildConfig.SUPABASE_URL);
+        String previousBuild=prefs.getString("sb_build_url","");
+        String savedUrl=normalizeUrl(prefs.getString("sb_url",""));
+        boolean firstBuildBinding=previousBuild.isEmpty();
+        boolean savedUsesPreviousBuild=savedUrl.isEmpty()||savedUrl.equals(normalizeUrl(previousBuild));
+        boolean applyBuildBinding=firstBuildBinding||(!target.equals(normalizeUrl(previousBuild))&&savedUsesPreviousBuild);
+        SharedPreferences.Editor editor=prefs.edit().putString("sb_build_url",target);
+        if(applyBuildBinding){
+            boolean oldProject=!savedUrl.isEmpty()&&!savedUrl.equals(target)||hasAccountBinding();
+            editor.putString("sb_url",target).putString("sb_key",BuildConfig.SUPABASE_PUBLISHABLE_KEY);
+            if(oldProject){
+                clearAccountBinding(editor);
+                projectChanged=true;
+            }
+        }
+        editor.apply();
+    }
 
     boolean configured(){return !url().isEmpty()&&!key().isEmpty();}
     boolean signedIn(){return !prefs.getString("sb_access","").isEmpty();}
@@ -28,8 +48,36 @@ final class SupabaseSync {
     String userId(){return prefs.getString("sb_user","");}
 
     void saveProject(String projectUrl,String publishableKey){
-        prefs.edit().putString("sb_url",projectUrl.trim().replaceAll("/+$", ""))
-                .putString("sb_key",publishableKey.trim()).apply();
+        String normalized=normalizeUrl(projectUrl);
+        SharedPreferences.Editor editor=prefs.edit().putString("sb_url",normalized)
+                .putString("sb_key",publishableKey.trim());
+        if(!normalized.equals(url())){
+            clearAccountBinding(editor);
+            projectChanged=true;
+        }
+        editor.apply();
+    }
+
+    boolean projectChanged(){return projectChanged;}
+
+    private static String normalizeUrl(String value){
+        return value==null?"":value.trim().replaceAll("/+$","");
+    }
+
+    private static void clearAccountBinding(SharedPreferences.Editor editor){
+        editor.remove("sb_access").remove("sb_refresh").remove("sb_user")
+                .remove("sb_couple").remove("sb_invite").remove("pending_shared_sync")
+                .remove("partner_user_id").remove("partner_name").remove("partner_avatar")
+                .remove("partner_avatar_data").remove("partner_bio");
+    }
+
+    private boolean hasAccountBinding(){
+        return !prefs.getString("sb_access","").isEmpty()
+                ||!prefs.getString("sb_refresh","").isEmpty()
+                ||!prefs.getString("sb_user","").isEmpty()
+                ||!prefs.getString("sb_couple","").isEmpty()
+                ||!prefs.getString("sb_invite","").isEmpty()
+                ||!prefs.getString("pending_shared_sync","[]").trim().equals("[]");
     }
 
     String authenticate(String email,String password,boolean signUp)throws Exception{
@@ -61,9 +109,10 @@ final class SupabaseSync {
 
     void upsert(String keyName,JSONObject localItem)throws Exception{
         String couple=coupleId();if(couple.isEmpty())return;
+        if("notes".equals(keyName))return;
         String itemId=localItem.optString("id","");if(itemId.isEmpty())return;
         if("messages".equals(keyName)){
-            JSONObject row=new JSONObject();row.put("id",itemId);row.put("couple_id",couple);row.put("body",localItem.optString("title"));
+            JSONObject row=new JSONObject();row.put("id",itemId);row.put("couple_id",couple);row.put("body",localItem.optString("title"));row.put("sender_id",localItem.optString("sender_id",userId()));
             request("POST","/rest/v1/couple_messages?on_conflict=id",row,true,true);
         }else{
             String kind=kindFor(keyName);if(kind==null)return;
@@ -78,6 +127,13 @@ final class SupabaseSync {
         String couple=coupleId();if(couple.isEmpty()||id.isEmpty())return;
         request("DELETE","/rest/v1/shared_items?id=eq."+id+"&couple_id=eq."+couple,null,true);
     }
+
+    void deleteAccount()throws Exception{
+        request("POST","/functions/v1/delete-account",new JSONObject(),true);
+        prefs.edit().clear().apply();
+    }
+    void acknowledgeMessage(String messageId)throws Exception{JSONObject args=new JSONObject();args.put("message_id",messageId);request("POST","/rest/v1/rpc/ack_couple_message_delivery",args,true);}
+    void deleteAttachment(String path)throws Exception{String safe=path.replace("%","%25").replace(" ","%20");requestValue("DELETE","/storage/v1/object/couple-files/"+safe,null,true);}
 
     String uploadAttachment(android.net.Uri uri,String itemId,Context context)throws Exception{
         String couple=coupleId();if(couple.isEmpty())throw new Exception("Сначала подключите пару");
@@ -110,9 +166,11 @@ final class SupabaseSync {
 
     JSONArray fetchItems()throws Exception{
         String couple=coupleId();
-        Object items=requestValue("GET","/rest/v1/shared_items?select=*&couple_id=eq."+couple+"&order=created_at.asc",null,true);
-        Object messages=requestValue("GET","/rest/v1/couple_messages?select=*&couple_id=eq."+couple+"&order=created_at.asc",null,true);
-        JSONArray merged=new JSONArray();JSONArray a=(JSONArray)items,b=(JSONArray)messages;
+        Object itemsObj=requestValue("GET","/rest/v1/shared_items?select=*&couple_id=eq."+couple+"&order=created_at.asc",null,true);
+        Object messagesObj=requestValue("GET","/rest/v1/couple_messages?select=*&couple_id=eq."+couple+"&order=created_at.asc",null,true);
+        JSONArray a=itemsObj instanceof JSONArray?(JSONArray)itemsObj:new JSONArray();
+        JSONArray b=messagesObj instanceof JSONArray?(JSONArray)messagesObj:new JSONArray();
+        JSONArray merged=new JSONArray();
         for(int i=0;i<a.length();i++)merged.put(a.getJSONObject(i));
         for(int i=0;i<b.length();i++)merged.put(b.getJSONObject(i));
         return merged;
@@ -135,15 +193,54 @@ final class SupabaseSync {
         payload.put("id",row.optString("id"));return payload;
     }
 
-    void createWatchRoom(String roomId,String title)throws Exception{
-        JSONObject row=new JSONObject();row.put("id",roomId);row.put("couple_id",coupleId());
-        row.put("host_id",userId());row.put("title",title);
-        request("POST","/rest/v1/watch_rooms",row,true);
+    String startWatchRoom(String title)throws Exception{
+        JSONObject args=new JSONObject();args.put("target_couple_id",coupleId());args.put("target_title",title);
+        try {
+            Object response=requestValue("POST","/rest/v1/rpc/start_watch_room",args,true);
+            String roomId=response instanceof String?(String)response:String.valueOf(response);
+            roomId=roomId.replace("\"","").trim();
+            if(roomId.isEmpty()||"null".equals(roomId))throw new Exception("Сервер не вернул код новой комнаты");
+            return roomId;
+        } catch(Exception e) {
+            if(!isMissingRpc(e,"start_watch_room"))throw e;
+            android.util.Log.w("VmesteWatch","start_watch_room RPC is not deployed; using REST fallback");
+            JSONArray rooms=(JSONArray)requestValue("GET","/rest/v1/watch_rooms?select=id&couple_id=eq."+coupleId()+"&state=eq.active",null,true);
+            for(int i=0;i<rooms.length();i++) {
+                String staleId=rooms.getJSONObject(i).optString("id");
+                JSONObject patch=new JSONObject();patch.put("state","closed");
+                request("PATCH","/rest/v1/watch_rooms?id=eq."+staleId+"&couple_id=eq."+coupleId(),patch,true);
+            }
+            String roomId=UUID.randomUUID().toString();
+            JSONObject row=new JSONObject();row.put("id",roomId);row.put("couple_id",coupleId());
+            row.put("host_id",userId());row.put("title",title);row.put("state","active");
+            request("POST","/rest/v1/watch_rooms",row,true);
+            return roomId;
+        }
     }
 
     JSONObject getWatchRoom(String roomId)throws Exception{
         JSONArray rooms=(JSONArray)requestValue("GET","/rest/v1/watch_rooms?select=id,couple_id,host_id,title,state&id=eq."+roomId+"&limit=1",null,true);
         return rooms.length()==0?null:rooms.getJSONObject(0);
+    }
+
+    JSONObject latestWatchRoom()throws Exception{
+        JSONArray rows=(JSONArray)requestValue("GET","/rest/v1/watch_rooms?select=id,couple_id,host_id,title,state&couple_id=eq."+coupleId()+"&state=eq.active&order=created_at.desc&limit=1",null,true);
+        return rows.length()==0?null:rows.getJSONObject(0);
+    }
+
+    void closeWatchRoom(String roomId)throws Exception{
+        JSONObject args=new JSONObject();args.put("target_room_id",roomId);
+        try { requestValue("POST","/rest/v1/rpc/close_watch_room",args,true); }
+        catch(Exception e) {
+            if(!isMissingRpc(e,"close_watch_room"))throw e;
+            JSONObject patch=new JSONObject();patch.put("state","closed");
+            request("PATCH","/rest/v1/watch_rooms?id=eq."+roomId+"&couple_id=eq."+coupleId(),patch,true);
+        }
+    }
+
+    private boolean isMissingRpc(Exception error,String name) {
+        String message=error.getMessage();
+        return message!=null&&message.contains("PGRST202")&&message.contains(name);
     }
 
     void sendWatchSignal(String roomId,String kind,JSONObject payload)throws Exception{
@@ -174,13 +271,13 @@ final class SupabaseSync {
             entry.put("detail","Сообщение пары");entry.put("done",false);entry.put("sender_id",row.optString("sender_id"));merge(target,"messages",entry);return;
         }
         JSONObject payload=row.optJSONObject("payload");if(payload==null)return;
-        String key=payload.optString("app_key","");if(key.isEmpty())key=keyFor(row.optString("kind"),payload.optString("date"));if(key==null)return;
-        JSONObject entry=new JSONObject(payload.toString());entry.put("id",row.optString("id"));merge(target,key,entry);
+        String key=payload.optString("app_key","");if(key.isEmpty())key=keyFor(row.optString("kind"),payload.optString("date"));if(key==null||"notes".equals(key))return;
+        JSONObject entry=new JSONObject(payload.toString());entry.put("id",row.optString("id"));if(row.has("created_by"))entry.put("created_by",row.optString("created_by"));merge(target,key,entry);
     }
 
     private void merge(SharedPreferences target,String key,JSONObject entry)throws Exception{
         JSONArray old=new JSONArray(target.getString(key,"[]")),next=new JSONArray();String id=entry.optString("id");boolean found=false;
-        for(int i=0;i<old.length();i++){JSONObject item=old.optJSONObject(i);if(item==null)continue;if(id.equals(item.optString("id"))){next.put(entry);found=true;}else next.put(item);}
+        for(int i=0;i<old.length();i++){JSONObject item=old.optJSONObject(i);if(item==null)continue;if(id.equals(item.optString("id"))){if(!found)next.put(entry);found=true;}else next.put(item);}
         if(!found)next.put(entry);target.edit().putString(key,next.toString()).apply();
     }
 
@@ -190,7 +287,7 @@ final class SupabaseSync {
         if(key.startsWith("list_"))return "task";
         if("tasks".equals(key))return "task";if(key.startsWith("day_"))return "calendar_task";if("movie_room".equals(key))return "movie_room";
         if("events".equals(key))return "event";if("wishes".equals(key))return "wish";
-        if("notes".equals(key))return "note";if("gifts".equals(key))return "gift";
+        if("notes".equals(key)||"stories".equals(key)||"partner_card".equals(key))return "note";if("gifts".equals(key))return "gift";
         if("capsule".equals(key))return "time_capsule";if("votes".equals(key))return "vote";
         if("files".equals(key))return "file";if("loyalty".equals(key))return "loyalty_card";
         if("plans".equals(key))return "plan";return null;
@@ -208,6 +305,9 @@ final class SupabaseSync {
     }
     private Object requestValue(String method,String path,JSONObject body,boolean auth)throws Exception{return requestValue(method,path,body,auth,false);}
     private Object requestValue(String method,String path,JSONObject body,boolean auth,boolean upsert)throws Exception{
+        return requestValue(method,path,body,auth,upsert,true);
+    }
+    private Object requestValue(String method,String path,JSONObject body,boolean auth,boolean upsert,boolean retryAuth)throws Exception{
         HttpURLConnection c=(HttpURLConnection)new URL(url()+path).openConnection();c.setRequestMethod(method);c.setConnectTimeout(12000);c.setReadTimeout(16000);
         c.setRequestProperty("apikey",key());c.setRequestProperty("Accept","application/json");
         if(auth)c.setRequestProperty("Authorization","Bearer "+prefs.getString("sb_access",""));
@@ -217,8 +317,15 @@ final class SupabaseSync {
         int status=c.getResponseCode();InputStream stream=status>=400?c.getErrorStream():c.getInputStream();
         ByteArrayOutputStream bytes=new ByteArrayOutputStream();if(stream!=null){byte[] buf=new byte[4096];int n;while((n=stream.read(buf))!=-1)bytes.write(buf,0,n);stream.close();}
         String response=new String(bytes.toByteArray(),StandardCharsets.UTF_8);c.disconnect();
+        if(status==401&&auth&&retryAuth&&!prefs.getString("sb_refresh","").isEmpty()){refreshSession();return requestValue(method,path,body,true,upsert,false);}
         if(status<200||status>=300)throw new Exception("HTTP "+status+": "+response);
         if(response.isEmpty())return new JSONObject();char first=response.charAt(0);
         if(first=='[')return new JSONArray(response);if(first=='{')return new JSONObject(response);if(first=='\"')return response.substring(1,response.length()-1);return response;
+    }
+    private void refreshSession()throws Exception{
+        JSONObject args=new JSONObject();args.put("refresh_token",prefs.getString("sb_refresh",""));
+        JSONObject result=request("POST","/auth/v1/token?grant_type=refresh_token",args,false);
+        String access=result.optString("access_token","");if(access.isEmpty())throw new Exception("Войдите в аккаунт снова");
+        JSONObject user=result.optJSONObject("user");prefs.edit().putString("sb_access",access).putString("sb_refresh",result.optString("refresh_token",prefs.getString("sb_refresh",""))).putString("sb_user",user==null?userId():user.optString("id",userId())).apply();
     }
 }

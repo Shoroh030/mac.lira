@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "MyAsistent"
-include ':app'
+include ':app', ':together'
