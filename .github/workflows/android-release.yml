@@ -27,37 +27,28 @@ jobs:
           KEY_ALIAS: ${{ secrets.VMEST_KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.VMEST_KEY_PASSWORD }}
         run: |
-          if [ -z "$KEYSTORE_BASE64" ] && [ -z "$KEYSTORE_PASSWORD" ] && [ -z "$KEY_ALIAS" ] && [ -z "$KEY_PASSWORD" ]; then
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "Android signing secrets are not configured; publish an already-signed APK manually."
-            exit 0
-          fi
-          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
-            echo "Android release signing secrets are not fully configured." >&2
-            exit 1
-          fi
           version="${GITHUB_REF_NAME#v}"
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
             echo "Release tags must use vMAJOR.MINOR or vMAJOR.MINOR.PATCH." >&2
+            exit 1
+          fi
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "Configure VMEST_KEYSTORE_BASE64, VMEST_KEYSTORE_PASSWORD, VMEST_KEY_ALIAS and VMEST_KEY_PASSWORD in repository Actions secrets before creating a release tag." >&2
             exit 1
           fi
           echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/vmeste-release.keystore"
           echo "VMEST_KEYSTORE_PATH=$RUNNER_TEMP/vmeste-release.keystore" >> "$GITHUB_ENV"
           echo "APP_VERSION=$version" >> "$GITHUB_ENV"
           echo "APP_VERSION_CODE=$((1000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
-          echo "enabled=true" >> "$GITHUB_OUTPUT"
       - name: Build signed APK
-        if: steps.signing.outputs.enabled == 'true'
         env:
           VMEST_KEYSTORE_PASSWORD: ${{ secrets.VMEST_KEYSTORE_PASSWORD }}
           VMEST_KEY_ALIAS: ${{ secrets.VMEST_KEY_ALIAS }}
           VMEST_KEY_PASSWORD: ${{ secrets.VMEST_KEY_PASSWORD }}
         run: ./desktop/gradlew -p . :together:assembleRelease
       - name: Name APK for in-app updater
-        if: steps.signing.outputs.enabled == 'true'
         run: cp together/build/outputs/apk/release/together-release.apk "together/build/outputs/apk/release/together-${APP_VERSION}.apk"
       - name: Verify release signing certificate
-        if: steps.signing.outputs.enabled == 'true'
         shell: bash
         run: |
           signer="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
@@ -68,7 +59,6 @@ jobs:
             exit 1
           fi
       - name: Publish APK release
-        if: steps.signing.outputs.enabled == 'true'
         uses: softprops/action-gh-release@v2
         with:
           name: Вместе ${{ github.ref_name }}
@@ -76,5 +66,8 @@ jobs:
           overwrite_files: true
           files: together/build/outputs/apk/release/together-${{ env.APP_VERSION }}.apk
       - name: Remove temporary signing key
-        if: always() && steps.signing.outputs.enabled == 'true'
-        run: rm -f "$VMEST_KEYSTORE_PATH"
+        if: always()
+        run: |
+          if [ -n "$VMEST_KEYSTORE_PATH" ]; then
+            rm -f "$VMEST_KEYSTORE_PATH"
+          fi
