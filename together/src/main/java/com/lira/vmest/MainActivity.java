@@ -25,6 +25,9 @@ import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.Button;
 import android.widget.ImageView;
+import android.widget.ArrayAdapter;
+import android.widget.SeekBar;
+import android.widget.Spinner;
 
 import com.google.zxing.BarcodeFormat;
 import com.google.zxing.integration.android.IntentResult;
@@ -73,12 +76,16 @@ public class MainActivity extends Activity {
     private android.media.MediaRecorder chatRecorder;
     private java.io.File chatRecording;
     private boolean movieRoomFetchInFlight;
+    private boolean pendingLoyaltyScan;
     private String pendingPhotoKey = "", pendingPhotoItemId = "";
     private String pendingStoryCaption = "";
     private String pendingSharedText = "";
     private Uri pendingSharedUri;
     private boolean chatAutoScroll = true;
     private int chatScrollY;
+    private int chatNewMessageCount;
+    private Runnable chatRefreshRunnable;
+    private boolean activityResumed;
     private Runnable sharedTimerTick, sharedTimerPoll;
     private Calendar visibleMonth = Calendar.getInstance();
     private Calendar selectedDay = Calendar.getInstance();
@@ -98,9 +105,15 @@ public class MainActivity extends Activity {
             "💌  Пригласить партнёра", "📷  Истории для двоих", "💗  Карта партнёра"
     };
     private static final String[] TUNES={"Ода к радости","Вальс цветов","Маленькая ночная серенада","Щелкунчик: Танец феи Драже"};
+    private static final int MAX_CHAT_ATTACHMENT_BYTES=12*1024*1024;
+    private static final String[] LOYALTY_FORMATS = {
+            "CODE_128", "CODE_39", "EAN_13", "EAN_8", "UPC_A", "UPC_E",
+            "ITF", "CODABAR", "QR_CODE", "DATA_MATRIX"
+    };
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        pendingLoyaltyScan = state != null && state.getBoolean("pending_loyalty_scan", false);
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
@@ -211,6 +224,7 @@ public class MainActivity extends Activity {
         android.graphics.Paint paint=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG|android.graphics.Paint.FILTER_BITMAP_FLAG);paint.setShader(new android.graphics.BitmapShader(square,android.graphics.Shader.TileMode.CLAMP,android.graphics.Shader.TileMode.CLAMP));canvas.drawCircle(size/2f,size/2f,size/2f,paint);return circle;
     }
     private boolean setAvatarPicture(ImageView view,String uri,int size){
+        view.setBackground(shape(PALE,Math.max(1,size/2)));view.setClipToOutline(true);
         if(uri==null||uri.isEmpty()){view.setImageBitmap(null);return false;}try{android.graphics.Bitmap bitmap;
             if(uri.startsWith("data:image/")){byte[] bytes=android.util.Base64.decode(uri.substring(uri.indexOf(',')+1),android.util.Base64.DEFAULT);android.graphics.BitmapFactory.Options opts=new android.graphics.BitmapFactory.Options();opts.inSampleSize=2;bitmap=android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length,opts);}
             else if(uri.startsWith("file://")){java.io.File f=new java.io.File(Uri.parse(uri).getPath());if(!f.exists()){view.setImageBitmap(null);return false;}android.graphics.BitmapFactory.Options bounds=new android.graphics.BitmapFactory.Options();bounds.inJustDecodeBounds=true;try(java.io.InputStream in=new java.io.FileInputStream(f)){android.graphics.BitmapFactory.decodeStream(in,null,bounds);}int sample=1;while(bounds.outWidth>0&&bounds.outHeight>0&&(bounds.outWidth/sample>1024||bounds.outHeight/sample>1024))sample*=2;android.graphics.BitmapFactory.Options opts=new android.graphics.BitmapFactory.Options();opts.inSampleSize=sample;try(java.io.InputStream in=new java.io.FileInputStream(f)){bitmap=android.graphics.BitmapFactory.decodeStream(in,null,opts);}}
@@ -259,7 +273,7 @@ public class MainActivity extends Activity {
         header.addView(brand, new LinearLayout.LayoutParams(0, -2, 1));
         String profileName = prefs.getString("profile_name", "").trim();
         String avatarEmoji = prefs.getString("profile_avatar", "♡");
-        String avatarUri = prefs.getString("profile_avatar_uri","");if(avatarUri.isEmpty())avatarUri=prefs.getString("profile_avatar_data","");
+        String avatarUri = localAvatarUri();
         LinearLayout avatars = new LinearLayout(this); avatars.setOrientation(LinearLayout.HORIZONTAL); avatars.setGravity(Gravity.CENTER); avatars.setPadding(dp(4),0,dp(4),0);
         ImageView avatarImg = new ImageView(this); avatarImg.setScaleType(ImageView.ScaleType.CENTER_CROP); avatarImg.setBackgroundColor(0xFFE8E0EC); avatarImg.setClipToOutline(true);
         boolean hasProfilePhoto=setAvatarPicture(avatarImg,avatarUri,24);
@@ -599,7 +613,7 @@ public class MainActivity extends Activity {
         renderTimeCapsules();
     }
     private void renderLoyaltyCardsTab(){
-        renderPartnerCard();
+        renderLoyaltyCards();
     }
     private void renderVotingTab(){
         renderVoting("votes_activities","Чем заняться","Выберите занятие для ближайшего совместного времени");
@@ -624,6 +638,10 @@ public class MainActivity extends Activity {
     private void renderFeature() {
         TextView back = text("‹  Назад", 14, PURPLE, true); back.setPadding(0, dp(5), 0, dp(14)); body.addView(back);
         back.setOnClickListener(v -> { feature = null; render(); });
+        if (feature.contains("Карты")) {
+            renderLoyaltyCards();
+            return;
+        }
         heading(feature, description(feature));
         if ("shared_timer".equals(feature)) {
             renderSharedTimer();
@@ -667,12 +685,372 @@ public class MainActivity extends Activity {
         } else if (feature.contains("Чат")) {
             renderChat();
         } else {
-            if (feature.contains("Карты")) simpleCard("🔒", "Не храните реквизиты банковских карт", "Для безопасности добавляйте только название программы и штрихкод карты лояльности.", null);
             if (feature.contains("Капсула")) simpleCard("⏳", "Послание для будущих вас", "Добавьте текст — откройте его в особенный день.", null);
-            TextView add = pill(feature.contains("Капсула") ? "＋  Написать послание" : feature.contains("Карты") ? "＋  Добавить карту лояльности" : feature.contains("Голосование") ? "＋  Предложить вариант" : "＋  Добавить", PURPLE);
-            body.addView(add); add.setOnClickListener(v -> addDialog(keyFor(feature), feature.contains("Карты") ? "Название карты или штрихкод" : feature.contains("Капсула") ? "Послание в будущее" : feature.contains("Голосование") ? "Вариант для голосования" : feature));
+            TextView add = pill(feature.contains("Капсула") ? "＋  Написать послание" : feature.contains("Голосование") ? "＋  Предложить вариант" : "＋  Добавить", PURPLE);
+            body.addView(add); add.setOnClickListener(v -> addDialog(keyFor(feature), feature.contains("Капсула") ? "Послание в будущее" : feature.contains("Голосование") ? "Вариант для голосования" : feature));
             renderEntries(keyFor(feature));
         }
+
+    }
+
+    private void renderLoyaltyCards() {
+            heading("Карты лояльности", "Сканируйте штрихкод или QR либо введите номер вручную.");
+            TextView privacy = text("Камера считывает только код и не сохраняет фото. Поддерживаются EAN/UPC, Code 128/39, ITF/Codabar, QR и Data Matrix; незнакомый формат можно ввести вручную. Данные синхронизируются с подключённой парой. Не сканируйте платёжные карты и не вводите CVV.", 13, MUTED, false);
+            privacy.setPadding(0, 0, 0, dp(12));
+            body.addView(privacy);
+            LinearLayout actions = new LinearLayout(this);
+            actions.setGravity(Gravity.CENTER_VERTICAL);
+            TextView scan = pill("⌗  Сканировать", PURPLE);
+            TextView manual = pill("＋  Ввести номер", PURPLE);
+            scan.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+            manual.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+            actions.addView(scan);
+            actions.addView(manual);
+            body.addView(actions);
+            scan.setOnClickListener(v -> startLoyaltyScan());
+            manual.setOnClickListener(v -> showManualLoyaltyCardDialog());
+
+            JSONArray cards = read("loyalty");
+            if (cards.length() == 0) {
+                TextView empty = text("Добавьте первую карту — тогда любой из вас сможет открыть её и показать код на кассе.", 14, MUTED, false);
+                empty.setGravity(Gravity.CENTER);
+                empty.setPadding(dp(18), dp(24), dp(18), dp(24));
+                body.addView(empty);
+                return;
+            }
+            for (int i = cards.length() - 1; i >= 0; i--) {
+                JSONObject item = cards.optJSONObject(i);
+                if (item != null) renderLoyaltyCard(item);
+            }
+        }
+
+        private void renderLoyaltyCard(JSONObject item) {
+            String code = item.optString("detail", "");
+            String format = loyaltyFormat(item);
+            LinearLayout pass = card();
+            pass.setBackground(shape(softDark ? 0xFF39333E : 0xFFFFFFFF, 20));
+            LinearLayout top = new LinearLayout(this);
+            top.setGravity(Gravity.CENTER_VERTICAL);
+            pass.addView(top);
+            LinearLayout details = column();
+            details.addView(text(item.optString("title", "Карта лояльности"), 17, INK, true));
+            TextView kind = text(loyaltyFormatLabel(format), 11, MUTED, false);
+            LinearLayout.LayoutParams kindParams = new LinearLayout.LayoutParams(-1, -2);
+            kindParams.topMargin = dp(3);
+            details.addView(kind, kindParams);
+            top.addView(details, new LinearLayout.LayoutParams(0, -2, 1));
+            TextView show = text("Показать  ›", 13, PURPLE, true);
+            top.addView(show);
+            try {
+                ImageView preview = new ImageView(this);
+                preview.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                preview.setBackground(shape(0xFFFFFFFF, 10));
+                preview.setPadding(dp(8), dp(6), dp(8), dp(6));
+                preview.setContentDescription("Предпросмотр кода карты " + item.optString("title"));
+                preview.setImageBitmap(loyaltyBarcodeBitmap(code, format, dp(340), dp(90)));
+                LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(-1, dp(78));
+                previewParams.topMargin = dp(12);
+                pass.addView(preview, previewParams);
+            } catch (Exception e) {
+                TextView unavailable = text("Код не удалось построить · нажмите, чтобы исправить", 12, MUTED, false);
+                unavailable.setPadding(0, dp(10), 0, 0);
+                pass.addView(unavailable);
+            }
+            pass.setOnClickListener(v -> showLoyaltyPass(item));
+            pass.setOnLongClickListener(v -> {
+                new AlertDialog.Builder(this).setItems(new String[]{"Редактировать карту", "Удалить карту"}, (dialog, which) -> {
+                    if (which == 0) showLoyaltyEditor(item);
+                    else new AlertDialog.Builder(this).setMessage("Удалить карту «" + item.optString("title") + "» у вас обоих?")
+                            .setNegativeButton("Отмена", null)
+                            .setPositiveButton("Удалить", (confirm, choice) -> {
+                                removeItem("loyalty", item.optString("id"));
+                                render();
+                            }).show();
+                }).show();
+                return true;
+            });
+        }
+
+        private String loyaltyFormat(JSONObject item) {
+            String format = item.optString("barcode_format", "");
+            return LoyaltyBarcode.supports(format) ? format : BarcodeFormat.CODE_128.name();
+        }
+
+        private String loyaltyFormatLabel(String format) {
+            if (BarcodeFormat.QR_CODE.name().equals(format)) return "QR-код";
+            if (BarcodeFormat.DATA_MATRIX.name().equals(format)) return "Data Matrix";
+            return "Штрихкод · " + format.replace('_', ' ');
+        }
+
+        private void startLoyaltyScan() {
+            pendingLoyaltyScan = true;
+            ArrayList<String> formats = new ArrayList<>();
+            for (BarcodeFormat format : LoyaltyBarcode.formats()) formats.add(format.name());
+            try {
+                new IntentIntegrator(this)
+                        .setDesiredBarcodeFormats(formats)
+                        .setPrompt("Только код карты лояльности — не сканируйте банковские карты")
+                        .setBeepEnabled(false)
+                        .setOrientationLocked(false)
+                        .initiateScan();
+            } catch (RuntimeException e) {
+                pendingLoyaltyScan = false;
+                toast("Не удалось открыть сканер: " + e.getMessage());
+            }
+        }
+
+        private void showManualLoyaltyCardDialog() {
+            showLoyaltyEditor(null);
+        }
+
+        private void showLoyaltyEditor(JSONObject editing) {
+            LinearLayout form = column();
+            form.setPadding(dp(22), dp(8), dp(22), dp(4));
+            EditText title = new EditText(this);
+            title.setSingleLine(true);
+            title.setHint("Название программы, например «Пеликан»");
+            if (editing != null) title.setText(editing.optString("title", ""));
+            form.addView(title);
+            EditText code = new EditText(this);
+            code.setSingleLine(true);
+            code.setHint("Номер или содержимое штрихкода");
+            code.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+            if (editing != null) code.setText(editing.optString("detail", ""));
+            form.addView(code);
+            String[] labels = new String[LOYALTY_FORMATS.length];
+            for (int i = 0; i < LOYALTY_FORMATS.length; i++) labels[i] = loyaltyFormatLabel(LOYALTY_FORMATS[i]);
+            Spinner format = new Spinner(this);
+            ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, labels);
+            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+            format.setAdapter(adapter);
+            String selectedFormat = editing == null ? BarcodeFormat.CODE_128.name() : loyaltyFormat(editing);
+            for (int i = 0; i < LOYALTY_FORMATS.length; i++) {
+                if (LOYALTY_FORMATS[i].equals(selectedFormat)) {
+                    format.setSelection(i);
+                    break;
+                }
+            }
+            form.addView(format);
+            TextView warning = text("Только карты лояльности. Не вводите номер банковской карты, срок действия или CVV. Код будет доступен обоим участникам пары.", 12, MUTED, false);
+            warning.setPadding(0, dp(8), 0, 0);
+            form.addView(warning);
+            AlertDialog dialog = new AlertDialog.Builder(this).setTitle(editing == null ? "Добавить карту" : "Изменить карту")
+                    .setView(form).setNegativeButton("Отмена", null).setPositiveButton("Сохранить", null).create();
+            dialog.setOnShowListener(v -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button -> {
+                String name = title.getText().toString().trim();
+                if (name.isEmpty()) {
+                    title.setError("Введите название программы");
+                    return;
+                }
+                try {
+                    String chosenFormat = LOYALTY_FORMATS[format.getSelectedItemPosition()];
+                    if (editing == null) {
+                        saveLoyaltyCard(name, code.getText().toString(), chosenFormat);
+                    } else {
+                        String normalizedCode = LoyaltyBarcode.validate(code.getText().toString(), chosenFormat);
+                        LoyaltyBarcode.encode(normalizedCode, chosenFormat, 720, BarcodeFormat.QR_CODE.name().equals(chosenFormat) ? 720 : 220);
+                        JSONObject updated = new JSONObject(editing.toString());
+                        updated.put("title", name);
+                        updated.put("detail", normalizedCode);
+                        updated.put("barcode_format", chosenFormat);
+                        replaceItem("loyalty", updated);
+                        render();
+                        toast("Изменения карты сохранены");
+                    }
+                    dialog.dismiss();
+                } catch (Exception e) {
+                    code.setError(e.getMessage());
+                }
+            }));
+            dialog.show();
+        }
+
+        private void promptScannedLoyaltyCard(String contents, String formatName) {
+            if (!LoyaltyBarcode.supports(formatName)) {
+                toast("Этот формат кода пока не поддерживается. Попробуйте ввести номер вручную.");
+                return;
+            }
+            EditText title = new EditText(this);
+            title.setSingleLine(true);
+            title.setHint("Название программы лояльности");
+            TextView explanation = text("Распознан: " + loyaltyFormatLabel(formatName) + ". Сохранятся название, код и формат; доступ будет у вас обоих.", 13, MUTED, false);
+            LinearLayout form = column();
+            form.setPadding(dp(22), dp(8), dp(22), dp(4));
+            form.addView(explanation);
+            LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(-1, -2);
+            titleParams.topMargin = dp(8);
+            form.addView(title, titleParams);
+            AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Сохранить карту")
+                    .setView(form).setNegativeButton("Отмена", null).setPositiveButton("Сохранить", null).create();
+            dialog.setOnShowListener(v -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button -> {
+                String name = title.getText().toString().trim();
+                if (name.isEmpty()) {
+                    title.setError("Введите название программы");
+                    return;
+                }
+                try {
+                    saveLoyaltyCard(name, contents, formatName);
+                    dialog.dismiss();
+                } catch (Exception e) {
+                    toast("Не удалось сохранить код: " + e.getMessage());
+                }
+            }));
+            dialog.show();
+        }
+
+        private void saveLoyaltyCard(String title, String rawCode, String formatName) throws Exception {
+            if (title == null || title.trim().isEmpty()) throw new IllegalArgumentException("Введите название программы");
+            String code = LoyaltyBarcode.validate(rawCode, formatName);
+            LoyaltyBarcode.encode(code, formatName, 720, BarcodeFormat.QR_CODE.name().equals(formatName) ? 720 : 220);
+            JSONObject item = new JSONObject();
+            item.put("id", UUID.randomUUID().toString());
+            item.put("title", title.trim());
+            item.put("detail", code);
+            item.put("barcode_format", formatName);
+            JSONArray rows = read("loyalty");
+            rows.put(item);
+            save("loyalty", rows);
+            syncItem("loyalty", item);
+            render();
+            toast(sync.ready() ? "Карта сохранена; синхронизация с парой выполняется" : "Карта сохранена на устройстве; синхронизируется после подключения пары");
+        }
+
+        private android.graphics.Bitmap loyaltyBarcodeBitmap(String code, String format, int width, int height) throws WriterException {
+            return loyaltyBarcodeBitmap(code, format, width, height, android.graphics.Color.BLACK, android.graphics.Color.WHITE);
+        }
+
+        private android.graphics.Bitmap loyaltyBarcodeBitmap(String code, String format, int width, int height,
+                                                              int foregroundColor, int backgroundColor) throws WriterException {
+            BitMatrix matrix = LoyaltyBarcode.encode(code, format, Math.max(1, width), Math.max(1, height));
+            int[] pixels = new int[matrix.getWidth() * matrix.getHeight()];
+            for (int y = 0; y < matrix.getHeight(); y++) {
+                int row = y * matrix.getWidth();
+                for (int x = 0; x < matrix.getWidth(); x++) pixels[row + x] = matrix.get(x, y) ? foregroundColor : backgroundColor;
+            }
+            return android.graphics.Bitmap.createBitmap(pixels, matrix.getWidth(), matrix.getHeight(), android.graphics.Bitmap.Config.ARGB_8888);
+        }
+
+        private void showLoyaltyPass(JSONObject item) {
+            String code = item.optString("detail", "");
+            String format = loyaltyFormat(item);
+            boolean qr = BarcodeFormat.QR_CODE.name().equals(format) || BarcodeFormat.DATA_MATRIX.name().equals(format);
+            android.util.DisplayMetrics metrics = getResources().getDisplayMetrics();
+            int maxWidth = Math.max(dp(160), Math.min(dp(380), metrics.widthPixels - dp(64)));
+            int initialWidth = Math.min(dp(300), maxWidth);
+            ScrollView scroller = new ScrollView(this);
+            LinearLayout panel = column();
+            panel.setPadding(dp(14), dp(4), dp(14), dp(8));
+            scroller.addView(panel);
+            TextView name = text(item.optString("title", "Карта лояльности"), 19, INK, true);
+            name.setGravity(Gravity.CENTER);
+            panel.addView(name);
+            TextView badge = text(loyaltyFormatLabel(format) + " · готово для предъявления", 12, MUTED, false);
+            badge.setGravity(Gravity.CENTER);
+            LinearLayout.LayoutParams badgeParams = new LinearLayout.LayoutParams(-1, -2);
+            badgeParams.topMargin = dp(4);
+            panel.addView(badge, badgeParams);
+            ImageView codeImage = new ImageView(this);
+            codeImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            codeImage.setBackgroundColor(0xFFFFFFFF);
+            codeImage.setContentDescription("Код карты " + item.optString("title"));
+            LinearLayout.LayoutParams imageParams = new LinearLayout.LayoutParams(initialWidth, qr ? initialWidth : dp(120));
+            imageParams.gravity = Gravity.CENTER_HORIZONTAL;
+            imageParams.topMargin = dp(12);
+            panel.addView(codeImage, imageParams);
+            TextView value = text(code, 12, INK, false);
+            value.setTextIsSelectable(true);
+            value.setGravity(Gravity.CENTER);
+            value.setPadding(0, dp(8), 0, 0);
+            panel.addView(value);
+            TextView sizeLabel = text("Размер кода", 12, MUTED, false);
+            sizeLabel.setPadding(0, dp(14), 0, 0);
+            panel.addView(sizeLabel);
+            SeekBar size = new SeekBar(this);
+            size.setMax(Math.max(0, maxWidth - dp(160)));
+            size.setProgress(Math.max(0, initialWidth - dp(160)));
+            panel.addView(size);
+            TextView contrastLabel = text("Контраст · максимум по умолчанию", 12, MUTED, false);
+            contrastLabel.setPadding(0, dp(8), 0, 0);
+            panel.addView(contrastLabel);
+            SeekBar contrast = new SeekBar(this);
+            contrast.setMax(30);
+            contrast.setProgress(30);
+            panel.addView(contrast);
+            TextView brightnessLabel = text("Яркость экрана", 12, MUTED, false);
+            panel.addView(brightnessLabel);
+            SeekBar brightness = new SeekBar(this);
+            brightness.setMax(40);
+            brightness.setProgress(25);
+            panel.addView(brightness);
+            TextView lightButton = text("☀  Максимальная яркость", 13, PURPLE, true);
+            lightButton.setGravity(Gravity.CENTER);
+            lightButton.setMinHeight(dp(44));
+            panel.addView(lightButton);
+
+            Runnable updateCode = () -> {
+                int width = dp(160) + size.getProgress();
+                int height = qr ? width : Math.max(dp(88), width / 3);
+                int gray = (contrast.getMax() - contrast.getProgress()) * 3;
+                try {
+                    int foreground = android.graphics.Color.rgb(gray, gray, gray);
+                    codeImage.setImageBitmap(loyaltyBarcodeBitmap(code, format, width * 2, height * 2, foreground, android.graphics.Color.WHITE));
+                    ViewGroup.LayoutParams params = codeImage.getLayoutParams();
+                    params.width = width;
+                    params.height = height;
+                    codeImage.setLayoutParams(params);
+                } catch (Exception e) {
+                    toast("Не удалось построить код: " + e.getMessage());
+                }
+            };
+            updateCode.run();
+            size.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateCode.run(); }
+                @Override public void onStartTrackingTouch(SeekBar seekBar) { }
+                @Override public void onStopTrackingTouch(SeekBar seekBar) { }
+            });
+            contrast.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { updateCode.run(); }
+                @Override public void onStartTrackingTouch(SeekBar seekBar) { }
+                @Override public void onStopTrackingTouch(SeekBar seekBar) { }
+            });
+            AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Показать на кассе")
+                    .setView(scroller).setPositiveButton("Готово", null).create();
+            final float originalBrightness = getWindow().getAttributes().screenBrightness;
+            Runnable setBrightness = () -> {
+                android.view.WindowManager.LayoutParams params = getWindow().getAttributes();
+                params.screenBrightness = 0.60f + (brightness.getProgress() / 100f);
+                getWindow().setAttributes(params);
+            };
+            brightness.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { setBrightness.run(); }
+                @Override public void onStartTrackingTouch(SeekBar seekBar) { }
+                @Override public void onStopTrackingTouch(SeekBar seekBar) { }
+            });
+            lightButton.setOnClickListener(v -> {
+                brightness.setProgress(40);
+                setBrightness.run();
+            });
+            dialog.setOnDismissListener(d -> {
+                android.view.WindowManager.LayoutParams params = getWindow().getAttributes();
+                params.screenBrightness = originalBrightness;
+                getWindow().setAttributes(params);
+            });
+            dialog.show();
+        }
+
+    private void onLoyaltyScanResult(Intent data) {
+            pendingLoyaltyScan = false;
+            IntentResult result = IntentIntegrator.parseActivityResult(IntentIntegrator.REQUEST_CODE, RESULT_OK, data);
+            if (result == null || result.getContents() == null) {
+                toast("Код не распознан или сканирование отменено. Неизвестный формат можно ввести вручную.");
+                return;
+            }
+            String format = result.getFormatName();
+            if (!LoyaltyBarcode.supports(format)) {
+                toast("Формат " + (format == null ? "" : format) + " пока не поддерживается. Попробуйте ввести номер вручную.");
+                return;
+            }
+            promptScannedLoyaltyCard(result.getContents(), format);
     }
 
     private void renderVoting(String storeKey,String title,String subtitle) {
@@ -751,7 +1129,8 @@ public class MainActivity extends Activity {
             catch(Exception e){runOnUiThread(()->toast("Не удалось открыть фото истории: "+e.getMessage()));}});
     }
     private void renderPartnerCard(){
-        JSONArray rows=read("partner_card");JSONObject card=rows.length()>0?rows.optJSONObject(0):new JSONObject();String name=prefs.getString("partner_name","Партнёр");LinearLayout hero=card();hero.setBackground(shape(softDark?0xFF49394F:0xFFEFE5F6,24));LinearLayout identity=new LinearLayout(this);identity.setGravity(Gravity.CENTER_VERTICAL);hero.addView(identity);ImageView photo=new ImageView(this);photo.setScaleType(ImageView.ScaleType.CENTER_CROP);photo.setBackground(shape(PALE,32));boolean hasPhoto=setAvatarPicture(photo,prefs.getString("partner_avatar_data",""),64);identity.addView(photo,new LinearLayout.LayoutParams(dp(64),dp(64)));TextView fallback=text(prefs.getString("partner_avatar","♡"),24,PURPLE,true);fallback.setGravity(Gravity.CENTER);fallback.setBackground(shape(PALE,32));fallback.setVisibility(hasPhoto?View.GONE:View.VISIBLE);identity.addView(fallback,new LinearLayout.LayoutParams(dp(64),dp(64)));LinearLayout details=column();details.setPadding(dp(12),0,0,0);details.addView(text("💗  Карта партнёра",12,PURPLE,true));details.addView(text(name,24,INK,true));identity.addView(details,new LinearLayout.LayoutParams(0,-2,1));String bio=prefs.getString("partner_bio","");if(!bio.isEmpty())hero.addView(text(bio,14,MUTED,false));
+        JSONArray rows=read("partner_card");JSONObject card=rows.length()>0?rows.optJSONObject(0):new JSONObject();String name=prefs.getString("partner_name","Партнёр");LinearLayout hero=card();hero.setBackground(shape(softDark?0xFF49394F:0xFFEFE5F6,24));LinearLayout identity=new LinearLayout(this);identity.setGravity(Gravity.CENTER_VERTICAL);hero.addView(identity);ImageView photo=new ImageView(this);photo.setScaleType(ImageView.ScaleType.CENTER_CROP);photo.setBackground(shape(PALE,32));        String partnerAvatar=prefs.getString("partner_avatar_uri","");if(partnerAvatar.isEmpty())partnerAvatar=prefs.getString("partner_avatar_data","");
+        boolean hasPhoto=setAvatarPicture(photo,partnerAvatar,64);identity.addView(photo,new LinearLayout.LayoutParams(dp(64),dp(64)));TextView fallback=text(prefs.getString("partner_avatar","♡"),24,PURPLE,true);fallback.setGravity(Gravity.CENTER);fallback.setBackground(shape(PALE,32));fallback.setVisibility(hasPhoto?View.GONE:View.VISIBLE);identity.addView(fallback,new LinearLayout.LayoutParams(dp(64),dp(64)));LinearLayout details=column();details.setPadding(dp(12),0,0,0);details.addView(text("💗  Карта партнёра",12,PURPLE,true));details.addView(text(name,24,INK,true));identity.addView(details,new LinearLayout.LayoutParams(0,-2,1));String bio=prefs.getString("partner_bio","");if(!bio.isEmpty())hero.addView(text(bio,14,MUTED,false));
         String[][] sections={{"Увлечения и хобби","hobbies","🎨"},{"Что любит","loves","♡"},{"Что не любит","dislikes","☁"},{"Как поддержать","comfort","🤍"},{"Важные даты","dates","🗓"},{"Мечты и идеи подарков","dreams","✨"}};
         for(String[] section:sections){LinearLayout block=card();block.addView(text(section[2]+"  "+section[0],15,PURPLE,true));String value=card.optString(section[1],"");block.addView(text(value.isEmpty()?"Пока не заполнено · нажмите, чтобы добавить":value,14,value.isEmpty()?MUTED:INK,false));block.setOnClickListener(v->editPartnerFact(card,section[0],section[1]));}
         TextView add=pill("＋ Добавить ещё о партнёре",PURPLE);body.addView(add);add.setOnClickListener(v->editPartnerFact(card,"Новая заметка о партнёре","notes_about"));
@@ -798,8 +1177,13 @@ public class MainActivity extends Activity {
     }
     private void flushPendingSync(){if(!sync.ready())return;JSONArray pending;try{pending=new JSONArray(prefs.getString("pending_shared_sync","[]"));}catch(Exception e){pending=new JSONArray();}if(pending.length()==0)return;final JSONArray batch=pending;network.execute(()->{for(int i=0;i<batch.length();i++){JSONObject entry=batch.optJSONObject(i);if(entry==null)continue;try{String k=entry.optString("key","");JSONObject it=entry.optJSONObject("item");if(k.isEmpty()||it==null)continue;sync.upsert(k,it);String id=it.optString("id");synchronized(MainActivity.this){JSONArray latest;try{latest=new JSONArray(prefs.getString("pending_shared_sync","[]"));}catch(Exception e){latest=new JSONArray();}for(int j=latest.length()-1;j>=0;j--){JSONObject q=latest.optJSONObject(j);if(q!=null){JSONObject itemObj=q.optJSONObject("item");if(itemObj!=null&&id.equals(itemObj.optString("id")))latest.remove(j);}}prefs.edit().putString("pending_shared_sync",latest.toString()).apply();}}catch(Exception ignored){}}});}
 
-    @Override protected void onResume(){super.onResume();syncQuietly();refreshProfiles();checkGitHubUpdate(false);String pending=prefs.getString("pending_update_url","");if(!pending.isEmpty()&&android.os.Build.VERSION.SDK_INT>=26&&getPackageManager().canRequestPackageInstalls()){String digest=prefs.getString("pending_update_digest","");String version=prefs.getString("pending_update_version","");prefs.edit().remove("pending_update_url").remove("pending_update_digest").remove("pending_update_version").apply();downloadGitHubUpdate(pending,digest,version);}if(sharedSyncPoll==null)sharedSyncPoll=new Runnable(){public void run(){if(!isFinishing()){syncQuietly();refreshProfiles();gameHandler.postDelayed(this,15000);}}};gameHandler.removeCallbacks(sharedSyncPoll);gameHandler.postDelayed(sharedSyncPoll,15000);}
-    @Override protected void onPause(){if(sharedSyncPoll!=null)gameHandler.removeCallbacks(sharedSyncPoll);super.onPause();}
+    @Override protected void onResume(){super.onResume();activityResumed=true;syncQuietly();refreshProfiles();checkGitHubUpdate(false);if(isChatOpen())startChatRefresh();String pending=prefs.getString("pending_update_url","");if(!pending.isEmpty()&&android.os.Build.VERSION.SDK_INT>=26&&getPackageManager().canRequestPackageInstalls()){String digest=prefs.getString("pending_update_digest","");String version=prefs.getString("pending_update_version","");prefs.edit().remove("pending_update_url").remove("pending_update_digest").remove("pending_update_version").apply();downloadGitHubUpdate(pending,digest,version);}if(sharedSyncPoll==null)sharedSyncPoll=new Runnable(){public void run(){if(!isFinishing()){syncQuietly();refreshProfiles();gameHandler.postDelayed(this,15000);}}};gameHandler.removeCallbacks(sharedSyncPoll);gameHandler.postDelayed(sharedSyncPoll,15000);}
+    @Override protected void onPause(){activityResumed=false;if(sharedSyncPoll!=null)gameHandler.removeCallbacks(sharedSyncPoll);if(chatRefreshRunnable!=null)gameHandler.removeCallbacks(chatRefreshRunnable);super.onPause();}
+
+    @Override protected void onSaveInstanceState(Bundle state) {
+        state.putBoolean("pending_loyalty_scan", pendingLoyaltyScan);
+        super.onSaveInstanceState(state);
+    }
 
     private float swipeStartX, swipeStartY;
     private boolean swipeCandidate, swipeConsumed;
@@ -1073,7 +1457,7 @@ public class MainActivity extends Activity {
         EditText bio = new EditText(this); bio.setHint("О себе или короткое пожелание"); bio.setText(prefs.getString("profile_bio", "")); bio.setMinLines(3); bio.setGravity(Gravity.TOP | Gravity.START);
         TextView avatarLabel = text("Ваше фото профиля", 12, MUTED, true); avatarLabel.setPadding(0, dp(8), 0, 0); form.addView(avatarLabel);
         ImageView avatarPreview = new ImageView(this); avatarPreview.setScaleType(ImageView.ScaleType.CENTER_CROP); avatarPreview.setBackgroundColor(0xFFE8E0EC);
-        String avatarUri=prefs.getString("profile_avatar_uri","");if(avatarUri.isEmpty())avatarUri=prefs.getString("profile_avatar_data","");
+        String avatarUri=localAvatarUri();
         boolean hasPhoto=setAvatarPicture(avatarPreview,avatarUri,48);
         avatarPreview.setVisibility(hasPhoto?View.VISIBLE:View.GONE);
         LinearLayout.LayoutParams avatarParams = new LinearLayout.LayoutParams(dp(72), dp(72)); avatarParams.gravity=Gravity.CENTER_HORIZONTAL; avatarParams.topMargin=dp(4); avatarParams.bottomMargin=dp(8); form.addView(avatarPreview, avatarParams);
@@ -1092,6 +1476,22 @@ public class MainActivity extends Activity {
         TextView chooseAvatar = pill("📷 Выбрать фото", PURPLE); form.addView(chooseAvatar);
         chooseAvatar.setOnClickListener(v -> { Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT); pick.setType("image/*"); pick.addCategory(Intent.CATEGORY_OPENABLE); startActivityForResult(pick, 406); });
         TextView takeAvatar = pill("Сделать фото в приложении", PURPLE); form.addView(takeAvatar); takeAvatar.setOnClickListener(v -> startCameraCapture(406));
+        TextView clearAvatar = pill("Убрать фото профиля", MUTED); form.addView(clearAvatar);
+        clearAvatar.setOnClickListener(v -> {
+            prefs.edit().remove("profile_avatar_uri").remove("profile_avatar_data")
+                    .remove("profile_avatar_remote_path").putBoolean("profile_avatar_pending",true).apply();
+            avatarPreview.setVisibility(View.GONE);
+            avatarEmoji.setVisibility(View.VISIBLE);
+            try {
+                JSONObject profile=new JSONObject();
+                profile.put("display_name",prefs.getString("profile_name",""));
+                profile.put("avatar",prefs.getString("profile_avatar","♡"));
+                profile.put("avatar_local_uri","");
+                profile.put("bio",prefs.getString("profile_bio",""));
+                persistProfile(profile);
+            } catch(Exception e){android.util.Log.w("VmesteProfile","Could not prepare profile photo removal",e);}
+            showApp();
+        });
         TextView deleteAccount = pill("Удалить аккаунт…", 0xFFB54D62); form.addView(deleteAccount);
         deleteAccount.setOnClickListener(v -> confirmAccountDeletion());
         name.addTextChangedListener(new android.text.TextWatcher() {
@@ -1112,7 +1512,7 @@ public class MainActivity extends Activity {
                     if (a.isEmpty()) a = "♡";
                     prefs.edit().putString("profile_name", n).putString("profile_avatar", a).putString("profile_bio", b).apply();
                     JSONObject profile = new JSONObject();
-                    try { profile.put("display_name", n); String photo=prefs.getString("profile_avatar_data","");profile.put("avatar", photo.isEmpty()?a:photo); profile.put("bio", b); } catch (Exception ignored) { }
+                    try { profile.put("display_name", n); profile.put("avatar", a); profile.put("avatar_local_uri", localAvatarUri()); profile.put("bio", b); } catch (Exception ignored) { }
                     persistProfile(profile); showApp();
                 }).create();
         profileDialog.setOnShowListener(v -> { if (profileDialog.getWindow() != null) profileDialog.getWindow().setBackgroundDrawable(shape(PAPER, 24)); int titleId=getResources().getIdentifier("alertTitle", "id", "android"); TextView titleView=profileDialog.findViewById(titleId); if(titleView!=null)titleView.setTextColor(INK); profileDialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(PURPLE); profileDialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(MUTED); });
@@ -1247,11 +1647,48 @@ public class MainActivity extends Activity {
 
     private void persistProfile(JSONObject profile) {
         if (!sync.configured() || !sync.signedIn() || sync.coupleId().isEmpty()) { toast("Профиль сохранён на этом телефоне. Подключите пару для синхронизации."); return; }
-        runNetwork(() -> { sync.saveProfile(profile); return "ok"; }, result -> toast("Профиль синхронизирован с партнёром"));
+        network.execute(() -> {
+            try {
+                JSONObject remote = new JSONObject(profile.toString());
+                String localUri = remote.optString("avatar_local_uri", "");
+                String avatar = remote.optString("avatar", "♡");
+                String remotePath = prefs.getString("profile_avatar_remote_path", "");
+                if (!localUri.isEmpty() && (prefs.getBoolean("profile_avatar_pending", false) || remotePath.isEmpty())) {
+                    Uri uri = Uri.parse(localUri);
+                    if (!"file".equals(uri.getScheme()) || !new File(uri.getPath()).isFile())
+                        throw new Exception("Локальный файл фото недоступен");
+                    remotePath = sync.uploadAttachment(uri, "profile-avatar-" + sync.userId(), this, "image/jpeg");
+                    prefs.edit().putString("profile_avatar_remote_path", remotePath)
+                            .putBoolean("profile_avatar_pending", false).apply();
+                }
+                remote.put("avatar", remotePath.isEmpty() ? avatar : remotePath);
+                remote.remove("avatar_local_uri");
+                sync.saveProfile(remote);
+                prefs.edit().remove("profile_avatar_pending").apply();
+                runOnUiThread(() -> {
+                    lastProfileRefreshAt = 0;
+                    refreshProfiles();
+                    toast("Профиль синхронизирован с партнёром");
+                });
+            } catch (Exception e) {
+                android.util.Log.w("VmesteProfile", "Could not sync profile", e);
+                runOnUiThread(() -> toast("Профиль сохранён на телефоне, но синхронизация не удалась: " + e.getMessage()));
+            }
+        });
     }
 
     private void refreshProfiles() {
         if (!sync.configured() || !sync.signedIn() || sync.coupleId().isEmpty()) return;
+        if(prefs.getBoolean("profile_avatar_pending",false)){
+            try{
+                JSONObject profile=new JSONObject();
+                profile.put("display_name",prefs.getString("profile_name",""));
+                profile.put("avatar",prefs.getString("profile_avatar","♡"));
+                profile.put("avatar_local_uri",localAvatarUri());
+                profile.put("bio",prefs.getString("profile_bio",""));
+                persistProfile(profile);
+            }catch(Exception e){android.util.Log.w("VmesteProfile","Could not retry pending profile photo sync",e);}
+        }
         long now=System.currentTimeMillis();if(now-lastProfileRefreshAt<45000L)return;lastProfileRefreshAt=now;
         network.execute(()->{
             try{
@@ -1261,14 +1698,30 @@ public class MainActivity extends Activity {
                     String avatar=row.optString("avatar","♡");boolean hasPhoto=avatar.startsWith("data:image/");
                     if(ownId.equals(row.optString("user_id"))){
                         changed|=putProfileValue("profile_name",row.optString("display_name","").trim());
-                        changed|=putProfileValue("profile_avatar",hasPhoto?"♡":avatar);
-                        changed|=putProfileValue("profile_avatar_data",hasPhoto?avatar:"");
-                        changed|=putProfileValue("profile_avatar_uri","");
+                        if(!prefs.getBoolean("profile_avatar_pending",false)){
+                            if(isRemoteAvatarPath(avatar)){
+                                try{changed|=cacheRemoteAvatar(avatar,true);}catch(Exception e){android.util.Log.w("VmesteProfile","Could not load own profile photo",e);}
+                            }else if(hasPhoto){
+                                changed|=putProfileValue("profile_avatar","♡");
+                                changed|=putProfileValue("profile_avatar_data",avatar);
+                                changed|=putProfileValue("profile_avatar_uri","");
+                            }else{
+                                changed|=putProfileValue("profile_avatar",avatar);
+                                changed|=putProfileValue("profile_avatar_data","");
+                                changed|=putProfileValue("profile_avatar_uri","");
+                                changed|=putProfileValue("profile_avatar_remote_path","");
+                            }
+                        }
                         changed|=putProfileValue("profile_bio",row.optString("bio",""));
                     }else{
                         changed|=putProfileValue("partner_name",row.optString("display_name","").trim());
-                        changed|=putProfileValue("partner_avatar",hasPhoto?"♡":avatar);
-                        changed|=putProfileValue("partner_avatar_data",hasPhoto?avatar:"");
+                        if(isRemoteAvatarPath(avatar)){
+                            try{changed|=cacheRemoteAvatar(avatar,false);}catch(Exception e){android.util.Log.w("VmesteProfile","Could not load partner profile photo",e);}
+                        }else{
+                            changed|=putProfileValue("partner_avatar",hasPhoto?"♡":avatar);
+                            changed|=putProfileValue("partner_avatar_data",hasPhoto?avatar:"");
+                            changed|=putProfileValue("partner_avatar_remote_path","");
+                        }
                         changed|=putProfileValue("partner_user_id",row.optString("user_id"));
                         changed|=putProfileValue("partner_bio",row.optString("bio",""));
                     }
@@ -1281,6 +1734,49 @@ public class MainActivity extends Activity {
     private boolean putProfileValue(String key,String value){
         String next=value==null?"":value;if(next.equals(prefs.getString(key,"")))return false;
         prefs.edit().putString(key,next).apply();return true;
+    }
+
+    private String localAvatarUri(){
+        String uri=prefs.getString("profile_avatar_uri","");
+        if(!uri.isEmpty())return uri;
+        String legacy=prefs.getString("profile_avatar_data","");
+        if(!legacy.startsWith("data:image/"))return "";
+        try{
+            byte[] bytes=android.util.Base64.decode(legacy.substring(legacy.indexOf(',')+1),android.util.Base64.DEFAULT);
+            File file=new File(getFilesDir(),"profile-avatar.jpg");
+            try(FileOutputStream output=new FileOutputStream(file)){output.write(bytes);}
+            uri=Uri.fromFile(file).toString();
+            prefs.edit().putString("profile_avatar_uri",uri).remove("profile_avatar_data").apply();
+            return uri;
+        }catch(Exception e){android.util.Log.w("VmesteProfile","Could not migrate local profile photo",e);return "";}
+    }
+
+    private boolean isRemoteAvatarPath(String value){
+        return value!=null&&!value.isEmpty()&&!value.startsWith("data:image/")&&!value.startsWith("file:")
+                &&value.startsWith(sync.coupleId()+"/");
+    }
+
+    private boolean cacheRemoteAvatar(String remotePath,boolean own)throws Exception{
+        String pathKey=own?"profile_avatar_remote_path":"partner_avatar_remote_path";
+        String uriKey=own?"profile_avatar_uri":"partner_avatar_uri";
+        String dataKey=own?"profile_avatar_data":"partner_avatar_data";
+        String fileName=own?"profile-avatar.jpg":"partner-avatar.jpg";
+        File file=new File(getFilesDir(),fileName);
+        boolean same=remotePath.equals(prefs.getString(pathKey,""));
+        if(!same||!file.isFile()||file.length()==0){
+            byte[] bytes=sync.downloadAttachment(remotePath);
+            if(bytes.length==0)throw new Exception("Сервер вернул пустой файл фото");
+            File temporary=new File(getFilesDir(),fileName+".tmp");
+            try(FileOutputStream output=new FileOutputStream(temporary)){output.write(bytes);output.flush();}
+            if(file.exists()&&!file.delete())throw new Exception("Не удалось заменить локальную миниатюру");
+            if(!temporary.renameTo(file)){temporary.delete();throw new Exception("Не удалось сохранить миниатюру профиля");}
+        }
+        boolean changed=putProfileValue(pathKey,remotePath);
+        changed|=putProfileValue(uriKey,Uri.fromFile(file).toString());
+        changed|=putProfileValue(dataKey,"");
+        if(own&&prefs.getString("profile_avatar","").isEmpty())changed|=putProfileValue("profile_avatar","♡");
+        else if(!own&&prefs.getString("partner_avatar","").isEmpty())changed|=putProfileValue("partner_avatar","♡");
+        return changed;
     }
 
     private JSONObject readMovieRoom() { try { String raw = prefs.getString("movie_room", ""); return raw.isEmpty() ? null : new JSONObject(raw); } catch (Exception e) { return null; } }
@@ -1648,6 +2144,15 @@ public class MainActivity extends Activity {
 
     private void renderChat() {
         JSONArray messages=read("messages");
+        TextView latest=text(chatNewMessageCount>0?"↓  Новые сообщения ("+chatNewMessageCount+")":"↓  К последнему сообщению",13,PURPLE,true);
+        latest.setGravity(Gravity.CENTER);
+        latest.setPadding(dp(12),dp(10),dp(12),dp(10));
+        latest.setBackground(shape(PALE,18));
+        latest.setVisibility(!chatAutoScroll&&chatNewMessageCount>0?View.VISIBLE:View.GONE);
+        LinearLayout.LayoutParams latestParams=new LinearLayout.LayoutParams(-1,-2);
+        latestParams.bottomMargin=dp(6);
+        body.addView(latest,latestParams);
+        latest.setOnClickListener(v->{chatAutoScroll=true;chatNewMessageCount=0;chatScrollY=Integer.MAX_VALUE;latest.setVisibility(View.GONE);if(body.getParent() instanceof ScrollView){ScrollView parent=(ScrollView)body.getParent();parent.post(()->parent.fullScroll(ScrollView.FOCUS_DOWN));}});
         LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(8),dp(8),dp(8),dp(8));box.setBackgroundColor(0x00000000);
         ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);scroll.addView(box);body.addView(scroll);
         final boolean[] restoringScroll = {true};
@@ -1655,6 +2160,8 @@ public class MainActivity extends Activity {
             if(restoringScroll[0])return;
             chatScrollY=y;
             chatAutoScroll=y+scroll.getHeight()>=box.getHeight()-dp(48);
+            if(chatAutoScroll&&chatNewMessageCount>0){chatNewMessageCount=0;latest.setVisibility(View.GONE);}
+            else if(!chatAutoScroll&&chatNewMessageCount>0)latest.setVisibility(View.VISIBLE);
         });
         if(messages.length()==0){TextView empty=text("Напишите первое сообщение — чат только для вас двоих",13,MUTED,false);empty.setGravity(Gravity.CENTER);empty.setPadding(0,dp(30),0,dp(30));box.addView(empty);}
         String lastSender=null;
@@ -1669,39 +2176,162 @@ public class MainActivity extends Activity {
             LinearLayout line=new LinearLayout(this);line.setOrientation(LinearLayout.VERTICAL);line.setPadding(dp(4),dp(2),dp(4),dp(2));
             LinearLayout rowWrap=new LinearLayout(this);rowWrap.setGravity(mine?Gravity.RIGHT:Gravity.LEFT);rowWrap.setPadding(dp(2),dp(2),dp(2),dp(2));
             TextView avatar=text(mine?prefs.getString("profile_avatar","♡"):prefs.getString("partner_avatar","♡"),14,PURPLE,true);avatar.setGravity(Gravity.CENTER);avatar.setBackground(shape(PALE,16));
-            String avatarSrc=mine?(prefs.getString("profile_avatar_uri","").isEmpty()?prefs.getString("profile_avatar_data",""):prefs.getString("profile_avatar_uri","")):prefs.getString("partner_avatar_data","");
+            String avatarSrc=mine?localAvatarUri():prefs.getString("partner_avatar_uri","");
+            if(!mine&&avatarSrc.isEmpty())avatarSrc=prefs.getString("partner_avatar_data","");
             boolean hasPhoto=!avatarSrc.isEmpty();
             if(hasPhoto){ImageView avatarImg=new ImageView(this);avatarImg.setScaleType(ImageView.ScaleType.CENTER_CROP);avatarImg.setBackgroundColor(0xFFE8E0EC);setAvatarPicture(avatarImg,avatarSrc,22);rowWrap.addView(avatarImg,new LinearLayout.LayoutParams(dp(22),dp(22)));} else rowWrap.addView(avatar,new LinearLayout.LayoutParams(dp(28),dp(28)));
             String messageBody=row.optString("title");JSONObject media=null;
             try{JSONObject parsed=new JSONObject(messageBody);if(parsed.optBoolean("vmeste_media"))media=parsed;}catch(Exception ignored){}
-            String displayText=media==null?messageBody:("Кружок".equals(media.optString("type"))?"▶ Видеокружок":("Голосовое".equals(media.optString("type"))?"▶ Голосовое":"Фото".equals(media.optString("type"))?"📷 Фото":"▶ Видео"));
+            String displayText=media==null?messageBody:("Кружок".equals(media.optString("type"))?"◉ Видеокружок":("Голосовое".equals(media.optString("type"))?"▶ Голосовое":"GIF".equals(media.optString("type"))?"GIF · посмотреть":"Фото".equals(media.optString("type"))?"📷 Фото":("Видео".equals(media.optString("type"))?"▶ Видео":"♫ Аудио")));
             TextView bubble=text(displayText,14,INK,false);bubble.setPadding(dp(12),dp(9),dp(12),dp(9));bubble.setMaxWidth(dp(260));bubble.setBackground(shape(mine?0xFFEFE5F6:0xFFF3F4F6,16));
+            if(mine&&media==null){
+                bubble.setOnLongClickListener(v->{showMessageActions(row);return true;});
+                bubble.setContentDescription("Ваше сообщение. Нажмите и удерживайте, чтобы изменить");
+            }
             if(media!=null){String type=media.optString("type"),path=media.optString("local_path",media.optString("path"));bubble.setOnClickListener(v->playChatAttachment(path,type));}
             else {
                 String link=SharedLink.firstHttpUrl(displayText);
                 if(!link.isEmpty()){bubble.setOnClickListener(v->openSharedLink(link));bubble.setContentDescription("Открыть ссылку во внутреннем просмотре");}
             }
             long ts=row.optLong("ts",0);String timeStr=ts>0?android.text.format.DateFormat.format("HH:mm",ts).toString():"";
+            if(row.has("edited_at"))timeStr += (timeStr.isEmpty()?"":" · ")+"изменено";
             TextView time=text(timeStr,9,MUTED,false);
             LinearLayout bubbleWrap=new LinearLayout(this);bubbleWrap.setOrientation(LinearLayout.VERTICAL);bubbleWrap.addView(bubble);bubbleWrap.addView(time);
             LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(-2,-2);bp.gravity=mine?Gravity.RIGHT:Gravity.LEFT;bp.setMargins(mine?dp(50):dp(8),0,mine?dp(8):dp(50),0);rowWrap.addView(bubbleWrap,bp);
             line.addView(rowWrap);
             box.addView(line);
         }
-        if(sync.ready()){final Handler chatHandler=new Handler(Looper.getMainLooper());chatHandler.postDelayed(()->{try{String before=prefs.getString("messages","[]");JSONArray remote=sync.fetchItems();for(int i=0;i<remote.length();i++){JSONObject row=remote.getJSONObject(i);sync.storeRemote(row,prefs);if(row.has("body")&&!sync.userId().equals(row.optString("sender_id")))archiveIncomingMessage(row);}String after=prefs.getString("messages","[]");if(!before.equals(after))chatHandler.post(()->{if(isChatOpen())render();});}catch(Exception e){android.util.Log.w("VmesteChat","Could not refresh messages",e);}},1500);}
+        startChatRefresh();
         box.post(()->{
             if(chatAutoScroll)scroll.fullScroll(ScrollView.FOCUS_DOWN);
             else scroll.scrollTo(0,Math.min(chatScrollY,Math.max(0,box.getHeight()-scroll.getHeight())));
             restoringScroll[0]=false;
         });
     }
-    private void archiveIncomingMessage(JSONObject remote)throws Exception{String id=remote.optString("id"),body=remote.optString("body");try{JSONObject media=new JSONObject(body);if(media.optBoolean("vmeste_media")){String cloudPath=media.optString("path"),type=media.optString("type");byte[] bytes=sync.downloadAttachment(cloudPath);String ext="Фото".equals(type)?"jpg":"Голосовое".equals(type)?"3gp":"Кружок".equals(type)?"webm":"mp4";java.io.File folder=new java.io.File(getFilesDir(),"chat_archive");if(!folder.exists())folder.mkdirs();java.io.File file=new java.io.File(folder,id+"."+ext);try(java.io.FileOutputStream out=new java.io.FileOutputStream(file)){out.write(bytes);}String local=Uri.fromFile(file).toString();media.put("path",local);media.put("local_path",local);JSONArray rows=read("messages");JSONObject saved=findItem(rows,id);if(saved!=null){saved.put("title",media.toString());save("messages",rows);}sync.deleteAttachment(cloudPath);}}catch(org.json.JSONException notMedia){}sync.acknowledgeMessage(id);}
+
+    private void showMessageActions(JSONObject message){
+        if(!sync.ready()){toast("Чтобы изменить сообщение, подключитесь к паре");return;}
+        new AlertDialog.Builder(this).setItems(new String[]{"Изменить сообщение"},(dialog,which)->editChatMessage(message)).show();
+    }
+
+    private void editChatMessage(JSONObject message){
+        EditText input=new EditText(this);
+        input.setText(message.optString("title",""));
+        input.setMinLines(2);
+        input.setGravity(Gravity.TOP|Gravity.START);
+        input.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(4000)});
+        new AlertDialog.Builder(this).setTitle("Изменить сообщение")
+                .setMessage("Партнёр увидит обновлённый текст.")
+                .setView(input).setNegativeButton("Отмена",null)
+                .setPositiveButton("Сохранить",(dialog,which)->{
+                    String value=input.getText().toString().trim();
+                    if(value.isEmpty()){toast("Пустое сообщение сохранить нельзя");return;}
+                    network.execute(()->{
+                        try{
+                            sync.updateMessage(message.optString("id"),value);
+                            JSONArray rows=read("messages");
+                            JSONObject local=findItem(rows,message.optString("id"));
+                            if(local!=null){
+                                local.put("title",value);
+                                local.put("edited_at",System.currentTimeMillis());
+                                save("messages",replaceById(rows,local));
+                            }
+                            runOnUiThread(()->{if(isChatOpen())render();toast("Сообщение изменено");});
+                        }catch(Exception e){
+                            android.util.Log.w("VmesteChat","Could not edit message",e);
+                            runOnUiThread(()->toast("Изменение не сохранено: "+e.getMessage()
+                                    +". Проверьте, что миграция редактирования сообщений применена."));
+                        }
+                    });
+                }).show();
+    }
+
+    private void startChatRefresh(){
+        if(chatRefreshRunnable!=null)gameHandler.removeCallbacks(chatRefreshRunnable);
+        if(!sync.ready()||!isChatOpen()||!activityResumed||isFinishing())return;
+        chatRefreshRunnable=new Runnable(){
+            @Override public void run(){
+                if(!sync.ready()||!isChatOpen()||!activityResumed||isFinishing())return;
+                network.execute(()->{
+                    try{
+                        String before=prefs.getString("messages","[]");
+                        JSONArray previous=new JSONArray(before),remote=sync.fetchItems();
+                        int unread=0;
+                        for(int i=0;i<remote.length();i++){
+                            JSONObject row=remote.optJSONObject(i);if(row==null)continue;
+                            boolean incoming=row.has("body")&&!sync.userId().equals(row.optString("sender_id"));
+                            if(incoming&&!containsMessage(previous,row.optString("id")))unread++;
+                            sync.storeRemote(row,prefs);
+                            if(incoming)archiveIncomingMessage(row);
+                        }
+                        boolean changed=!before.equals(prefs.getString("messages","[]"));
+                        final int newCount=unread;
+                        runOnUiThread(()->{
+                            if(!isChatOpen()||!activityResumed)return;
+                            if(newCount>0&&!chatAutoScroll)chatNewMessageCount+=newCount;
+                            if(changed)render();
+                            else if(chatRefreshRunnable==this)gameHandler.postDelayed(this,3000);
+                        });
+                    }catch(Exception e){
+                        android.util.Log.w("VmesteChat","Could not refresh messages",e);
+                        if(isChatOpen()&&activityResumed&&chatRefreshRunnable==this)gameHandler.postDelayed(this,5000);
+                    }
+                });
+            }
+        };
+        gameHandler.postDelayed(chatRefreshRunnable,1200);
+    }
+
+    private boolean containsMessage(JSONArray rows,String id){
+        for(int i=0;i<rows.length();i++){JSONObject row=rows.optJSONObject(i);if(row!=null&&id.equals(row.optString("id")))return true;}
+        return false;
+    }
+
+    private void archiveIncomingMessage(JSONObject remote)throws Exception{
+        String id=remote.optString("id"),body=remote.optString("body");
+        try{
+            JSONObject media=new JSONObject(body);
+            if(media.optBoolean("vmeste_media")){
+                String cloudPath=media.optString("path"),type=media.optString("type");
+                JSONObject saved=findItem(read("messages"),id);
+                JSONObject localMedia=saved==null?null:jsonObject(saved.optString("title",""));
+                String existing=localMedia==null?"":localMedia.optString("local_path","");
+                File existingFile=existing.startsWith("file:")?new File(Uri.parse(existing).getPath()):null;
+                boolean downloaded=false;
+                if(existingFile==null||!existingFile.isFile()){
+                    byte[] bytes=sync.downloadAttachment(cloudPath);
+                    File folder=new File(getFilesDir(),"chat_archive");
+                    if(!folder.exists()&&!folder.mkdirs())throw new Exception("Не удалось создать архив чата");
+                    File file=new File(folder,id+"."+attachmentExtension(type,media.optString("mime","")));
+                    try(FileOutputStream out=new FileOutputStream(file)){out.write(bytes);}
+                    String local=Uri.fromFile(file).toString();
+                    media.put("local_path",local);
+                    if(saved!=null){saved.put("title",media.toString());JSONArray rows=read("messages");save("messages",replaceById(rows,saved));}
+                    downloaded=true;
+                }
+                if(downloaded)sync.deleteAttachment(cloudPath);
+            }
+        }catch(org.json.JSONException notMedia){ }
+        sync.acknowledgeMessage(id);
+    }
+
+    private JSONObject jsonObject(String raw){
+        try{return new JSONObject(raw);}catch(Exception ignored){return null;}
+    }
+
+    private JSONArray replaceById(JSONArray rows,JSONObject replacement){
+        for(int i=0;i<rows.length();i++){JSONObject row=rows.optJSONObject(i);if(row!=null&&replacement.optString("id").equals(row.optString("id"))){try{rows.put(i,replacement);}catch(org.json.JSONException e){android.util.Log.w("VmesteChat","Could not update the local message cache",e);}break;}}
+        return rows;
+    }
 
     private View createChatComposer(){
         LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);row.setPadding(dp(8),dp(5),dp(8),dp(5));row.setBackgroundColor(PAPER);
         TextView attach=text("＋",24,PURPLE,true);attach.setGravity(Gravity.CENTER);row.addView(attach,new LinearLayout.LayoutParams(dp(42),dp(48)));
-        attach.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Вложение").setItems(new String[]{"Фото, видео или аудио из телефона","Записать видеокружок (до минуты)"},(d,which)->{try{if(which==0){Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);pick.setType("*/*");pick.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(pick,404);}else startCameraCapture(405);}catch(Exception e){toast("Не удалось открыть камеру или галерею");}}).show());
+        attach.setContentDescription("Добавить фото, файл, GIF или видеокружок");
+        attach.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Вложение").setItems(new String[]{"Фото, видео или аудио из телефона","GIF из телефона","Записать видеокружок (до минуты)"},(d,which)->{try{if(which==0){Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);pick.setType("*/*");pick.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(pick,404);}else if(which==1){Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);pick.setType("image/gif");pick.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(pick,408);}else startCameraCapture(405);}catch(Exception e){toast("Не удалось открыть камеру или галерею: "+e.getMessage());}}).show());
+        TextView emoji=text("☺",20,PURPLE,true);emoji.setGravity(Gravity.CENTER);emoji.setContentDescription("Выбрать эмодзи");row.addView(emoji,new LinearLayout.LayoutParams(dp(40),dp(48)));
         EditText input=new EditText(this);input.setSingleLine(true);input.setHint("Сообщение партнёру…");row.addView(input,new LinearLayout.LayoutParams(0,dp(48),1));
+        emoji.setOnClickListener(v->showChatEmojiPicker(input));
         input.setText(pendingSharedText);
         if(pendingSharedUri!=null){
             TextView sharedPhoto=text("📎",18,PURPLE,true);sharedPhoto.setGravity(Gravity.CENTER);
@@ -1714,7 +2344,15 @@ public class MainActivity extends Activity {
         send.setOnClickListener(v->{
             String value=input.getText().toString().trim();
             if(pendingSharedUri!=null){
-                if(sync.ready()){uploadChatAttachment(pendingSharedUri,"Фото");pendingSharedUri=null;}
+                if(sync.ready()){
+                    Uri shared=pendingSharedUri;
+                    String mime=getContentResolver().getType(shared);
+                    String type="image/gif".equalsIgnoreCase(mime)?"GIF":"Фото";
+                    confirmChatAttachment(shared,type,mime,()->{
+                        pendingSharedUri=null;
+                        if(isChatOpen())render();
+                    });
+                }
                 else toast("Чтобы отправить фото партнёру, сначала подключите пару");
             }
             if(!value.isEmpty()){chatAutoScroll=true;chatScrollY=Integer.MAX_VALUE;append("messages",value,"Сейчас");}
@@ -1722,6 +2360,75 @@ public class MainActivity extends Activity {
             if(!value.isEmpty()||pendingSharedUri==null)render();
         });
         return row;
+    }
+
+    private void showChatEmojiPicker(EditText input){
+        String[] emojis={"😊","😂","🥰","😍","😘","❤️","💛","✨","👍","🥺","🤗","🎉","🌿","☕","🐈","💌"};
+        android.widget.GridLayout grid=new android.widget.GridLayout(this);
+        grid.setColumnCount(4);
+        grid.setPadding(dp(12),dp(8),dp(12),dp(8));
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Эмодзи").setView(grid)
+                .setNegativeButton("Закрыть",null).create();
+        for(String value:emojis){
+            TextView button=text(value,25,INK,false);
+            button.setGravity(Gravity.CENTER);
+            button.setContentDescription(value);
+            android.widget.GridLayout.LayoutParams params=new android.widget.GridLayout.LayoutParams();
+            params.width=dp(54);params.height=dp(52);params.setMargins(dp(3),dp(3),dp(3),dp(3));
+            grid.addView(button,params);
+            button.setOnClickListener(v->{
+                int start=Math.max(0,input.getSelectionStart()),end=Math.max(start,input.getSelectionEnd());
+                input.getText().replace(start,end,value);
+                dialog.dismiss();
+            });
+        }
+        TextView keyboard=text("⌨  Другие эмодзи — на клавиатуре",13,PURPLE,true);
+        keyboard.setGravity(Gravity.CENTER);
+        android.widget.GridLayout.LayoutParams keyboardParams=new android.widget.GridLayout.LayoutParams();
+        keyboardParams.width=dp(234);keyboardParams.height=dp(48);keyboardParams.columnSpec=android.widget.GridLayout.spec(0,4);
+        grid.addView(keyboard,keyboardParams);
+        keyboard.setOnClickListener(v->{
+            dialog.dismiss();input.requestFocus();
+            ((InputMethodManager)getSystemService(INPUT_METHOD_SERVICE)).showSoftInput(input,InputMethodManager.SHOW_IMPLICIT);
+        });
+        dialog.show();
+    }
+
+    private void confirmChatAttachment(Uri uri,String type,String mime,Runnable accepted){
+        if(!sync.ready()){toast("Сначала подключите общее пространство пары");return;}
+        long size=attachmentSize(uri);
+        if(size>MAX_CHAT_ATTACHMENT_BYTES){toast("Файл больше 12 МБ. Выберите или сожмите файл на телефоне.");return;}
+        String sizeText=size>0?formatBytes(size):"размер проверится при чтении";
+        String message="Файл: "+attachmentName(uri)+" · "+sizeText
+                +"\n\nПеред отправкой он останется в архиве этого телефона и загрузится в закрытое хранилище пары. После получения файла партнёром облачная копия удаляется; локальная копия остаётся. Автоматическое сжатие не выполняется.";
+        new AlertDialog.Builder(this).setTitle("Отправить "+type.toLowerCase(Locale.ROOT)+"?")
+                .setMessage(message).setNegativeButton("Не отправлять",(dialog,which)->{})
+                .setPositiveButton("Отправить",(dialog,which)->{
+                    if(accepted!=null)accepted.run();
+                    uploadChatAttachment(uri,type,mime);
+                }).show();
+    }
+
+    private long attachmentSize(Uri uri){
+        if("file".equals(uri.getScheme())){File file=new File(uri.getPath());return file.isFile()?file.length():-1;}
+        try(android.database.Cursor cursor=getContentResolver().query(uri,new String[]{android.provider.OpenableColumns.SIZE},null,null,null)){
+            if(cursor!=null&&cursor.moveToFirst()){int index=cursor.getColumnIndex(android.provider.OpenableColumns.SIZE);if(index>=0)return cursor.getLong(index);}
+        }catch(Exception e){android.util.Log.i("VmesteChat","Could not inspect attachment size",e);}
+        return -1;
+    }
+
+    private String attachmentName(Uri uri){
+        if("file".equals(uri.getScheme()))return new File(uri.getPath()).getName();
+        try(android.database.Cursor cursor=getContentResolver().query(uri,new String[]{android.provider.OpenableColumns.DISPLAY_NAME},null,null,null)){
+            if(cursor!=null&&cursor.moveToFirst()){int index=cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);if(index>=0)return cursor.getString(index);}
+        }catch(Exception e){android.util.Log.i("VmesteChat","Could not read attachment name",e);}
+        return uri.getLastPathSegment()==null?"Вложение":uri.getLastPathSegment();
+    }
+
+    private String formatBytes(long bytes){
+        if(bytes<1024)return bytes+" Б";
+        if(bytes<1024L*1024)return String.format(Locale.getDefault(),"%.1f КБ",bytes/1024.0);
+        return String.format(Locale.getDefault(),"%.1f МБ",bytes/(1024.0*1024));
     }
     private boolean isChatOpen(){return "Чат".equals(tab)||(feature!=null&&feature.contains("Чат"));}
     private void startCameraCapture(int requestCode) {
@@ -1732,7 +2439,25 @@ public class MainActivity extends Activity {
         if(!missing.isEmpty()){requestPermissions(missing.toArray(new String[0]),905);toast("Разрешите камеру и микрофон, затем нажмите кнопку ещё раз");return;}
         startActivityForResult(new Intent(this,CameraCaptureActivity.class).putExtra("photo_only",requestCode==406),requestCode);
     }
-    private void saveAvatar(Uri uri){try{String encoded=avatarData(uri);byte[] image=android.util.Base64.decode(encoded.substring(encoded.indexOf(',')+1),android.util.Base64.DEFAULT);java.io.File target=new java.io.File(getFilesDir(),"profile-avatar.jpg");try(java.io.FileOutputStream output=new java.io.FileOutputStream(target)){output.write(image);output.flush();}Uri local=Uri.fromFile(target);prefs.edit().putString("profile_avatar_uri",local.toString()).putString("profile_avatar_data",encoded).apply();JSONObject profile=new JSONObject();profile.put("display_name",prefs.getString("profile_name",""));profile.put("avatar",encoded);profile.put("bio",prefs.getString("profile_bio",""));if(sync.ready())persistProfile(profile);showApp();toast("Фото профиля обновлено");}catch(Exception e){toast("Не удалось сохранить аватар: "+e.getMessage());}}
+    private void saveAvatar(Uri uri){
+        try{
+            String encoded=avatarData(uri);
+            byte[] image=android.util.Base64.decode(encoded.substring(encoded.indexOf(',')+1),android.util.Base64.DEFAULT);
+            File target=new File(getFilesDir(),"profile-avatar.jpg");
+            try(FileOutputStream output=new FileOutputStream(target)){output.write(image);output.flush();}
+            String localUri=Uri.fromFile(target).toString();
+            prefs.edit().putString("profile_avatar_uri",localUri).remove("profile_avatar_data")
+                    .remove("profile_avatar_remote_path").putBoolean("profile_avatar_pending",true).apply();
+            JSONObject profile=new JSONObject();
+            profile.put("display_name",prefs.getString("profile_name",""));
+            profile.put("avatar",prefs.getString("profile_avatar","♡"));
+            profile.put("avatar_local_uri",localUri);
+            profile.put("bio",prefs.getString("profile_bio",""));
+            showApp();
+            if(sync.ready())persistProfile(profile);
+            else toast("Фото сохранено на телефоне; подключите пару, чтобы синхронизировать его");
+        }catch(Exception e){toast("Не удалось сохранить фото профиля: "+e.getMessage());}
+    }
     private void confirmAccountDeletion() {
         new AlertDialog.Builder(this).setTitle("Удалить аккаунт?")
                 .setMessage("Аккаунт Supabase и доступ к общему пространству будут удалены. Это действие нельзя отменить.")
@@ -1742,20 +2467,95 @@ public class MainActivity extends Activity {
     }
     private void startChatVoiceRecording(TextView button){
         if(checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)!=android.content.pm.PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO},904);toast("Разрешите микрофон, затем нажмите 🎙 ещё раз");return;}
-        try{chatRecording=new java.io.File(getCacheDir(),"voice-"+System.currentTimeMillis()+".3gp");chatRecorder=new android.media.MediaRecorder();chatRecorder.setAudioSource(android.media.MediaRecorder.AudioSource.MIC);chatRecorder.setOutputFormat(android.media.MediaRecorder.OutputFormat.THREE_GPP);chatRecorder.setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AMR_NB);chatRecorder.setOutputFile(chatRecording.getAbsolutePath());chatRecorder.prepare();chatRecorder.start();button.setText("■");toast("Запись голосового · нажмите ■ для отправки");}catch(Exception e){if(chatRecorder!=null){chatRecorder.release();chatRecorder=null;}toast("Не удалось записать голосовое: "+e.getMessage());}
+        try{chatRecording=new java.io.File(getCacheDir(),"voice-"+System.currentTimeMillis()+".3gp");chatRecorder=new android.media.MediaRecorder();chatRecorder.setAudioSource(android.media.MediaRecorder.AudioSource.MIC);chatRecorder.setOutputFormat(android.media.MediaRecorder.OutputFormat.THREE_GPP);chatRecorder.setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AMR_NB);chatRecorder.setOutputFile(chatRecording.getAbsolutePath());chatRecorder.prepare();chatRecorder.start();button.setText("■");toast("Запись началась · после остановки проверьте размер и подтвердите отправку");}catch(Exception e){if(chatRecorder!=null){chatRecorder.release();chatRecorder=null;}toast("Не удалось записать голосовое: "+e.getMessage());}
     }
     private void stopChatVoiceRecording(TextView button){
-        try{chatRecorder.stop();chatRecorder.release();chatRecorder=null;button.setText("🎙");if(chatRecording!=null)uploadChatAttachment(android.net.Uri.fromFile(chatRecording),"Голосовое");}catch(Exception e){toast("Запись слишком короткая, повторите ещё раз");if(chatRecorder!=null){chatRecorder.release();chatRecorder=null;}button.setText("🎙");}
+        try{
+            chatRecorder.stop();chatRecorder.release();chatRecorder=null;button.setText("🎙");
+            if(chatRecording!=null){
+                File recording=chatRecording;
+                confirmChatAttachment(Uri.fromFile(recording),"Голосовое","audio/3gpp",()->{});
+                chatRecording=null;
+            }
+        }catch(Exception e){
+            toast("Запись слишком короткая, повторите ещё раз");
+            if(chatRecorder!=null){chatRecorder.release();chatRecorder=null;}
+            button.setText("🎙");
+        }
     }
-    private void uploadChatAttachment(android.net.Uri uri,String type){
+    private void uploadChatAttachment(Uri uri,String type){uploadChatAttachment(uri,type,getContentResolver().getType(uri));}
+    private void uploadChatAttachment(Uri uri,String type,String mime){
         if(!sync.ready()){toast("Сначала подключите общее пространство пары");return;}
-        String id=UUID.randomUUID().toString();toast("Отправляю "+type.toLowerCase(Locale.ROOT)+"…");network.execute(()->{try{Uri archive=archiveChatAttachment(uri,id,type);String path=sync.uploadAttachment(archive,id,this);JSONObject media=new JSONObject();media.put("vmeste_media",true);media.put("type",type);media.put("path",path);media.put("local_path",archive.toString());        JSONObject item=new JSONObject();item.put("id",id);item.put("title",media.toString());item.put("detail","Сейчас");item.put("ts",System.currentTimeMillis());item.put("done",false);item.put("sender_id",sync.userId());JSONArray rows=read("messages");rows.put(item);save("messages",rows);syncItem("messages",item);runOnUiThread(()->{if(isChatOpen())render();});}catch(Exception e){runOnUiThread(()->toast("Не удалось отправить вложение: "+e.getMessage()));}});
+        if(mime==null||mime.isEmpty())mime=defaultChatMime(type);
+        final String uploadMime=mime;
+        String id=UUID.randomUUID().toString();toast("Отправляю "+type.toLowerCase(Locale.ROOT)+"…");network.execute(()->{try{Uri archive=archiveChatAttachment(uri,id,type,uploadMime);String path=sync.uploadAttachment(archive,id,this,uploadMime);JSONObject media=new JSONObject();media.put("vmeste_media",true);media.put("type",type);media.put("mime",uploadMime);media.put("path",path);media.put("local_path",archive.toString());JSONObject item=new JSONObject();item.put("id",id);item.put("title",media.toString());item.put("detail","Сейчас");item.put("ts",System.currentTimeMillis());item.put("done",false);item.put("sender_id",sync.userId());JSONArray rows=read("messages");rows.put(item);save("messages",rows);syncItem("messages",item);runOnUiThread(()->{if(isChatOpen())render();});}catch(Exception e){runOnUiThread(()->toast("Не удалось отправить вложение: "+e.getMessage()));}});
     }
-    private Uri archiveChatAttachment(Uri source,String id,String type)throws Exception{String ext="Фото".equals(type)?"jpg":"Голосовое".equals(type)?"3gp":"Кружок".equals(type)?"webm":"mp4";java.io.File folder=new java.io.File(getFilesDir(),"chat_archive");if(!folder.exists()&&!folder.mkdirs())throw new Exception("Не удалось создать архив чата");java.io.File target=new java.io.File(folder,id+"."+ext);try(java.io.InputStream in=getContentResolver().openInputStream(source);java.io.FileOutputStream out=new java.io.FileOutputStream(target)){if(in==null)throw new Exception("Файл не найден");byte[] buf=new byte[8192];int n,total=0;while((n=in.read(buf))>0){total+=n;if(total>12*1024*1024)throw new Exception("Файл больше 12 МБ");out.write(buf,0,n);}}return Uri.fromFile(target);}
+    private String defaultChatMime(String type){
+        if("GIF".equals(type))return "image/gif";
+        if("Голосовое".equals(type))return "audio/3gpp";
+        if("Кружок".equals(type))return "video/webm";
+        if("Фото".equals(type))return "image/jpeg";
+        return "video/mp4";
+    }
+    private String attachmentExtension(String type,String mime){
+        if("GIF".equals(type)||"image/gif".equalsIgnoreCase(mime))return "gif";
+        if("Голосовое".equals(type)||"audio/3gpp".equalsIgnoreCase(mime))return "3gp";
+        if("Кружок".equals(type)||"video/webm".equalsIgnoreCase(mime))return "webm";
+        if("Фото".equals(type))return "jpg";
+        String extension=android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(mime);
+        return extension==null||extension.isEmpty()?"bin":extension.replaceAll("[^A-Za-z0-9]","");
+    }
+    private Uri archiveChatAttachment(Uri source,String id,String type,String mime)throws Exception{
+        File folder=new File(getFilesDir(),"chat_archive");if(!folder.exists()&&!folder.mkdirs())throw new Exception("Не удалось создать архив чата");
+        File target=new File(folder,id+"."+attachmentExtension(type,mime));
+        try(InputStream in=getContentResolver().openInputStream(source);FileOutputStream out=new FileOutputStream(target)){
+            if(in==null)throw new Exception("Файл не найден");
+            byte[] buf=new byte[8192];int n,total=0;
+            while((n=in.read(buf))>0){total+=n;if(total>MAX_CHAT_ATTACHMENT_BYTES)throw new Exception("Файл больше 12 МБ");out.write(buf,0,n);}
+            if(total==0)throw new Exception("Выбранный файл пуст");
+        }
+        return Uri.fromFile(target);
+    }
     private void playChatAttachment(String path,String type){
-        try{Uri uri=Uri.parse(path);if("file".equals(uri.getScheme())){showChatAttachment(uri,type);return;}}catch(Exception ignored){}network.execute(()->{try{byte[] bytes=sync.downloadAttachment(path);String ext="Фото".equals(type)?"jpg":"Голосовое".equals(type)?"3gp":"Кружок".equals(type)?"webm":"mp4";java.io.File folder=new java.io.File(getFilesDir(),"chat_archive");if(!folder.exists())folder.mkdirs();java.io.File file=new java.io.File(folder,"received-"+UUID.randomUUID()+"."+ext);try(java.io.FileOutputStream out=new java.io.FileOutputStream(file)){out.write(bytes);}sync.deleteAttachment(path);runOnUiThread(()->showChatAttachment(Uri.fromFile(file),type));}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});
+        try{Uri uri=Uri.parse(path);if("file".equals(uri.getScheme())){showChatAttachment(uri,type);return;}}catch(Exception ignored){}network.execute(()->{try{byte[] bytes=sync.downloadAttachment(path);File folder=new File(getFilesDir(),"chat_archive");if(!folder.exists()&&!folder.mkdirs())throw new Exception("Не удалось создать архив чата");File file=new File(folder,"received-"+UUID.randomUUID()+"."+attachmentExtension(type,""));try(FileOutputStream out=new FileOutputStream(file)){out.write(bytes);}runOnUiThread(()->showChatAttachment(Uri.fromFile(file),type));}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});
     }
-    private void showChatAttachment(Uri uri,String type){try{if("Голосовое".equals(type)){android.media.MediaPlayer player=new android.media.MediaPlayer();player.setDataSource(this,uri);player.setOnCompletionListener(android.media.MediaPlayer::release);player.prepare();player.start();toast("Воспроизводится голосовое сообщение");}else if("Фото".equals(type)){ImageView image=new ImageView(this);image.setImageURI(uri);image.setAdjustViewBounds(true);new AlertDialog.Builder(this).setTitle("Фото от партнёра").setView(image).setPositiveButton("Закрыть",null).show();}else if("Кружок".equals(type)){android.webkit.WebView player=new android.webkit.WebView(this);player.getSettings().setJavaScriptEnabled(true);player.getSettings().setAllowFileAccess(true);String page="<meta name='viewport' content='width=device-width,initial-scale=1'><style>body{margin:0;background:#211d25;display:grid;place-items:center;height:100vh}video{width:88vw;height:88vw;max-width:440px;max-height:440px;border-radius:50%;object-fit:cover}</style><video controls autoplay playsinline src='"+uri.toString()+"'></video>";player.loadDataWithBaseURL("file:///",page,"text/html","UTF-8",null);new AlertDialog.Builder(this).setTitle("Видеокружок").setView(player).setPositiveButton("Закрыть",null).show();}else{android.widget.VideoView video=new android.widget.VideoView(this);video.setVideoURI(uri);new AlertDialog.Builder(this).setTitle("Видео от партнёра").setView(video).setPositiveButton("Закрыть",null).show();video.start();}}catch(Exception e){toast("Не удалось воспроизвести вложение");}}
+    private void showChatAttachment(Uri uri,String type){try{if("Голосовое".equals(type)){android.media.MediaPlayer player=new android.media.MediaPlayer();player.setDataSource(this,uri);player.setOnCompletionListener(android.media.MediaPlayer::release);player.prepare();player.start();toast("Воспроизводится голосовое сообщение");}else if("Фото".equals(type)){ImageView image=new ImageView(this);image.setImageURI(uri);image.setAdjustViewBounds(true);new AlertDialog.Builder(this).setTitle("Фото от партнёра").setView(image).setPositiveButton("Закрыть",null).show();}else if("GIF".equals(type)){showChatGif(uri);}else if("Кружок".equals(type)){android.webkit.WebView player=new android.webkit.WebView(this);player.getSettings().setJavaScriptEnabled(true);player.getSettings().setAllowFileAccess(true);String page="<meta name='viewport' content='width=device-width,initial-scale=1'><style>body{margin:0;background:#211d25;display:grid;place-items:center;height:100vh}video{width:88vw;height:88vw;max-width:440px;max-height:440px;border-radius:50%;object-fit:cover}</style><video controls autoplay playsinline src='"+uri.toString()+"'></video>";player.loadDataWithBaseURL("file:///",page,"text/html","UTF-8",null);new AlertDialog.Builder(this).setTitle("Видеокружок").setView(player).setPositiveButton("Закрыть",null).show();}else if("Видео".equals(type)){android.widget.VideoView video=new android.widget.VideoView(this);video.setVideoURI(uri);new AlertDialog.Builder(this).setTitle("Видео от партнёра").setView(video).setPositiveButton("Закрыть",null).show();video.start();}else{android.media.MediaPlayer player=new android.media.MediaPlayer();player.setDataSource(this,uri);player.setOnCompletionListener(android.media.MediaPlayer::release);player.prepare();player.start();toast("Воспроизводится аудио");}}catch(Exception e){toast("Не удалось воспроизвести вложение: "+e.getMessage());}}
+
+    private void showChatGif(Uri uri)throws Exception{
+        View content;
+        android.graphics.drawable.AnimatedImageDrawable animated=null;
+        if(android.os.Build.VERSION.SDK_INT>=28){
+            android.graphics.ImageDecoder.Source source=android.graphics.ImageDecoder.createSource(getContentResolver(),uri);
+            android.graphics.drawable.Drawable drawable=android.graphics.ImageDecoder.decodeDrawable(source);
+            ImageView image=new ImageView(this);image.setAdjustViewBounds(true);image.setImageDrawable(drawable);content=image;
+            if(drawable instanceof android.graphics.drawable.AnimatedImageDrawable)animated=(android.graphics.drawable.AnimatedImageDrawable)drawable;
+        }else{
+            android.graphics.Movie movie;
+            try(InputStream input=getContentResolver().openInputStream(uri)){movie=android.graphics.Movie.decodeStream(input);}
+            if(movie==null){ImageView image=new ImageView(this);image.setImageURI(uri);image.setAdjustViewBounds(true);content=image;}
+            else{
+                android.graphics.Movie gif=movie;
+                content=new View(this){
+                    private final long started=android.os.SystemClock.uptimeMillis();
+                    @Override protected void onDraw(android.graphics.Canvas canvas){
+                        super.onDraw(canvas);
+                        int duration=Math.max(1,gif.duration()),time=(int)((android.os.SystemClock.uptimeMillis()-started)%duration);
+                        gif.setTime(time);
+                        float scale=Math.min((float)getWidth()/gif.width(),(float)getHeight()/gif.height());
+                        canvas.save();canvas.scale(scale,scale);gif.draw(canvas,0,0);canvas.restore();
+                        postInvalidateDelayed(33);
+                    }
+                };
+                content.setMinimumHeight(dp(220));
+            }
+        }
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("GIF")
+                .setView(content).setPositiveButton("Закрыть",null).create();
+        android.graphics.drawable.AnimatedImageDrawable playback=animated;
+        dialog.setOnShowListener(v->{if(playback!=null)playback.start();});
+        dialog.setOnDismissListener(v->{if(playback!=null)playback.stop();});
+        dialog.show();
+    }
 
     private void renderEditableEntry(String key,JSONArray list,int index,String icon) {
         JSONObject item=list.optJSONObject(index);if(item==null)return;
@@ -1869,13 +2669,27 @@ public class MainActivity extends Activity {
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent data) {
         super.onActivityResult(requestCode,resultCode,data);
         if(requestCode==IntentIntegrator.REQUEST_CODE){
+            if(pendingLoyaltyScan) {
+                if(resultCode==RESULT_OK&&data!=null) onLoyaltyScanResult(data);
+                else {
+                    pendingLoyaltyScan=false;
+                    toast("Сканирование карты отменено");
+                }
+                return;
+            }
             IntentResult result=IntentIntegrator.parseActivityResult(requestCode,resultCode,data);
             if(result==null||result.getContents()==null){toast("Сканирование QR-кода отменено");return;}
             joinCoupleWithCode(result.getContents());return;
         }
-        if(requestCode==405&&resultCode==RESULT_OK&&data!=null&&data.hasExtra("path")){android.net.Uri uri=android.net.Uri.fromFile(new java.io.File(data.getStringExtra("path")));uploadChatAttachment(uri,"Кружок");return;}
+        if(requestCode==405&&resultCode==RESULT_OK&&data!=null&&data.hasExtra("path")){Uri uri=Uri.fromFile(new File(data.getStringExtra("path")));confirmChatAttachment(uri,"Кружок","video/webm",null);return;}
         if(requestCode==406&&resultCode==RESULT_OK&&data!=null){if(data.hasExtra("path")){saveAvatar(Uri.fromFile(new java.io.File(data.getStringExtra("path"))));return;}if(data.getData()!=null){Uri uri=data.getData();try{getContentResolver().takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION);}catch(Exception ignored){}saveAvatar(uri);return;}}
-        if(requestCode==404&&resultCode==RESULT_OK&&data!=null&&data.getData()!=null){Uri uri=data.getData();String mime=getContentResolver().getType(uri);String type=requestCode==405?"Кружок":mime!=null&&mime.startsWith("image/")?"Фото":mime!=null&&mime.startsWith("video/")?"Видео":"Голосовое";uploadChatAttachment(uri,type);return;}
+        if((requestCode==404||requestCode==408)&&resultCode==RESULT_OK&&data!=null&&data.getData()!=null){
+            Uri uri=data.getData();String mime=getContentResolver().getType(uri);
+            String type=requestCode==408||"image/gif".equalsIgnoreCase(mime)?"GIF"
+                    :mime!=null&&mime.startsWith("image/")?"Фото"
+                    :mime!=null&&mime.startsWith("video/")?"Видео":"Голосовое";
+            confirmChatAttachment(uri,type,mime,null);return;
+        }
         if(requestCode==403&&resultCode==RESULT_OK&&data!=null&&data.getData()!=null){
             Uri uri=data.getData();String key=pendingPhotoKey,id=pendingPhotoItemId;
             if(!sync.ready()){toast("Фото-отчёт можно синхронизировать после подключения пары");return;}

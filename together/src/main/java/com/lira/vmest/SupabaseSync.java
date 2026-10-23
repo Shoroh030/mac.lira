@@ -136,8 +136,18 @@ final class SupabaseSync {
     void deleteAttachment(String path)throws Exception{String safe=path.replace("%","%25").replace(" ","%20");requestValue("DELETE","/storage/v1/object/couple-files/"+safe,null,true);}
 
     String uploadAttachment(android.net.Uri uri,String itemId,Context context)throws Exception{
+        return uploadAttachment(uri,itemId,context,null);
+    }
+
+    String uploadAttachment(android.net.Uri uri,String itemId,Context context,String contentType)throws Exception{
         String couple=coupleId();if(couple.isEmpty())throw new Exception("Сначала подключите пару");
-        String type=context.getContentResolver().getType(uri);if(type==null)type="image/jpeg";
+        String type=contentType;
+        if(type==null||type.isEmpty())type=context.getContentResolver().getType(uri);
+        if(type==null||type.isEmpty()){
+            String extension=android.webkit.MimeTypeMap.getFileExtensionFromUrl(uri.getLastPathSegment());
+            type=android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+        }
+        if(type==null||type.isEmpty())type="application/octet-stream";
         byte[] data;
         try(InputStream in=context.getContentResolver().openInputStream(uri);ByteArrayOutputStream out=new ByteArrayOutputStream()){
             if(in==null)throw new Exception("Не удалось открыть выбранное фото");
@@ -174,6 +184,15 @@ final class SupabaseSync {
         for(int i=0;i<a.length();i++)merged.put(a.getJSONObject(i));
         for(int i=0;i<b.length();i++)merged.put(b.getJSONObject(i));
         return merged;
+    }
+
+    void updateMessage(String messageId,String body)throws Exception{
+        if(messageId==null||messageId.isEmpty())throw new Exception("Не найдено сообщение для изменения");
+        if(body==null||body.trim().isEmpty()||body.length()>4000)throw new Exception("Сообщение должно содержать от 1 до 4000 символов");
+        java.text.SimpleDateFormat timestamp=new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",java.util.Locale.US);
+        timestamp.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+        JSONObject patch=new JSONObject();patch.put("body",body.trim());patch.put("edited_at",timestamp.format(new java.util.Date()));
+        request("PATCH","/rest/v1/couple_messages?id=eq."+messageId+"&couple_id=eq."+coupleId()+"&sender_id=eq."+userId(),patch,true);
     }
 
     void upsertMovieRoom(JSONObject room)throws Exception{
@@ -268,7 +287,24 @@ final class SupabaseSync {
     void storeRemote(JSONObject row,SharedPreferences target)throws Exception{
         if(row.has("body")){
             JSONObject entry=new JSONObject();entry.put("id",row.optString("id"));entry.put("title",row.optString("body"));
-            entry.put("detail","Сообщение пары");entry.put("done",false);entry.put("sender_id",row.optString("sender_id"));merge(target,"messages",entry);return;
+            entry.put("detail","Сообщение пары");entry.put("done",false);entry.put("sender_id",row.optString("sender_id"));
+            if(row.has("edited_at")&&!row.isNull("edited_at"))entry.put("edited_at",row.optString("edited_at"));
+            JSONArray old=new JSONArray(target.getString("messages","[]"));
+            for(int i=0;i<old.length();i++){
+                JSONObject previous=old.optJSONObject(i);
+                if(previous==null||!entry.optString("id").equals(previous.optString("id")))continue;
+                try{
+                    JSONObject remoteMedia=new JSONObject(entry.optString("title",""));
+                    JSONObject localMedia=new JSONObject(previous.optString("title",""));
+                    if(remoteMedia.optBoolean("vmeste_media")&&localMedia.optBoolean("vmeste_media")
+                            &&!localMedia.optString("local_path").isEmpty())
+                        remoteMedia.put("local_path",localMedia.optString("local_path"));
+                    entry.put("title",remoteMedia.toString());
+                }catch(org.json.JSONException ignored){ }
+                if(previous.has("ts"))entry.put("ts",previous.optLong("ts"));
+                break;
+            }
+            merge(target,"messages",entry);return;
         }
         JSONObject payload=row.optJSONObject("payload");if(payload==null)return;
         String key=payload.optString("app_key","");if(key.isEmpty())key=keyFor(row.optString("kind"),payload.optString("date"));if(key==null||"notes".equals(key))return;

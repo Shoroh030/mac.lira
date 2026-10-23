@@ -11,6 +11,7 @@ The clients currently receive missing-table errors until the migrations have run
 3. `migrations/20261020000300_couple_games.sql`
 4. `migrations/20261021000100_chat_delivery_ack.sql`
 5. `migrations/20261023000100_together_fixes.sql`
+6. `migrations/20261023000200_chat_message_edits.sql`
 
 To deploy with the Supabase CLI, authenticate and link this repository, then inspect the remote migration history before applying anything:
 
@@ -27,7 +28,7 @@ The Supabase GitHub integration deploys only changes that have been committed an
 
 ## What the schema provides
 
-The migrations create two-person couple membership, invite-code RPCs, profiles, shared items and chat with row-level security, private file storage, pair-only WebRTC room signaling, and couple-scoped turn-based game sessions with atomic move updates. The latest migration enables Connect Four, Checkers, and Dots and Boxes, and makes every new watch-room start close prior active rooms and use a fresh room ID so stale SDP/ICE signals cannot be reused. Normal room shutdown also marks its room closed. Video and voice media travel directly between the two devices; Supabase stores room offers, ICE metadata, and chat text. A TURN relay is not bundled, so restrictive networks may need a TURN service.
+The migrations create two-person couple membership, invite-code RPCs, profiles, shared items and chat with row-level security, private file storage, pair-only WebRTC room signaling, and couple-scoped turn-based game sessions with atomic move updates. The latest fixes migration enables Connect Four, Checkers, and Dots and Boxes, and makes every new watch-room start close prior active rooms and use a fresh room ID so stale SDP/ICE signals cannot be reused. The chat-edits migration adds a timestamp and owner-only update policy for message text. Normal room shutdown also marks its room closed. Chat attachments use private couple storage and are downloaded to local app storage; the recipient acknowledges delivery before the uploaded object is deleted. A TURN relay is not bundled, so restrictive networks may need a TURN service.
 
 Android asks the host to approve screen capture and microphone access. Browser or Android streaming may be blocked by protected-content services; the app does not bypass those restrictions. The PC client is `together/desktop/index.html`; open it in Chrome or Edge and sign in to the same couple to sync data and join a room.
 
