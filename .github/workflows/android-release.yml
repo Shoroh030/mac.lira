@@ -63,6 +63,7 @@ jobs:
           signer="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
           actual="$("$signer" verify --print-certs "together/build/outputs/apk/release/together-${APP_VERSION}.apk" | awk -F': ' '/Signer #1 certificate SHA-256 digest:/ { print $2; exit }')"
           expected="9489b3c2541bd20259026ec6d6c185b84edaf39245bb2a442beb26b3b4534808"
+          echo "Release APK signer SHA-256: $actual"
           if [ "$actual" != "$expected" ]; then
             echo "Release APK signing certificate does not match existing app installations." >&2
             exit 1
