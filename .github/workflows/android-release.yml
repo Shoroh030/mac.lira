@@ -54,7 +54,7 @@ jobs:
           VMEST_KEYSTORE_PASSWORD: ${{ secrets.VMEST_KEYSTORE_PASSWORD }}
           VMEST_KEY_ALIAS: ${{ secrets.VMEST_KEY_ALIAS }}
           VMEST_KEY_PASSWORD: ${{ secrets.VMEST_KEY_PASSWORD }}
-        run: ./desktop/gradlew -p . :together:assembleRelease
+        run: bash ./desktop/gradlew -p . :together:assembleRelease
       - name: Name APK for in-app updater
         run: cp together/build/outputs/apk/release/together-release.apk "together/build/outputs/apk/release/together-${APP_VERSION}.apk"
       - name: Verify release signing certificate
