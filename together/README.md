@@ -2,6 +2,10 @@
 
 The app checks the public GitHub repository's latest stable release and offers to download its APK. Android still requires the user to allow installs from this app and confirm the system installer; updates are never installed silently.
 
+## Pairing and sharing
+
+On a fresh install, the app opens the sign-in/registration dialog. After signing in, create a couple to display its invite QR code or scan the other phone's code from **Пригласить**; entering the eight-character code manually remains available. Stories can contain text or a photo and expire after 24 hours. Android's share sheet can send text links or photos to the app; they appear as a chat draft for review before sending, and web links in chat open in the in-app viewer.
+
 ## Publish an update
 
 One-time setup by a repository administrator: open **Settings → Secrets and variables → Actions** in `Shoroh030/mac.lira` and add these repository secrets:
