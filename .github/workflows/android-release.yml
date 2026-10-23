@@ -60,8 +60,27 @@ jobs:
       - name: Verify release signing certificate
         shell: bash
         run: |
-          signer="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          sdk_root="${ANDROID_HOME:-}"
+          if [ ! -d "$sdk_root/build-tools" ]; then
+            sdk_root="${ANDROID_SDK_ROOT:-}"
+          fi
+          if [ ! -d "$sdk_root/build-tools" ]; then
+            sdk_root="/usr/local/lib/android/sdk"
+          fi
+          if [ ! -d "$sdk_root/build-tools" ]; then
+            echo "Android SDK build-tools were not found." >&2
+            exit 1
+          fi
+          signer="$(find "$sdk_root/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          if [ -z "$signer" ]; then
+            echo "apksigner was not found in Android SDK build-tools." >&2
+            exit 1
+          fi
           actual="$("$signer" verify --print-certs "together/build/outputs/apk/release/together-${APP_VERSION}.apk" | awk -F': ' '/Signer #1 certificate SHA-256 digest:/ { print $2; exit }')"
+          if [ -z "$actual" ]; then
+            echo "Could not read the APK signing certificate." >&2
+            exit 1
+          fi
           expected="9489b3c2541bd20259026ec6d6c185b84edaf39245bb2a442beb26b3b4534808"
           echo "Release APK signer SHA-256: $actual"
           if [ "$actual" != "$expected" ]; then
