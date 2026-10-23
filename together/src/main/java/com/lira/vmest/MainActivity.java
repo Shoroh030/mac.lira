@@ -928,7 +928,7 @@ public class MainActivity extends Activity {
         network.execute(() -> {
             HttpURLConnection connection = null;
             try {
-                connection = (HttpURLConnection) new URL("https://api.github.com/repos/Ko0137/mac.lira/releases/latest").openConnection();
+                connection = (HttpURLConnection) new URL("https://api.github.com/repos/Shoroh030/mac.lira/releases/latest").openConnection();
                 connection.setRequestProperty("Accept", "application/vnd.github+json");
                 connection.setRequestProperty("User-Agent", "Vmeste-Android");
                 connection.setConnectTimeout(10000); connection.setReadTimeout(12000);
