@@ -36,7 +36,16 @@ jobs:
             echo "Configure VMEST_KEYSTORE_BASE64, VMEST_KEYSTORE_PASSWORD, VMEST_KEY_ALIAS and VMEST_KEY_PASSWORD in repository Actions secrets before creating a release tag." >&2
             exit 1
           fi
-          echo "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/vmeste-release.keystore"
+          if ! printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/vmeste-release.keystore"; then
+            echo "VMEST_KEYSTORE_BASE64 is not valid Base64." >&2
+            exit 1
+          fi
+          if [ ! -s "$RUNNER_TEMP/vmeste-release.keystore" ] ||
+            ! keytool -list -keystore "$RUNNER_TEMP/vmeste-release.keystore" \
+              -storepass "$KEYSTORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null 2>&1; then
+            echo "The keystore file, password or alias is invalid." >&2
+            exit 1
+          fi
           echo "VMEST_KEYSTORE_PATH=$RUNNER_TEMP/vmeste-release.keystore" >> "$GITHUB_ENV"
           echo "APP_VERSION=$version" >> "$GITHUB_ENV"
           echo "APP_VERSION_CODE=$((1000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_ENV"
