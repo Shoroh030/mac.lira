@@ -1395,7 +1395,7 @@ public class MainActivity extends Activity {
         syncMovieRoomMetadata();
         JSONObject room = readMovieRoom();
         if (room == null) {
-            simpleCard("🍿", "Выберите фильм или видео", "Добавьте ссылку из сервиса, которым пользуетесь оба. Комната сохранит её и общий статус просмотра.", null);
+            simpleCard("🍿", "Выберите фильм или видео", "YouTube и публичные MP4/HLS-ссылки синхронизируются в комнате. Закрытые плееры могут не поддерживать управление.", null);
             TextView create = pill("＋  Создать кино-комнату", PURPLE); body.addView(create);
             create.setOnClickListener(v -> editMovieRoom(null));
             TextView youtube = pill("Найти видео на YouTube", PURPLE); body.addView(youtube);
@@ -1412,7 +1412,7 @@ public class MainActivity extends Activity {
         String status = room.optString("status", "ready");
         simpleCard("🎬", title, statusText(status) + (sync.signedIn() && !sync.coupleId().isEmpty() ? " · общее пространство подключено" : " · только на этом телефоне"), null);
         if (!url.isEmpty()) {
-            TextView open = pill("▶  Открыть видео", PURPLE); body.addView(open); open.setOnClickListener(v -> openUrl(url));
+            TextView open = pill("▶  Открыть ссылку отдельно", PURPLE); body.addView(open); open.setOnClickListener(v -> openUrl(url));
         }
         TextView share = pill("Поделиться комнатой", PURPLE); body.addView(share);
         share.setOnClickListener(v -> shareText("Смотрим вместе: " + title + (url.isEmpty() ? "" : "\n" + url)));
@@ -1440,7 +1440,7 @@ public class MainActivity extends Activity {
 
     private void createLiveRoom() {
         if (!sync.configured() || !sync.signedIn() || sync.coupleId().isEmpty()) {
-            toast("Для парной трансляции сначала подключите Supabase, войдите и пригласите партнёра.");
+            toast("Чтобы открыть общую комнату просмотра, войдите и подключите пару в Supabase.");
             return;
         }
         JSONObject room = readMovieRoom();
@@ -1473,7 +1473,7 @@ public class MainActivity extends Activity {
     private void joinLiveRoom() {
         if (!sync.configured() || !sync.signedIn() || sync.coupleId().isEmpty()) { toast("Сначала подключите общее пространство с партнёром"); return; }
         EditText code = new EditText(this); code.setSingleLine(true); code.setHint("Код комнаты от партнёра");
-        new AlertDialog.Builder(this).setTitle("Войти в парную трансляцию").setView(code).setNegativeButton("Отмена", null)
+        new AlertDialog.Builder(this).setTitle("Войти в комнату просмотра").setView(code).setNegativeButton("Отмена", null)
                 .setPositiveButton("Подключиться", (d,w) -> {
                     String roomId = code.getText().toString().trim();
                     this.<JSONObject>runNetwork(() -> { JSONObject found=sync.getWatchRoom(roomId);if(found!=null){JSONObject movie=sync.fetchMovieRoom();if(movie!=null)found.put("player_url",movie.optString("url",""));}return found; }, room -> {
@@ -1816,14 +1816,14 @@ public class MainActivity extends Activity {
     private void editMovieRoom(JSONObject existing) {
         LinearLayout form = column(); form.setPadding(dp(18), 0, dp(18), 0);
         EditText title = new EditText(this); title.setSingleLine(true); title.setHint("Название фильма");
-        EditText url = new EditText(this); url.setSingleLine(true); url.setHint("Ссылка на фильм или видео"); url.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+        EditText url = new EditText(this); url.setSingleLine(true); url.setHint("YouTube или публичное видео MP4/HLS"); url.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
         if (existing != null) { title.setText(existing.optString("title")); url.setText(existing.optString("url")); }
         form.addView(title); form.addView(url);
-        new AlertDialog.Builder(this).setTitle("Кино-комната").setMessage("Ссылка откроется в приложении или браузере, где доступен фильм. Для синхронизации комнаты оба телефона должны быть подключены к одному пространству.")
+        new AlertDialog.Builder(this).setTitle("Кино-комната").setMessage("В общей комнате синхронизируются YouTube и публичные HTTPS-видео MP4/HLS. Закрытые и DRM-плееры не обходятся и могут не поддерживать синхронизацию.")
                 .setView(form).setNegativeButton("Отмена", null).setPositiveButton("Сохранить", (d, w) -> {
                     String name = title.getText().toString().trim(), link = url.getText().toString().trim();
                     if (name.isEmpty()) name = "Вечер кино";
-                    if (!link.isEmpty() && !link.startsWith("https://") && !link.startsWith("http://")) link = "https://" + link;
+                    if (!link.isEmpty() && !link.startsWith("https://")) { toast("Используйте безопасную HTTPS-ссылку"); return; }
                     JSONObject room = existing == null ? new JSONObject() : existing;
                     try { if (!room.has("id")) room.put("id", UUID.randomUUID().toString()); room.put("title", name); room.put("url", link); room.put("status", "ready"); room.put("updated", System.currentTimeMillis()); prefs.edit().putString("movie_room", room.toString()).apply(); } catch (Exception ignored) { }
                     persistMovieRoom(room); render();

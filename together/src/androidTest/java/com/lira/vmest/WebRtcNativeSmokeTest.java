@@ -51,16 +51,18 @@ public final class WebRtcNativeSmokeTest {
             peer = factory.createPeerConnection(configuration, observer(gatheringComplete));
             assertNotNull("PeerConnection was not created", peer);
             peer.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO,
-                    new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY));
+                    new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_RECV));
             peer.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO,
-                    new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY));
+                    new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_RECV));
             Log.i(TAG, "peer-and-transceivers-created");
 
             CountDownLatch offerSet = new CountDownLatch(1);
             String[] error = {null};
+            String[] offerSdp = {null};
             PeerConnection activePeer = peer;
             activePeer.createOffer(new SdpObserver() {
                 @Override public void onCreateSuccess(SessionDescription offer) {
+                    offerSdp[0] = offer.description;
                     peerSetLocal(offer);
                 }
 
@@ -96,6 +98,8 @@ public final class WebRtcNativeSmokeTest {
             assertTrue("Timed out creating and setting local SDP",
                     offerSet.await(CALLBACK_TIMEOUT_SECONDS, TimeUnit.SECONDS));
             assertNull("SDP offer failed: " + error[0], error[0]);
+            assertTrue("Offer omitted the audio transceiver", offerSdp[0].contains("m=audio "));
+            assertTrue("Offer omitted the video transceiver", offerSdp[0].contains("m=video "));
             gatheringComplete.await(CALLBACK_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             Log.i(TAG, "entering-native-stability-window");
             Thread.sleep(STABILITY_WINDOW_MILLIS);

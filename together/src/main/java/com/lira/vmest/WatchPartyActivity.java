@@ -9,12 +9,12 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.media.AudioManager;
-import android.media.projection.MediaProjectionManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -27,15 +27,26 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.media3.common.MediaItem;
+import androidx.media3.common.Player;
+import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.ui.PlayerView;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.json.JSONTokener;
 import org.webrtc.AudioSource;
 import org.webrtc.AudioTrack;
+import org.webrtc.Camera1Enumerator;
+import org.webrtc.Camera2Enumerator;
+import org.webrtc.CameraEnumerator;
+import org.webrtc.CameraVideoCapturer;
 import org.webrtc.DefaultVideoDecoderFactory;
 import org.webrtc.DefaultVideoEncoderFactory;
 import org.webrtc.EglBase;
@@ -47,7 +58,6 @@ import org.webrtc.PeerConnection;
 import org.webrtc.PeerConnectionFactory;
 import org.webrtc.RtpReceiver;
 import org.webrtc.RtpTransceiver;
-import org.webrtc.ScreenCapturerAndroid;
 import org.webrtc.SdpObserver;
 import org.webrtc.SessionDescription;
 import org.webrtc.SurfaceTextureHelper;
@@ -61,45 +71,80 @@ import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** One-to-one screen broadcast, voice and text chat. Media is peer-to-peer; Supabase is signaling only. */
+/** One-to-one synchronized playback with opt-in camera, voice and text chat. */
 public final class WatchPartyActivity extends Activity {
     public static final String EXTRA_ROOM_ID = "room_id";
     public static final String EXTRA_HOST = "host";
     public static final String EXTRA_TITLE = "title";
     public static final String EXTRA_PLAYER_URL = "player_url";
-    private static final int REQUEST_CAPTURE = 7101;
     private static final int REQUEST_MIC = 7102;
-    private static final int REQUEST_NOTIFY = 7103;
+    private static final int REQUEST_CAMERA = 7104;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
+    private final ExecutorService media = Executors.newSingleThreadExecutor();
     private final List<IceCandidate> pendingCandidates = new ArrayList<>();
     private final Object offerLock = new Object();
     private SupabaseSync sync;
     private String roomId, title;
     private String playerUrl;
-    private boolean host, remoteReady, closed;
-    private boolean videoVisible = true, fullscreen = false;
-    private long lastSignalId;
+    private boolean host, remoteReady;
+    private volatile boolean closed;
+    private boolean applyingRemotePlayback;
+    private boolean remoteVideoAvailable, fullscreen = false, rtcReady;
+    private long lastSignalId, suppressPlaybackSyncUntil, lastPlaybackSignalAt;
+    private long lastYoutubePositionMs, lastYoutubeSampleAt;
+    private boolean youtubeStateKnown, lastYoutubePlaying, playbackRequestSent;
+    private boolean playerReady;
+    private JSONObject pendingPlaybackState;
     private LinearLayout root;
     private TextView status, roomCode;
     private WebView playerView;
+    private FrameLayout playerContainer;
+    private PlayerView directPlayerView;
+    private EditText playerAddress;
+    private LinearLayout videoRow;
+    private TextView privacyStatus;
+    private Button cameraButton, micButton;
+    private ExoPlayer directPlayer;
+    private WatchPlayerSource playerSource;
     private SurfaceViewRenderer remoteView;
+    private SurfaceViewRenderer localCameraView;
+    private VideoTrack remoteVideoTrack;
+    private VideoTrack cameraTrack;
     private EglBase egl;
     private PeerConnectionFactory factory;
     private PeerConnection peer;
     private AudioSource audioSource;
     private AudioTrack audioTrack;
+    private RtpTransceiver audioTransceiver;
+    private RtpTransceiver videoTransceiver;
     private VideoSource videoSource;
-    private VideoTrack screenTrack;
-    private ScreenCapturerAndroid screenCapturer;
+    private CameraVideoCapturer cameraCapturer;
     private SurfaceTextureHelper textureHelper;
-    private Intent projectionData;
+    private volatile boolean cameraStarting, cameraStopPending;
+    private boolean cameraFrontFacing;
     private AudioManager audioManager;
     private ScrollView chatScroll;
     private LinearLayout chatLines;
     private boolean uiReady = false;
     private boolean mediaStarted = false;
     private boolean offerReady, offerInProgress, offerPending;
+    private final Runnable playbackPoll = new Runnable() {
+        @Override public void run() {
+            if (closed || playerSource == null) return;
+            if (playerSource.kind == WatchPlayerSource.Kind.YOUTUBE && playerView != null) {
+                playerView.evaluateJavascript(
+                    "(function(){if(!window.vmestePlayer||!window.vmestePlayer.getPlayerState)return '';"
+                        + "return window.vmestePlayer.getPlayerState()+'|'+window.vmestePlayer.getCurrentTime();})()",
+                    WatchPartyActivity.this::onYouTubeSampleSafe);
+            }
+            if (host && isLocalPlayerPlaying()
+                    && SystemClock.elapsedRealtime() - lastPlaybackSignalAt >= 15_000) {
+                publishPlaybackSnapshotSafe();
+            }
+            if (!closed) main.postDelayed(this, 1_000);
+        }
+    };
 
     public static Intent intent(Context c, String roomId, boolean host, String title) {
         Intent i = new Intent(c, WatchPartyActivity.class);
@@ -123,17 +168,7 @@ public final class WatchPartyActivity extends Activity {
                 showErrorSafe("Сначала подключите Supabase, войдите и создайте общее пространство в разделе «Пригласить партнёра».");
                 return;
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQUEST_NOTIFY);
-            }
-            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQUEST_MIC);
-            } else if (!mediaStarted) {
-                mediaStarted = true;
-                // Always enter room UI first; host starts screen capture manually via button
-                startRtcSafe(null);
-            }
+            startRtcSafe();
         } catch (Exception e) {
             showErrorSafe("Не удалось открыть комнату: " + e.getMessage());
         }
@@ -146,12 +181,13 @@ public final class WatchPartyActivity extends Activity {
             root.setBackgroundColor(Color.rgb(250, 247, 252)); setContentView(root);
             TextView heading = labelSafe("🎬  " + title, 21, Color.rgb(48, 43, 53), true); root.addView(heading);
             roomCode = labelSafe("Код комнаты: " + roomId, 12, Color.GRAY, false); roomCode.setPadding(0, dp(4), 0, dp(4)); root.addView(roomCode);
-            status = labelSafe(host ? "Подготовка трансляции…" : "Ожидаем трансляцию партнёра…", 14, Color.rgb(102, 77, 128), true);
+            status = labelSafe("Плеер и чат доступны · камера и микрофон выключены", 14,
+                Color.rgb(102, 77, 128), true);
             status.setPadding(0, dp(8), 0, dp(8)); root.addView(status);
             LinearLayout playerControls = new LinearLayout(this); playerControls.setGravity(Gravity.CENTER_VERTICAL);
             playerControls.setPadding(0, dp(4), 0, dp(4));
-            EditText playerAddress = new EditText(this); playerAddress.setSingleLine(true);
-            playerAddress.setHint("Ссылка на видео для просмотра внутри приложения");
+            playerAddress = new EditText(this); playerAddress.setSingleLine(true);
+            playerAddress.setHint("YouTube или HTTPS-ссылка на MP4/HLS");
             if (playerUrl != null) playerAddress.setText(playerUrl);
             playerControls.addView(playerAddress, new LinearLayout.LayoutParams(0, dp(48), 1));
             Button play = new Button(this); play.setText("Открыть"); playerControls.addView(play); root.addView(playerControls);
@@ -165,22 +201,68 @@ public final class WatchPartyActivity extends Activity {
             webSettings.setLoadWithOverviewMode(true);
             webSettings.setUseWideViewPort(true);
             playerView.setWebChromeClient(new WebChromeClient());
-            playerView.setWebViewClient(new WebViewClient());
-            root.addView(playerView, new LinearLayout.LayoutParams(-1, dp(220)));
+            playerView.setWebViewClient(new WebViewClient() {
+                @Override public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                    return !isHttpsUrl(url);
+                }
+
+                @Override public boolean shouldOverrideUrlLoading(
+                        WebView view, android.webkit.WebResourceRequest request) {
+                    return !isHttpsUrl(request.getUrl().toString());
+                }
+            });
+            directPlayerView = new PlayerView(this);
+            directPlayerView.setUseController(true);
+            directPlayerView.setBackgroundColor(Color.BLACK);
+            playerContainer = new FrameLayout(this);
+            playerContainer.setBackgroundColor(Color.BLACK);
+            playerContainer.addView(playerView, new FrameLayout.LayoutParams(-1, -1));
+            playerContainer.addView(directPlayerView, new FrameLayout.LayoutParams(-1, -1));
+            playerView.setVisibility(View.GONE);
+            directPlayerView.setVisibility(View.GONE);
+            root.addView(playerContainer, new LinearLayout.LayoutParams(-1, dp(220)));
             play.setOnClickListener(v -> {
                 String link = playerAddress.getText().toString().trim();
-                if (!link.startsWith("https://") && !link.startsWith("http://")) {
-                    playerAddress.setError("Укажите ссылку http или https"); return;
-                }
-                playerUrl = link;
-                if (playerView != null) playerView.loadUrl(link);
+                openPlayerSafe(link, true);
             });
-            if (playerUrl != null && !playerUrl.trim().isEmpty() && playerView != null)
-                playerView.loadUrl(playerUrl);
+            if (playerUrl != null && !playerUrl.trim().isEmpty()) openPlayerSafe(playerUrl, host);
+            videoRow = new LinearLayout(this);
+            videoRow.setGravity(Gravity.CENTER);
+            LinearLayout remoteTile = new LinearLayout(this);
+            remoteTile.setOrientation(LinearLayout.VERTICAL);
+            TextView remoteLabel = labelSafe("Партнёр", 12, Color.rgb(102, 77, 128), true);
+            remoteTile.addView(remoteLabel);
             remoteView = new SurfaceViewRenderer(this);
             remoteView.setBackgroundColor(Color.BLACK);
-            root.addView(remoteView, new LinearLayout.LayoutParams(-1, 0, 1));
-            if (host) remoteView.setVisibility(View.GONE);
+            remoteTile.addView(remoteView, new LinearLayout.LayoutParams(-1, dp(96)));
+            LinearLayout localTile = new LinearLayout(this);
+            localTile.setOrientation(LinearLayout.VERTICAL);
+            TextView localLabel = labelSafe("Вы", 12, Color.rgb(102, 77, 128), true);
+            localTile.addView(localLabel);
+            localCameraView = new SurfaceViewRenderer(this);
+            localCameraView.setBackgroundColor(Color.BLACK);
+            localTile.addView(localCameraView, new LinearLayout.LayoutParams(-1, dp(96)));
+            videoRow.addView(remoteTile, new LinearLayout.LayoutParams(0, dp(118), 1));
+            videoRow.addView(localTile, new LinearLayout.LayoutParams(0, dp(118), 1));
+            videoRow.setVisibility(View.GONE);
+            root.addView(videoRow);
+            LinearLayout mediaControls = new LinearLayout(this);
+            mediaControls.setGravity(Gravity.CENTER);
+            cameraButton = new Button(this);
+            cameraButton.setText("📷 Камера выключена");
+            cameraButton.setEnabled(false);
+            mediaControls.addView(cameraButton, new LinearLayout.LayoutParams(0, dp(48), 1));
+            micButton = new Button(this);
+            micButton.setText("🔇 Микрофон выключен");
+            micButton.setEnabled(false);
+            mediaControls.addView(micButton, new LinearLayout.LayoutParams(0, dp(48), 1));
+            root.addView(mediaControls);
+            privacyStatus = labelSafe("Видео и звук никому не передаются", 12,
+                Color.GRAY, false);
+            privacyStatus.setPadding(0, 0, 0, dp(4));
+            root.addView(privacyStatus);
+            cameraButton.setOnClickListener(v -> toggleCameraSafe());
+            micButton.setOnClickListener(v -> toggleMicrophoneSafe());
             chatScroll = new ScrollView(this); chatScroll.setFillViewport(false);
             chatLines = new LinearLayout(this); chatLines.setOrientation(LinearLayout.VERTICAL); chatScroll.addView(chatLines);
             LinearLayout.LayoutParams chatParams = new LinearLayout.LayoutParams(-1, dp(126)); chatParams.topMargin = dp(8);
@@ -202,15 +284,6 @@ public final class WatchPartyActivity extends Activity {
                 composer.setVisibility(visible ? View.VISIBLE : View.GONE);
                 textMode.setText(visible ? "Текст ✓" : "Текст");
             });
-            Button videoMode = new Button(this); videoMode.setText("Видео ✓"); actions.addView(videoMode);
-            videoMode.setOnClickListener(v -> {
-                videoVisible = !videoVisible;
-                if (!host && remoteView != null)
-                    remoteView.setVisibility(videoVisible ? View.VISIBLE : View.GONE);
-                videoMode.setText(videoVisible ? "Видео ✓" : "Видео");
-            });
-            Button mic = new Button(this); mic.setText("🎙  Микрофон"); actions.addView(mic);
-            mic.setOnClickListener(v -> toggleMicrophoneSafe(mic));
             Button stop = new Button(this); stop.setText("Завершить"); actions.addView(stop);
             stop.setOnClickListener(v -> { finishRoomSafe(); });
             Button fullscreenBtn = new Button(this); fullscreenBtn.setText("На весь экран"); actions.addView(fullscreenBtn);
@@ -223,12 +296,6 @@ public final class WatchPartyActivity extends Activity {
                     i.putExtra(Intent.EXTRA_TEXT, "Подключайся к парному просмотру в «Вместе». Код комнаты: " + roomId);
                     startActivity(Intent.createChooser(i, "Пригласить партнёра"));
                 });
-                Button screenBtn = new Button(this); screenBtn.setText("Начать показ экрана"); actions.addView(screenBtn);
-                screenBtn.setOnClickListener(v -> {
-                    MediaProjectionManager manager = (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
-                    if (manager != null) startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_CAPTURE);
-                    else showErrorSafe("Система не поддерживает захват экрана.");
-                });
             }
             uiReady = true;
         } catch (Exception e) {
@@ -236,46 +303,265 @@ public final class WatchPartyActivity extends Activity {
         }
     }
 
+    private boolean isHttpsUrl(String value) {
+        Uri uri = Uri.parse(value);
+        return "https".equalsIgnoreCase(uri.getScheme())
+                && uri.getHost() != null && uri.getUserInfo() == null;
+    }
+
+    private void openPlayerSafe(String rawUrl) {
+        openPlayerSafe(rawUrl, true);
+    }
+
+    private void openPlayerSafe(String rawUrl, boolean notifyPeer) {
+        final WatchPlayerSource source;
+        try {
+            source = WatchPlayerSource.parse(rawUrl);
+        } catch (IllegalArgumentException e) {
+            if (playerAddress != null) playerAddress.setError(e.getMessage());
+            status.setText(e.getMessage());
+            return;
+        }
+
+        if (playerSource != null && playerSource.kind == WatchPlayerSource.Kind.YOUTUBE
+                && playerView != null) {
+            playerView.evaluateJavascript(
+                    "if(window.vmestePlayer)window.vmestePlayer.pauseVideo()", null);
+        }
+        playerSource = source;
+        playerUrl = source.url;
+        playbackRequestSent = false;
+        playerReady = false;
+        youtubeStateKnown = false;
+        pendingPlaybackState = null;
+        lastPlaybackSignalAt = 0;
+        main.removeCallbacks(playbackPoll);
+        releaseDirectPlayerSafe();
+        if (playerView != null) playerView.onResume();
+
+        if (source.kind == WatchPlayerSource.Kind.DIRECT_VIDEO) {
+            playerView.onPause();
+            playerView.stopLoading();
+            playerView.setVisibility(View.GONE);
+            directPlayerView.setVisibility(View.VISIBLE);
+            directPlayer = new ExoPlayer.Builder(this).build();
+            directPlayerView.setPlayer(directPlayer);
+            directPlayer.addListener(new Player.Listener() {
+                @Override public void onEvents(Player player, Player.Events events) {
+                    if (closed) return;
+                    if (events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED)
+                            && player.getPlaybackState() == Player.STATE_READY) {
+                        playerReady = true;
+                        applyPendingPlaybackSafe();
+                        requestInitialPlaybackStateSafe();
+                    }
+                    if (!isApplyingRemotePlayback()
+                            && player.getPlaybackState() == Player.STATE_READY
+                            && (events.contains(Player.EVENT_PLAY_WHEN_READY_CHANGED)
+                            || events.contains(Player.EVENT_POSITION_DISCONTINUITY))) {
+                        publishPlaybackSnapshotSafe();
+                    }
+                }
+            });
+            directPlayer.setMediaItem(MediaItem.fromUri(source.url));
+            directPlayer.prepare();
+            status.setText("Синхронный плеер · прямое MP4/HLS/WebM-видео");
+        } else {
+            directPlayerView.setVisibility(View.GONE);
+            playerView.setVisibility(View.VISIBLE);
+            if (source.kind == WatchPlayerSource.Kind.YOUTUBE) {
+                playerView.loadDataWithBaseURL("https://www.youtube-nocookie.com",
+                        youtubePlayerPage(source.youtubeVideoId), "text/html", "UTF-8", null);
+                status.setText("YouTube · воспроизведение синхронизируется между участниками");
+            } else {
+                playerView.loadUrl(source.url);
+                status.setText("У этого сайта нет доступной синхронизации. DRM и закрытые плееры не обходятся.");
+            }
+        }
+        if (notifyPeer && source.kind != WatchPlayerSource.Kind.WEBSITE) {
+            try {
+                JSONObject payload = new JSONObject();
+                payload.put("url", source.url);
+                sendSignalSafe("player_source", payload);
+            } catch (Exception e) {
+                status.setText("Не удалось отправить ссылку партнёру: " + e.getMessage());
+            }
+        }
+        if (source.kind != WatchPlayerSource.Kind.WEBSITE) main.post(playbackPoll);
+    }
+
+    private String youtubePlayerPage(String videoId) {
+        return "<!doctype html><html><head><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+                + "<style>html,body,#player{margin:0;width:100%;height:100%;background:#000;overflow:hidden}"
+                + "</style></head><body><div id=\"player\"></div><script>"
+                + "var tag=document.createElement('script');tag.src='https://www.youtube.com/iframe_api';"
+                + "document.head.appendChild(tag);"
+                + "function onYouTubeIframeAPIReady(){window.vmestePlayer=new YT.Player('player',{"
+                + "width:'100%',height:'100%',videoId:'" + videoId + "',"
+                + "playerVars:{playsinline:1,controls:1,enablejsapi:1,origin:'https://www.youtube-nocookie.com'}});}"
+                + "</script></body></html>";
+    }
+
+    private void onYouTubeSampleSafe(String result) {
+        if (closed || playerSource == null || playerSource.kind != WatchPlayerSource.Kind.YOUTUBE) return;
+        try {
+            Object decoded = new JSONTokener(result).nextValue();
+            if (!(decoded instanceof String)) return;
+            String[] values = ((String) decoded).split("\\|", 2);
+            if (values.length != 2) return;
+            int state = Integer.parseInt(values[0]);
+            long positionMs = (long) (Double.parseDouble(values[1]) * 1_000);
+            if (positionMs < 0) return;
+
+            playerReady = true;
+            if (!host) requestInitialPlaybackStateSafe();
+            applyPendingPlaybackSafe();
+
+            boolean playing = state == 1 || state == 3;
+            long now = SystemClock.elapsedRealtime();
+            if (youtubeStateKnown && !isApplyingRemotePlayback()) {
+                long positionDelta = positionMs - lastYoutubePositionMs;
+                long elapsed = Math.max(0, now - lastYoutubeSampleAt);
+                boolean seeked = Math.abs(positionDelta - (lastYoutubePlaying ? elapsed : 0)) > 2_500
+                        && Math.abs(positionDelta) > 2_500;
+                if (playing != lastYoutubePlaying || seeked) publishPlaybackSnapshotSafe();
+            }
+            lastYoutubePlaying = playing;
+            lastYoutubePositionMs = positionMs;
+            lastYoutubeSampleAt = now;
+            youtubeStateKnown = true;
+        } catch (Exception ignored) {
+            // The player API is not ready until its iframe has finished loading.
+        }
+    }
+
+    private void requestInitialPlaybackStateSafe() {
+        if (host || playbackRequestSent || playerSource == null
+                || playerSource.kind == WatchPlayerSource.Kind.WEBSITE) return;
+        playbackRequestSent = true;
+        sendSignalSafe("playback_request", new JSONObject());
+    }
+
+    private boolean isLocalPlayerPlaying() {
+        if (playerSource == null) return false;
+        if (playerSource.kind == WatchPlayerSource.Kind.DIRECT_VIDEO)
+            return directPlayer != null && directPlayer.getPlayWhenReady();
+        return playerSource.kind == WatchPlayerSource.Kind.YOUTUBE && lastYoutubePlaying;
+    }
+
+    private long localPlayerPositionMs() {
+        if (playerSource == null) return 0;
+        if (playerSource.kind == WatchPlayerSource.Kind.DIRECT_VIDEO)
+            return directPlayer == null ? 0 : Math.max(0, directPlayer.getCurrentPosition());
+        return playerSource.kind == WatchPlayerSource.Kind.YOUTUBE
+                ? Math.max(0, lastYoutubePositionMs) : 0;
+    }
+
+    private void publishPlaybackSnapshotSafe() {
+        if (closed || playerSource == null || playerSource.kind == WatchPlayerSource.Kind.WEBSITE) return;
+        try {
+            JSONObject payload = new JSONObject();
+            payload.put("source", playerSource.kind.name());
+            payload.put("position_ms", localPlayerPositionMs());
+            payload.put("playing", isLocalPlayerPlaying());
+            payload.put("sent_at", System.currentTimeMillis());
+            lastPlaybackSignalAt = SystemClock.elapsedRealtime();
+            sendSignalSafe("playback", payload);
+        } catch (Exception e) {
+            status.setText("Не удалось синхронизировать плеер: " + e.getMessage());
+        }
+    }
+
+    private boolean isApplyingRemotePlayback() {
+        return applyingRemotePlayback || SystemClock.elapsedRealtime() < suppressPlaybackSyncUntil;
+    }
+
+    private void applyPendingPlaybackSafe() {
+        if (pendingPlaybackState == null) return;
+        JSONObject pending = pendingPlaybackState;
+        pendingPlaybackState = null;
+        applyRemotePlaybackSafe(pending);
+    }
+
+    private void applyRemotePlaybackSafe(JSONObject payload) {
+        if (closed || playerSource == null || playerSource.kind == WatchPlayerSource.Kind.WEBSITE) return;
+        if (!playerSource.kind.name().equals(payload.optString("source"))) return;
+        long targetPositionMs = payload.optLong("position_ms", -1);
+        if (targetPositionMs < 0 || targetPositionMs > 7L * 24 * 60 * 60 * 1_000) return;
+        boolean playing = payload.optBoolean("playing", false);
+        long sentAt = payload.optLong("sent_at", 0);
+        if (playing && sentAt > 0) {
+            long transitMs = Math.min(1_500, Math.max(0, System.currentTimeMillis() - sentAt));
+            targetPositionMs += transitMs;
+        }
+
+        if (playerSource.kind == WatchPlayerSource.Kind.DIRECT_VIDEO) {
+            if (directPlayer == null || directPlayer.getPlaybackState() != Player.STATE_READY) {
+                pendingPlaybackState = payload;
+                return;
+            }
+            applyingRemotePlayback = true;
+            suppressPlaybackSyncUntil = SystemClock.elapsedRealtime() + 2_500;
+            if (Math.abs(directPlayer.getCurrentPosition() - targetPositionMs) > 1_500)
+                directPlayer.seekTo(targetPositionMs);
+            directPlayer.setPlayWhenReady(playing);
+            applyingRemotePlayback = false;
+            return;
+        }
+
+        if (!playerReady || playerView == null) {
+            pendingPlaybackState = payload;
+            return;
+        }
+        applyingRemotePlayback = true;
+        suppressPlaybackSyncUntil = SystemClock.elapsedRealtime() + 2_500;
+        double targetSeconds = targetPositionMs / 1_000.0;
+        String action = playing ? "playVideo()" : "pauseVideo()";
+        playerView.evaluateJavascript("(function(){var p=window.vmestePlayer;if(!p)return;"
+                + "if(Math.abs(p.getCurrentTime()-" + targetSeconds + ")>1.5)p.seekTo("
+                + targetSeconds + ",true);p." + action + "})()", ignored -> {
+                    applyingRemotePlayback = false;
+                });
+        main.postDelayed(() -> applyingRemotePlayback = false, 2_500);
+    }
+
+    private void releaseDirectPlayerSafe() {
+        if (directPlayerView != null) directPlayerView.setPlayer(null);
+        if (directPlayer != null) {
+            directPlayer.release();
+            directPlayer = null;
+        }
+    }
+
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
-        if (requestCode == REQUEST_MIC && !mediaStarted) {
-            boolean granted = results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED;
-            if (granted) {
-                mediaStarted = true;
-                startRtcSafe(null);
-            } else {
-                mediaStarted = true;
-                main.post(() -> status.setText("Микрофон не разрешён · голосовой чат будет недоступен"));
-                startRtcSafe(null);
+        if (requestCode == REQUEST_MIC) {
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
+                startMicrophoneSafe();
+            else {
+                main.post(() -> {
+                    if (status != null) status.setText("Микрофон не разрешён · плеер и чат продолжают работать");
+                    updatePrivacyStatusSafe();
+                });
+            }
+        } else if (requestCode == REQUEST_CAMERA) {
+            if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
+                startCameraSafe();
+            else {
+                main.post(() -> {
+                    if (status != null) status.setText("Камера не разрешена · плеер и чат продолжают работать");
+                    updatePrivacyStatusSafe();
+                });
             }
         }
     }
 
-    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == REQUEST_CAPTURE) {
-            if (resultCode != RESULT_OK || data == null) {
-                showErrorSafe("Вы не разрешили показ экрана."); return;
-            }
-            projectionData = data;
-            try {
-                Intent service = new Intent(this, ScreenShareService.class);
-                if (Build.VERSION.SDK_INT >= 26) startForegroundService(service);
-                else startService(service);
-            } catch (Exception ignored) { }
-            if (peer != null) startScreenTrackSafe(data);
-            else main.post(() -> showErrorSafe("Веб-РТС соединение не готово. Попробуйте снова."));
-        }
-    }
-
-    private void startRtcSafe(Intent capturePermission) {
+    private void startRtcSafe() {
+        if (mediaStarted) return;
+        mediaStarted = true;
         io.execute(() -> {
             try {
                 egl = EglBase.create();
-                main.post(() -> {
-                    if (remoteView != null && !closed)
-                        remoteView.init(egl.getEglBaseContext(), null);
-                });
                 PeerConnectionFactory.initialize(
                     PeerConnectionFactory.InitializationOptions.builder(getApplicationContext()).createInitializationOptions());
                 factory = PeerConnectionFactory.builder()
@@ -288,24 +574,25 @@ public final class WatchPartyActivity extends Activity {
                     audioManager.setSpeakerphoneOn(true);
                 }
                 createPeerSafe();
-                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                    MediaConstraints audioConstraints = new MediaConstraints();
-                    audioSource = factory.createAudioSource(audioConstraints);
-                    audioTrack = factory.createAudioTrack("vmeste_voice", audioSource);
-                    if (peer != null) peer.addTrack(audioTrack, Collections.singletonList("vmeste"));
-                } else if (peer != null) {
-                    peer.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO,
-                        new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY));
-                }
-                if (host && capturePermission != null) startScreenTrackSafe(capturePermission);
-                else if (!host && peer != null)
-                    peer.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO,
-                        new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY));
+                if (peer == null) throw new IllegalStateException("WebRTC peer is unavailable");
+                RtpTransceiver.RtpTransceiverInit sendReceive = new RtpTransceiver.RtpTransceiverInit(
+                    RtpTransceiver.RtpTransceiverDirection.SEND_RECV);
+                audioTransceiver = peer.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO, sendReceive);
+                videoTransceiver = peer.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO,
+                    new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_RECV));
+                if (audioTransceiver == null || videoTransceiver == null)
+                    throw new IllegalStateException("WebRTC media transceivers are unavailable");
                 main.post(() -> {
                     if (closed) return;
-                    status.setText(host ? "Разрешите показ экрана, чтобы начать трансляцию…"
-                        : audioTrack == null ? "Ожидаем трансляцию · микрофон выключен"
-                        : "Голос подключён. Ищем трансляцию…");
+                    try {
+                        remoteView.init(egl.getEglBaseContext(), null);
+                        localCameraView.init(egl.getEglBaseContext(), null);
+                        rtcReady = true;
+                        status.setText("Комната готова · плеер и текстовый чат доступны");
+                        updateMediaControlsSafe();
+                    } catch (Exception e) {
+                        showErrorSafe("Не удалось подготовить видео: " + e.getMessage());
+                    }
                 });
                 startPollingSafe();
                 if (host) {
@@ -330,7 +617,7 @@ public final class WatchPartyActivity extends Activity {
                     main.post(() -> {
                         if (closed) return;
                         status.setText(state == PeerConnection.IceConnectionState.CONNECTED
-                            ? "Подключено · голосовой чат активен" : "Связь: " + state.name());
+                            ? "Партнёр подключён · плеер синхронизируется" : "Связь: " + state.name());
                     });
                 }
                 @Override public void onIceConnectionReceivingChange(boolean receiving) { }
@@ -346,7 +633,9 @@ public final class WatchPartyActivity extends Activity {
                 @Override public void onAddStream(MediaStream stream) {
                     if (!stream.videoTracks.isEmpty()) showRemoteVideoSafe(stream.videoTracks.get(0));
                 }
-                @Override public void onRemoveStream(MediaStream stream) { }
+                @Override public void onRemoveStream(MediaStream stream) {
+                    if (!stream.videoTracks.isEmpty()) main.post(WatchPartyActivity.this::clearRemoteVideoSafe);
+                }
                 @Override public void onDataChannel(org.webrtc.DataChannel channel) { }
                 @Override public void onRenegotiationNeeded() {
                     if (host) main.post(() -> {
@@ -368,38 +657,30 @@ public final class WatchPartyActivity extends Activity {
         }
     }
 
-    private void startScreenTrackSafe(Intent permission) {
+    private void showRemoteVideoSafe(VideoTrack track) {
         main.post(() -> {
-            try {
-                if (egl == null || factory == null || closed) {
-                    showErrorSafe("Веб-РТС соединение не готово. Попробуйте снова.");
-                    return;
-                }
-                screenCapturer = new ScreenCapturerAndroid(permission,
-                    new android.media.projection.MediaProjection.Callback() {
-                        @Override public void onStop() {
-                            main.post(() -> showErrorSafe("Система остановила показ экрана."));
-                        }
-                    });
-                videoSource = factory.createVideoSource(true);
-                textureHelper = SurfaceTextureHelper.create("vmeste-screen-capture", egl.getEglBaseContext());
-                screenCapturer.initialize(textureHelper, getApplicationContext(), videoSource.getCapturerObserver());
-                android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
-                screenCapturer.startCapture(Math.min(dm.widthPixels, 1280), Math.min(dm.heightPixels, 720), 15);
-                screenTrack = factory.createVideoTrack("vmeste_screen", videoSource);
-                if (peer != null) peer.addTrack(screenTrack, Collections.singletonList("vmeste"));
-            } catch (Exception e) {
-                main.post(() -> showErrorSafe("Не удалось запустить захват экрана: " + e.getMessage()));
-            }
+            if (closed || remoteView == null || track == null) return;
+            if (remoteVideoTrack == track) return;
+            if (remoteVideoTrack != null) remoteVideoTrack.removeSink(remoteView);
+            remoteVideoTrack = track;
+            remoteVideoAvailable = true;
+            track.addSink(remoteView);
+            updateVideoRowSafe();
         });
     }
 
-    private void showRemoteVideoSafe(VideoTrack track) {
-        main.post(() -> {
-            if (closed || remoteView == null) return;
-            remoteView.setVisibility(videoVisible ? View.VISIBLE : View.GONE);
-            if (videoVisible) track.addSink(remoteView);
-        });
+    private void clearRemoteVideoSafe() {
+        if (remoteVideoTrack != null && remoteView != null) remoteVideoTrack.removeSink(remoteView);
+        remoteVideoTrack = null;
+        remoteVideoAvailable = false;
+        updateVideoRowSafe();
+    }
+
+    private void updateVideoRowSafe() {
+        if (remoteView != null) remoteView.setVisibility(remoteVideoAvailable ? View.VISIBLE : View.GONE);
+        if (localCameraView != null) localCameraView.setVisibility(cameraTrack != null ? View.VISIBLE : View.GONE);
+        if (videoRow != null)
+            videoRow.setVisibility(remoteVideoAvailable || cameraTrack != null ? View.VISIBLE : View.GONE);
     }
 
     private void createOfferSafe() {
@@ -490,6 +771,22 @@ public final class WatchPartyActivity extends Activity {
         if ("chat".equals(kind)) {
             main.post(() -> addChatSafe("Партнёр", data.optString("text"))); return;
         }
+        if ("playback_request".equals(kind)) {
+            if (host) main.post(this::publishPlaybackSnapshotSafe);
+            return;
+        }
+        if ("player_source".equals(kind)) {
+            String remoteUrl = data.optString("url", "");
+            try {
+                if (WatchPlayerSource.parse(remoteUrl).kind != WatchPlayerSource.Kind.WEBSITE)
+                    main.post(() -> openPlayerSafe(remoteUrl, false));
+            } catch (IllegalArgumentException ignored) { }
+            return;
+        }
+        if ("playback".equals(kind)) {
+            main.post(() -> applyRemotePlaybackSafe(data));
+            return;
+        }
         if ("close".equals(kind)) {
             main.post(() -> { status.setText("Партнёр завершил просмотр"); stopRtcSafe(); }); return;
         }
@@ -505,7 +802,7 @@ public final class WatchPartyActivity extends Activity {
             remoteReady = false;
             peer.setRemoteDescription(sdpObserverSafe(() -> {
                 remoteReady = true; flushCandidatesSafe();
-                status.setText("Партнёр подключился · экран и голос передаются");
+                status.setText("Партнёр подключён · общий плеер готов");
                 maybeCreatePendingOfferSafe();
             }), new SessionDescription(SessionDescription.Type.ANSWER, data.optString("sdp")));
         } else if (!host && "offer".equals(kind)) {
@@ -570,11 +867,208 @@ public final class WatchPartyActivity extends Activity {
         if (chatScroll != null) chatScroll.post(() -> chatScroll.fullScroll(ScrollView.FOCUS_DOWN));
     }
 
-    private void toggleMicrophoneSafe(Button button) {
-        if (audioTrack == null) return;
-        boolean enabled = !audioTrack.enabled();
-        audioTrack.setEnabled(enabled);
-        button.setText(enabled ? "🎙  Микрофон" : "🔇  Выключен");
+    private void toggleMicrophoneSafe() {
+        if (!rtcReady || closed) return;
+        if (audioTrack != null) {
+            stopMicrophoneSafe();
+            return;
+        }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQUEST_MIC);
+            return;
+        }
+        startMicrophoneSafe();
+    }
+
+    private void startMicrophoneSafe() {
+        if (closed || !rtcReady || audioTrack != null) return;
+        try {
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+                throw new SecurityException("Разрешение на микрофон не выдано");
+            audioSource = factory.createAudioSource(new MediaConstraints());
+            audioTrack = factory.createAudioTrack("vmeste_voice", audioSource);
+            if (audioTransceiver == null || !audioTransceiver.getSender().setTrack(audioTrack, false))
+                throw new IllegalStateException("Не удалось включить микрофон в WebRTC");
+            audioTrack.setEnabled(true);
+            updatePrivacyStatusSafe();
+            updateMediaControlsSafe();
+        } catch (Exception e) {
+            stopMicrophoneSafe();
+            if (status != null) status.setText("Не удалось включить микрофон: " + e.getMessage());
+        }
+    }
+
+    private void stopMicrophoneSafe() {
+        AudioTrack track = audioTrack;
+        AudioSource source = audioSource;
+        audioTrack = null;
+        audioSource = null;
+        if (track != null) {
+            if (audioTransceiver != null) audioTransceiver.getSender().setTrack(null, false);
+            track.dispose();
+        }
+        if (source != null) source.dispose();
+        updatePrivacyStatusSafe();
+        updateMediaControlsSafe();
+    }
+
+    private void toggleCameraSafe() {
+        if (!rtcReady || closed) return;
+        if (cameraTrack != null) {
+            stopCameraSafe();
+            return;
+        }
+        if (cameraStarting) return;
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQUEST_CAMERA);
+            return;
+        }
+        startCameraSafe();
+    }
+
+    private void startCameraSafe() {
+        if (closed || !rtcReady || cameraTrack != null || cameraStarting) return;
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQUEST_CAMERA);
+            return;
+        }
+        cameraStarting = true;
+        cameraStopPending = false;
+        updateMediaControlsSafe();
+        media.execute(() -> {
+            CameraVideoCapturer capturer = null;
+            SurfaceTextureHelper helper = null;
+            VideoSource source = null;
+            VideoTrack track = null;
+            try {
+                if (closed) return;
+                capturer = createCameraCapturerSafe();
+                source = factory.createVideoSource(false);
+                helper = SurfaceTextureHelper.create("vmeste-camera-capture", egl.getEglBaseContext());
+                capturer.initialize(helper, getApplicationContext(), source.getCapturerObserver());
+                capturer.startCapture(640, 480, 24);
+                track = factory.createVideoTrack("vmeste_camera", source);
+                if (videoTransceiver == null || !videoTransceiver.getSender().setTrack(track, false))
+                    throw new IllegalStateException("Не удалось включить камеру в WebRTC");
+                if (closed || cameraStopPending) {
+                    videoTransceiver.getSender().setTrack(null, false);
+                    releaseCameraResourcesSafe(capturer, helper, source, track);
+                    return;
+                }
+                cameraCapturer = capturer;
+                textureHelper = helper;
+                videoSource = source;
+                cameraTrack = track;
+                main.post(() -> {
+                    cameraStarting = false;
+                    if (closed) {
+                        stopCameraSafe();
+                        return;
+                    }
+                    localCameraView.setMirror(cameraFrontFacing);
+                    cameraTrack.addSink(localCameraView);
+                    updateVideoRowSafe();
+                    updatePrivacyStatusSafe();
+                    updateMediaControlsSafe();
+                });
+            } catch (Exception e) {
+                if (capturer != null || helper != null || source != null || track != null)
+                    releaseCameraResourcesSafe(capturer, helper, source, track);
+                main.post(() -> {
+                    cameraStarting = false;
+                    cameraStopPending = false;
+                    if (!closed && status != null)
+                        status.setText("Не удалось включить камеру: " + e.getMessage());
+                    updatePrivacyStatusSafe();
+                    updateMediaControlsSafe();
+                });
+            }
+        });
+    }
+
+    private CameraVideoCapturer createCameraCapturerSafe() {
+        CameraEnumerator enumerator = Camera2Enumerator.isSupported(this)
+            ? new Camera2Enumerator(this) : new Camera1Enumerator(true);
+        String[] deviceNames = enumerator.getDeviceNames();
+        for (String name : deviceNames) {
+            if (enumerator.isFrontFacing(name)) {
+                CameraVideoCapturer capturer = enumerator.createCapturer(name, null);
+                if (capturer != null) {
+                    cameraFrontFacing = true;
+                    return capturer;
+                }
+            }
+        }
+        for (String name : deviceNames) {
+            CameraVideoCapturer capturer = enumerator.createCapturer(name, null);
+            if (capturer != null) {
+                cameraFrontFacing = false;
+                return capturer;
+            }
+        }
+        throw new IllegalStateException("На устройстве не найдена доступная камера");
+    }
+
+    private void stopCameraSafe() {
+        if (cameraStarting && cameraTrack == null) {
+            cameraStopPending = true;
+            return;
+        }
+        cameraStarting = false;
+        CameraVideoCapturer capturer = cameraCapturer;
+        SurfaceTextureHelper helper = textureHelper;
+        VideoSource source = videoSource;
+        VideoTrack track = cameraTrack;
+        cameraCapturer = null;
+        textureHelper = null;
+        videoSource = null;
+        cameraTrack = null;
+        if (track != null) {
+            if (videoTransceiver != null) videoTransceiver.getSender().setTrack(null, false);
+            if (localCameraView != null) track.removeSink(localCameraView);
+        }
+        releaseCameraResourcesSafe(capturer, helper, source, track);
+        updateVideoRowSafe();
+        updatePrivacyStatusSafe();
+        updateMediaControlsSafe();
+    }
+
+    private void releaseCameraResourcesSafe(CameraVideoCapturer capturer, SurfaceTextureHelper helper,
+            VideoSource source, VideoTrack track) {
+        if (capturer != null) {
+            try { capturer.stopCapture(); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            catch (Exception ignored) { }
+            capturer.dispose();
+        }
+        if (track != null) track.dispose();
+        if (source != null) source.dispose();
+        if (helper != null) helper.dispose();
+    }
+
+    private void updateMediaControlsSafe() {
+        if (cameraButton != null) {
+            cameraButton.setText(cameraStarting ? "📷 Камера запускается…"
+                : cameraTrack != null ? "📷 Камера включена" : "📷 Камера выключена");
+            cameraButton.setEnabled(rtcReady && !closed && !cameraStarting);
+        }
+        if (micButton != null) {
+            micButton.setText(audioTrack != null ? "🎙 Микрофон включён" : "🔇 Микрофон выключен");
+            micButton.setEnabled(rtcReady && !closed);
+        }
+    }
+
+    private void updatePrivacyStatusSafe() {
+        if (privacyStatus == null) return;
+        boolean cameraOn = cameraTrack != null;
+        boolean microphoneOn = audioTrack != null;
+        String text;
+        if (!cameraOn && !microphoneOn) text = "Видео и звук никому не передаются";
+        else if (cameraOn && microphoneOn) text = "Камера и микрофон включены · передаются партнёру";
+        else if (cameraOn) text = "Камера включена · видео передаётся партнёру";
+        else text = "Микрофон включён · звук передаётся партнёру";
+        privacyStatus.setText(text);
+        privacyStatus.setTextColor(cameraOn || microphoneOn
+            ? Color.rgb(73, 115, 83) : Color.GRAY);
     }
 
     private void toggleFullscreenSafe() {
@@ -625,23 +1119,26 @@ public final class WatchPartyActivity extends Activity {
         closed = true;
         main.removeCallbacksAndMessages(null);
         io.shutdownNow();
-        try {
-            if (screenCapturer != null) { screenCapturer.stopCapture(); screenCapturer.dispose(); }
-        } catch (Exception ignored) { }
+        stopMicrophoneSafe();
+        stopCameraSafe();
+        media.shutdown();
+        try { media.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS); }
+        catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+        releaseDirectPlayerSafe();
+        if (playerView != null) {
+            playerView.stopLoading();
+            playerView.loadUrl("about:blank");
+        }
+        clearRemoteVideoSafe();
         if (peer != null) { peer.close(); peer.dispose(); }
-        if (screenTrack != null) screenTrack.dispose();
-        if (videoSource != null) videoSource.dispose();
-        if (textureHelper != null) textureHelper.dispose();
-        if (audioTrack != null) audioTrack.dispose();
-        if (audioSource != null) audioSource.dispose();
         if (factory != null) factory.dispose();
         if (remoteView != null) { remoteView.release(); remoteView = null; }
+        if (localCameraView != null) { localCameraView.release(); localCameraView = null; }
         if (egl != null) egl.release();
         if (audioManager != null) {
             audioManager.setSpeakerphoneOn(false);
             audioManager.setMode(AudioManager.MODE_NORMAL);
         }
-        try { stopService(new Intent(this, ScreenShareService.class)); } catch (Exception ignored) { }
     }
 
     private int dp(float n) {
@@ -679,23 +1176,29 @@ public final class WatchPartyActivity extends Activity {
         if (!uiReady) return;
         try {
             if (isInPictureInPictureMode) {
-                if (playerView != null) playerView.setVisibility(View.GONE);
+                if (playerContainer != null) playerContainer.setVisibility(View.GONE);
                 if (status != null) status.setVisibility(View.GONE);
                 if (roomCode != null) roomCode.setVisibility(View.GONE);
-                if (remoteView != null) remoteView.setVisibility(View.GONE);
+                if (videoRow != null) videoRow.setVisibility(View.GONE);
+                if (privacyStatus != null) privacyStatus.setVisibility(View.GONE);
+                if (cameraButton != null) cameraButton.setVisibility(View.GONE);
+                if (micButton != null) micButton.setVisibility(View.GONE);
                 if (root != null) root.setPadding(dp(4), dp(4), dp(4), dp(4));
             } else {
-                if (playerView != null) playerView.setVisibility(View.VISIBLE);
+                if (playerContainer != null) playerContainer.setVisibility(View.VISIBLE);
                 if (status != null) status.setVisibility(View.VISIBLE);
                 if (roomCode != null) roomCode.setVisibility(View.VISIBLE);
-                if (!host && remoteView != null)
-                    remoteView.setVisibility(videoVisible ? View.VISIBLE : View.GONE);
+                if (privacyStatus != null) privacyStatus.setVisibility(View.VISIBLE);
+                if (cameraButton != null) cameraButton.setVisibility(View.VISIBLE);
+                if (micButton != null) micButton.setVisibility(View.VISIBLE);
+                updateVideoRowSafe();
                 if (root != null) root.setPadding(dp(16), dp(12), dp(16), dp(10));
             }
         } catch (Exception ignored) { }
     }
 
     @Override protected void onDestroy() {
+        stopRtcSafe();
         try {
             if (playerView != null) {
                 playerView.stopLoading();
@@ -704,7 +1207,6 @@ public final class WatchPartyActivity extends Activity {
                 playerView = null;
             }
         } catch (Exception ignored) { }
-        stopRtcSafe();
         super.onDestroy();
     }
 }
