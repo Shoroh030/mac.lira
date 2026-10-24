@@ -48,6 +48,13 @@ final class BoardGameRules {
         return -1;
     }
 
+    static int checkersBoardIndexForView(int row, int column, boolean rotated) {
+        if (row < 0 || row >= 8 || column < 0 || column >= 8) return -1;
+        int boardRow = rotated ? 7 - row : row;
+        int boardColumn = rotated ? 7 - column : column;
+        return boardRow * 8 + boardColumn;
+    }
+
     static boolean hasConnectFour(String board, char piece) {
         if (board == null || board.length() != 42) return false;
         for (int row = 0; row < 6; row++) {

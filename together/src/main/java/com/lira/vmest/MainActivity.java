@@ -90,11 +90,13 @@ public class MainActivity extends Activity {
     private boolean coupleRestorePending, coupleRestoreFailed;
     private String pendingPhotoKey = "", pendingPhotoItemId = "";
     private String pendingStoryCaption = "";
+    private String storiesFilter = "";
+    private String capsuleAnimationId = "";
+    private String pendingFileDownloadPath = "", pendingFileDownloadName = "";
     private String pendingSharedText = "";
     private Uri pendingSharedUri;
-    private boolean chatAutoScroll = true;
+    private final ChatScrollPolicy chatScrollPolicy = new ChatScrollPolicy();
     private int chatScrollY;
-    private int chatNewMessageCount;
     private Runnable chatRefreshRunnable;
     private boolean activityResumed;
     private Runnable sharedTimerTick, sharedTimerPoll;
@@ -111,7 +113,7 @@ public class MainActivity extends Activity {
 
     private static final String[][] MORE_GROUPS = {
             {"Общение", "💬  Чат для двоих", "📷  Истории для двоих", "💌  Пригласить партнёра"},
-            {"Планы и заметки", "🧳  Общие планы", "📝  Заметки", "⏳  Капсула времени", "📎  Файлы"},
+            {"Планы и заметки", "🗓  Календарь", "💜  Хотим вместе", "🧳  Общие планы", "📝  Заметки", "🍲  Рецепты", "⏳  Капсула времени", "📎  Файлы"},
             {"Совместное время", "🎲  Совместные игры", "🎬  Комната просмотра", "🗳  Голосование", "🎁  Подарочный радар"},
             {"Полезное", "💳  Карты лояльности", "💗  Карта партнёра"}
     };
@@ -144,6 +146,7 @@ public class MainActivity extends Activity {
             deferGameNotificationPermission = true;
             showFirstRunWelcome();
         }
+
         if (coupleRestorePending) root.post(this::restoreCoupleBinding);
         handleIncomingShare(getIntent());
         if(sync.projectChanged())toast("Supabase-проект изменён. Войдите заново и подключите пару.");
@@ -253,7 +256,7 @@ public class MainActivity extends Activity {
         clearExternalIntent();
         tab = "Чат";
         feature = null;
-        chatAutoScroll = true;
+        chatScrollPolicy.jumpToLatest();
         render();
         toast(sync.ready()
                 ? "Материал готов к отправке партнёру в чате"
@@ -281,7 +284,9 @@ public class MainActivity extends Activity {
             new AlertDialog.Builder(this)
                     .setTitle("Настройте подключение")
                     .setMessage("Чтобы открыть приглашение, сначала подключите Supabase в разделе «Пригласить партнёра».")
-                    .setPositiveButton("Открыть настройку", (dialog, which) -> configureServer())
+                    .setPositiveButton("Открыть настройки", (dialog, which) -> {
+                        feature=null;tab=NavigationModel.SETTINGS_TAB;render();
+                    })
                     .setNegativeButton("Позже", null)
                     .show();
             return;
@@ -424,6 +429,13 @@ public class MainActivity extends Activity {
     private GradientDrawable shape(int fill, int radius) {
         GradientDrawable d = new GradientDrawable(); d.setColor(themedFill(fill)); d.setCornerRadius(dp(radius)); return d;
     }
+    private GradientDrawable gameDisc(int fill, int outline) {
+        GradientDrawable d = new GradientDrawable();
+        d.setShape(GradientDrawable.OVAL);
+        d.setColor(fill);
+        d.setStroke(dp(2), outline);
+        return d;
+    }
     private TextView text(String s, int size, int color, boolean bold) {
         TextView v = new TextView(this); v.setText(s); v.setTextSize(size); v.setTextColor(color);
         if (bold) v.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
@@ -455,9 +467,9 @@ public class MainActivity extends Activity {
         avatarText.setEllipsize(android.text.TextUtils.TruncateAt.END);
         avatars.addView(avatarText);
         avatars.setBackground(shape(PALE, 22));
-        avatars.setContentDescription("Открыть профиль" + (profileName.isEmpty() ? "" : ": " + profileName));
+        avatars.setContentDescription("Открыть настройки профиля" + (profileName.isEmpty() ? "" : ": " + profileName));
         header.addView(avatars, new LinearLayout.LayoutParams(dp(120), dp(48)));
-        avatars.setOnClickListener(v -> profileDialog());
+        avatars.setOnClickListener(v -> { feature=null;tab=NavigationModel.SETTINGS_TAB;render(); });
         root.addView(header);
 
         ScrollView scroll = new ScrollView(this); contentScroll = scroll; scroll.setFillViewport(false); scroll.setClipToPadding(false);
@@ -474,6 +486,7 @@ public class MainActivity extends Activity {
         if (root != null) root.setBackgroundColor(BG);
         if (chatComposer != null && chatComposer.getParent() == root) root.removeView(chatComposer);
         chatComposer = null;
+        if(contentScroll!=null)contentScroll.setFillViewport(false);
         body.removeAllViews(); nav.removeAllViews();
         renderWatchRoomInvitation();
         if (feature != null && feature.startsWith("list:")) renderSharedList();
@@ -485,6 +498,7 @@ public class MainActivity extends Activity {
         else if (tab.equals("Чат")) renderChat();
         else if (tab.equals("Ещё")) renderMore();
         else if (tab.equals("Игры")) renderGamesTab();
+        else if (tab.equals(NavigationModel.SETTINGS_TAB)) renderSettingsTab();
         else if (tab.equals("Просмотр")) renderMovieRoomTab();
         else if (tab.equals("Пригласить")) renderInvitePartnerTab();
         else if (tab.equals("Подарочный радар")) renderGiftRadarTab();
@@ -506,7 +520,7 @@ public class MainActivity extends Activity {
             itemParams.setMargins(dp(2), 0, dp(2), 0);
             nav.addView(b, itemParams);
             b.setTag(dest);
-            b.setOnClickListener(v -> { feature = null; tab = dest; if ("Чат".equals(dest)) chatAutoScroll = true; render(); });
+            b.setOnClickListener(v -> { feature = null; tab = dest; if ("Чат".equals(dest)) chatScrollPolicy.jumpToLatest(); render(); });
         }
         if ((feature != null && feature.contains("Чат")) || "Чат".equals(tab)) {
             chatComposer = createChatComposer();
@@ -542,19 +556,95 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) { }
         }
         hidden.remove(NavigationModel.MORE_TAB);
+        hidden.remove(NavigationModel.SETTINGS_TAB);
         return hidden;
     }
     private void navigationSettings(){
         try{
-        ArrayList<String> order=navigationTabs();HashSet<String> hidden=hiddenNavigationTabs();LinearLayout list=column();ScrollView scroll=new ScrollView(this);scroll.setFillViewport(false);scroll.addView(list);scroll.setBackgroundColor(PAPER);
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Настроить нижнюю панель").setView(scroll).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",null).create();
-        Runnable[] draw={null};draw[0]=()->{list.removeAllViews();for(int i=0;i<order.size();i++){final int at=i;String item=order.get(i);boolean pinned=NavigationModel.MORE_TAB.equals(item);LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);row.setPadding(dp(8),dp(4),dp(8),dp(4));row.setBackground(shape(softDark?0xFF39333E:0xFFFBF9FC,14));LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,dp(54));rp.bottomMargin=dp(6);list.addView(row,rp);android.widget.CheckBox visible=new android.widget.CheckBox(this);visible.setText(pinned?"Ещё · все разделы":item);visible.setTextColor(INK);visible.setChecked(pinned||!hidden.contains(item));visible.setEnabled(!pinned);visible.setButtonTintList(android.content.res.ColorStateList.valueOf(PURPLE));row.addView(visible,new LinearLayout.LayoutParams(0,-1,1));visible.setOnCheckedChangeListener((button,checked)->{int shown=order.size()-hidden.size();if(checked){if(shown>=5){button.setChecked(false);toast("На нижней панели можно оставить не больше пяти вкладок");}else hidden.remove(item);}else if(shown>3)hidden.add(item);else{button.setChecked(true);toast("Оставьте на панели хотя бы три вкладки");}});TextView up=text("↑",20,PURPLE,true);up.setGravity(Gravity.CENTER);up.setContentDescription("Переместить "+item+" выше");up.setMinWidth(dp(48));row.addView(up,new LinearLayout.LayoutParams(dp(48),-1));up.setEnabled(at>0&&!pinned);up.setOnClickListener(v->{java.util.Collections.swap(order,at,at-1);draw[0].run();});TextView down=text("↓",20,PURPLE,true);down.setGravity(Gravity.CENTER);down.setContentDescription("Переместить "+item+" ниже");down.setMinWidth(dp(48));row.addView(down,new LinearLayout.LayoutParams(dp(48),-1));down.setEnabled(at<order.size()-1&&!pinned);down.setOnClickListener(v->{java.util.Collections.swap(order,at,at+1);draw[0].run();});}};draw[0].run();
-        dialog.setOnShowListener(v->{dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(x->{JSONArray sorted=new JSONArray(),hiddenRows=new JSONArray();for(String item:order)sorted.put(item);for(String item:order)if(hidden.contains(item))hiddenRows.put(item);prefs.edit().putString("navigation_tab_order",sorted.toString()).putString("navigation_tab_hidden",hiddenRows.toString()).apply();boolean selectedVisible=false;for(String item:order)if(item.equals(tab)&&!hidden.contains(item))selectedVisible=true;if(!selectedVisible)for(String item:order)if(!hidden.contains(item)){tab=item;break;}dialog.dismiss();render();});});dialog.show();
+            ArrayList<String> order=navigationTabs();
+            HashSet<String> hidden=hiddenNavigationTabs();
+            LinearLayout list=column();
+            list.setPadding(dp(16),dp(10),dp(16),dp(10));
+            TextView help=text("На панели закреплены «Настройки» и «Ещё». Выберите до трёх основных разделов и задайте их порядок.",13,MUTED,false);
+            list.addView(help);
+            ScrollView scroll=new ScrollView(this);
+            scroll.setFillViewport(false);
+            scroll.addView(list);
+            scroll.setBackgroundColor(PAPER);
+            AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Разделы на панели")
+                    .setView(scroll).setNegativeButton("Отмена",null)
+                    .setPositiveButton("Сохранить",null).create();
+            Runnable[] draw={null};
+            draw[0]=()->{
+                list.removeAllViews();
+                list.addView(help);
+                for(int i=0;i<order.size();i++){
+                    final int at=i;
+                    String item=order.get(i);
+                    boolean pinned=NavigationModel.MORE_TAB.equals(item)
+                            ||NavigationModel.SETTINGS_TAB.equals(item);
+                    LinearLayout row=new LinearLayout(this);
+                    row.setGravity(Gravity.CENTER_VERTICAL);
+                    row.setPadding(dp(8),dp(3),dp(8),dp(3));
+                    row.setBackground(shape(softDark?0xFF39333E:0xFFFBF9FC,14));
+                    LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,dp(54));
+                    rp.topMargin=dp(6);
+                    list.addView(row,rp);
+                    android.widget.CheckBox visible=new android.widget.CheckBox(this);
+                    visible.setText(pinned?item+" · закреплено":item);
+                    visible.setTextColor(INK);
+                    visible.setChecked(pinned||!hidden.contains(item));
+                    visible.setEnabled(!pinned);
+                    visible.setButtonTintList(android.content.res.ColorStateList.valueOf(PURPLE));
+                    row.addView(visible,new LinearLayout.LayoutParams(0,-1,1));
+                    visible.setOnCheckedChangeListener((button,checked)->{
+                        int shown=0;
+                        for(String route:order){
+                            if(!NavigationModel.MORE_TAB.equals(route)
+                                    &&!NavigationModel.SETTINGS_TAB.equals(route)
+                                    &&!hidden.contains(route))shown++;
+                        }
+                        if(checked){
+                            if(shown>=3){button.setChecked(false);toast("Оставьте на панели не больше трёх основных разделов");}
+                            else hidden.remove(item);
+                        }else if(shown>1)hidden.add(item);
+                        else{button.setChecked(true);toast("Оставьте хотя бы один основной раздел");}
+                    });
+                    TextView up=text("↑",20,PURPLE,true);
+                    up.setGravity(Gravity.CENTER);
+                    up.setContentDescription("Переместить "+item+" выше");
+                    up.setMinWidth(dp(48));
+                    row.addView(up,new LinearLayout.LayoutParams(dp(48),-1));
+                    up.setEnabled(at>0&&!pinned);
+                    up.setOnClickListener(v->{java.util.Collections.swap(order,at,at-1);draw[0].run();});
+                    TextView down=text("↓",20,PURPLE,true);
+                    down.setGravity(Gravity.CENTER);
+                    down.setContentDescription("Переместить "+item+" ниже");
+                    down.setMinWidth(dp(48));
+                    row.addView(down,new LinearLayout.LayoutParams(dp(48),-1));
+                    down.setEnabled(at<order.size()-1&&!pinned);
+                    down.setOnClickListener(v->{java.util.Collections.swap(order,at,at+1);draw[0].run();});
+                }
+            };
+            draw[0].run();
+            dialog.setOnShowListener(v->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(x->{
+                JSONArray sorted=new JSONArray(),hiddenRows=new JSONArray();
+                for(String item:order)sorted.put(item);
+                for(String item:order)if(hidden.contains(item))hiddenRows.put(item);
+                prefs.edit().putString("navigation_tab_order",sorted.toString())
+                        .putString("navigation_tab_hidden",hiddenRows.toString()).apply();
+                boolean selectedVisible=NavigationModel.SETTINGS_TAB.equals(tab);
+                for(String item:order)if(item.equals(tab)&&!hidden.contains(item))selectedVisible=true;
+                if(!selectedVisible)for(String item:order)if(!hidden.contains(item)){tab=item;break;}
+                dialog.dismiss();
+                render();
+            }));
+            dialog.show();
         }catch(Exception e){toast("Не удалось открыть настройки вкладок: "+e.getMessage());}
     }
     private GradientDrawable navigationSurface() {
         GradientDrawable surface = new GradientDrawable();
-        surface.setColor(softDark ? 0xFF29252F : PAPER);
+        surface.setColor(softDark ? 0xF729252F : 0xF7FFFFFF);
         surface.setCornerRadii(new float[]{dp(18),dp(18),dp(18),dp(18),0,0,0,0});
         surface.setStroke(dp(1), softDark ? 0xFF403945 : LINE);
         return surface;
@@ -572,7 +662,7 @@ public class MainActivity extends Activity {
         return item;
     }
     private String iconFor(String s) {
-        switch(s) { case "Главная": return "⌂"; case "Дела": return "✓"; case "Чат": return "✉"; case "Календарь": return "▦"; case "Хотим": return "♡"; case "Ещё": return "⋯"; case "Игры": return "🎮"; case "Просмотр": return "🎬"; case "Пригласить": return "🤝"; case "Подарочный радар": return "🎁"; case "Истории": return "📖"; case "Капсула": return "⏳"; case "Карты": return "💳"; case "Голосование": return "🗳"; case "Файлы": return "📎"; default: return "•••"; }
+        switch(s) { case "Главная": return "⌂"; case "Дела": return "✓"; case "Чат": return "✉"; case "Календарь": return "▦"; case "Хотим": return "♡"; case "Ещё": return "⋯"; case "Настройки": return "⚙"; case "Игры": return "🎮"; case "Просмотр": return "🎬"; case "Пригласить": return "🤝"; case "Подарочный радар": return "🎁"; case "Истории": return "📖"; case "Капсула": return "⏳"; case "Карты": return "💳"; case "Голосование": return "🗳"; case "Файлы": return "📎"; default: return "•••"; }
     }
 
     private void renderHome() {
@@ -752,7 +842,23 @@ public class MainActivity extends Activity {
     }
 
     private void renderCalendar() {
-        heading("Наш календарь", "События и дела по дням");
+        boolean personalCalendar=prefs.getBoolean("personal_calendar_view",false);
+        String eventKey=personalCalendar?"personal_events":"events";
+        String calendarName=personalCalendar?"Мой календарь":"Наш календарь";
+        heading(calendarName,personalCalendar?"Личные дела и даты · видны только на этом устройстве":"Общие события и дела для вас двоих");
+        LinearLayout calendarModes=new LinearLayout(this);
+        calendarModes.setGravity(Gravity.CENTER);
+        TextView sharedMode=pill("Наш календарь",personalCalendar?MUTED:PURPLE);
+        TextView personalMode=pill("Мой календарь",personalCalendar?PURPLE:MUTED);
+        sharedMode.setGravity(Gravity.CENTER);
+        personalMode.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams modeParams=new LinearLayout.LayoutParams(0,-2,1);
+        modeParams.setMargins(dp(3),0,dp(3),0);
+        calendarModes.addView(sharedMode,modeParams);
+        calendarModes.addView(personalMode,new LinearLayout.LayoutParams(0,-2,1));
+        body.addView(calendarModes);
+        sharedMode.setOnClickListener(v->{prefs.edit().putBoolean("personal_calendar_view",false).apply();render();});
+        personalMode.setOnClickListener(v->{prefs.edit().putBoolean("personal_calendar_view",true).apply();render();});
         LinearLayout monthCard = card();
         LinearLayout monthBar = new LinearLayout(this); monthBar.setGravity(Gravity.CENTER_VERTICAL);
         TextView prev = text("‹", 28, PURPLE, true); prev.setGravity(Gravity.CENTER);
@@ -785,7 +891,8 @@ public class MainActivity extends Activity {
             Calendar date=(Calendar)first.clone(); date.add(Calendar.DAY_OF_MONTH,i);
             String key=dateKey(date); boolean thisMonth=date.get(Calendar.MONTH)==visibleMonth.get(Calendar.MONTH);
             boolean isSelected=key.equals(selectedKey); boolean isToday=key.equals(dateKey(Calendar.getInstance()));
-            boolean hasTasks=read("day_"+key).length()>0 || hasCalendarEventOn(date);
+            String dayKey=(personalCalendar?"personal_day_":"day_")+key;
+            boolean hasTasks=read(dayKey).length()>0 || hasCalendarEventOn(date,eventKey);
             TextView day=text(String.valueOf(date.get(Calendar.DAY_OF_MONTH)),14,
                     isSelected?PAPER:thisMonth?INK:0xFFB9B2BE,isSelected);
             day.setGravity(Gravity.CENTER); day.setIncludeFontPadding(false);
@@ -801,21 +908,32 @@ public class MainActivity extends Activity {
         }
         monthCard.addView(grid,new LinearLayout.LayoutParams(-1,-2));
         String humanDate=new SimpleDateFormat("EEEE, d MMMM",new Locale("ru")).format(selectedDay.getTime());
-        heading(humanDate.substring(0,1).toUpperCase(new Locale("ru"))+humanDate.substring(1),"Планы на выбранную дату");
-        String key="day_"+selectedKey;
+        heading(humanDate.substring(0,1).toUpperCase(new Locale("ru"))+humanDate.substring(1),personalCalendar?"Личные планы на выбранную дату":"Общие планы на выбранную дату");
+        String key=(personalCalendar?"personal_day_":"day_")+selectedKey;
         TextView add=pill("＋  Добавить дело на эту дату",PURPLE);body.addView(add);
         add.setOnClickListener(v->addDialog(key,"Дело на "+new SimpleDateFormat("d MMMM",new Locale("ru")).format(selectedDay.getTime())));
         JSONArray dayTasks=read(key);
         if(dayTasks.length()==0) simpleCard("＋","Пока свободно","Запланируйте что-нибудь вдвоём",null);
         else { LinearLayout list=card(); for(int i=0;i<dayTasks.length();i++)addTask(list,dayTasks,i,key); }
-        heading("События и даты",null);
-        JSONArray events=read("events");
-        if(events.length()==0)simpleCard("♡","Добавьте ваше событие","День рождения, годовщина или свидание",()->addDialog("events","Новое событие"));
-        else for(int i=0;i<events.length();i++){JSONObject e=events.optJSONObject(i);if(e!=null)simpleCard("♡",e.optString("title"),e.optString("detail"),null);}
+        heading(personalCalendar?"Мои события":"Наши события",null);
+        TextView addEvent=pill("＋  Добавить событие с датой и временем",PURPLE);body.addView(addEvent);
+        addEvent.setOnClickListener(v->addCalendarEvent(eventKey));
+        JSONArray events=read(eventKey);
+        if(events.length()==0)simpleCard("♡",personalCalendar?"Личное событие":"Общее событие","Выберите дату и точное время",()->addCalendarEvent(eventKey));
+        else for(int i=0;i<events.length();i++){
+            JSONObject event=events.optJSONObject(i);if(event==null)continue;
+            LinearLayout entry=card();
+            entry.addView(text(event.optString("title"),15,INK,true));
+            long at=event.optLong("reminder_at",0);
+            if(at>0)entry.addView(text(new SimpleDateFormat("d MMMM · HH:mm",new Locale("ru")).format(new java.util.Date(at)),12,PURPLE,true));
+            if(!event.optString("detail").isEmpty())entry.addView(text(event.optString("detail"),13,MUTED,false));
+            entry.setOnClickListener(v->editItemDialog(eventKey,event));
+            entry.setOnLongClickListener(v->{itemActions(eventKey,event);return true;});
+        }
     }
 
-    private boolean hasCalendarEventOn(Calendar date) {
-        JSONArray events=read("events");
+    private boolean hasCalendarEventOn(Calendar date,String eventKey) {
+        JSONArray events=read(eventKey);
         String key=dateKey(date);
         for(int i=0;i<events.length();i++) {
             JSONObject event=events.optJSONObject(i);
@@ -829,6 +947,36 @@ public class MainActivity extends Activity {
         return false;
     }
 
+    private void addCalendarEvent(String eventKey){
+        Calendar when=(Calendar)selectedDay.clone();
+        new android.app.DatePickerDialog(this,(picker,year,month,day)->{
+            when.set(Calendar.YEAR,year);when.set(Calendar.MONTH,month);when.set(Calendar.DAY_OF_MONTH,day);
+            new android.app.TimePickerDialog(this,(time,hour,minute)->{
+                when.set(Calendar.HOUR_OF_DAY,hour);when.set(Calendar.MINUTE,minute);
+                when.set(Calendar.SECOND,0);when.set(Calendar.MILLISECOND,0);
+                LinearLayout form=column();form.setPadding(dp(18),dp(4),dp(18),dp(4));
+                EditText title=new EditText(this);title.setSingleLine(true);title.setHint("Название события");form.addView(title);
+                EditText detail=new EditText(this);detail.setMinLines(2);detail.setHint("Заметка (необязательно)");form.addView(detail);
+                TextView selectedTime=text(new SimpleDateFormat("EEEE, d MMMM · HH:mm",new Locale("ru")).format(when.getTime()),13,PURPLE,true);
+                selectedTime.setPadding(0,dp(8),0,dp(8));form.addView(selectedTime);
+                AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Новое событие")
+                        .setView(form).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",null).create();
+                dialog.setOnShowListener(v->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button->{
+                    String name=title.getText().toString().trim();
+                    if(name.isEmpty()){title.setError("Введите название события");return;}
+                    try{
+                        JSONObject event=new JSONObject();event.put("id",UUID.randomUUID().toString());
+                        event.put("title",name);event.put("detail",detail.getText().toString().trim());
+                        event.put("reminder_at",when.getTimeInMillis());event.put("created_at",System.currentTimeMillis());
+                        JSONArray rows=read(eventKey);rows.put(event);save(eventKey,rows);
+                        syncItem(eventKey,event);dialog.dismiss();render();
+                    }catch(Exception e){toast("Не удалось сохранить событие: "+e.getMessage());}
+                }));
+                dialog.show();
+            },9,0,true).show();
+        },when.get(Calendar.YEAR),when.get(Calendar.MONTH),when.get(Calendar.DAY_OF_MONTH)).show();
+    }
+
     private String dateKey(Calendar date){return new SimpleDateFormat("yyyy-MM-dd",Locale.US).format(date.getTime());}
     private void moveMonth(int delta){
         visibleMonth.add(Calendar.MONTH,delta); selectedDay.set(Calendar.YEAR,visibleMonth.get(Calendar.YEAR));
@@ -840,15 +988,92 @@ public class MainActivity extends Activity {
     private void renderCollection(String title, String subtitle, String key, String action) {
         heading(title, subtitle);
         TextView add = pill("＋  " + action, PURPLE); body.addView(add);
-        add.setOnClickListener(v -> addDialog(key, action));
+        add.setOnClickListener(v -> {
+            if("wishes".equals(key))editWishPlanDialog(null);
+            else addDialog(key, action);
+        });
         JSONArray list = read(key);
         if (list.length() == 0) {
             simpleCard("＋", "Пока записей нет", "Добавьте вашу первую общую запись", null);
         } else for (int i=0;i<list.length();i++) {
             JSONObject item = list.optJSONObject(i); if (item == null) continue;
-            renderEditableEntry(key, list, i, key.equals("wishes") ? "♡" : "🗓");
+            if("wishes".equals(key))renderWishPlan(item);
+            else renderEditableEntry(key, list, i, "🗓");
         }
         if (key.equals("wishes")) simpleCard("🗳", "Голосование за хотелки", "Выберите мечту, которую исполните вместе", () -> open("🗳 Голосование за хотелки"));
+    }
+
+    private void renderWishPlan(JSONObject item){
+        LinearLayout plan=card();
+        plan.addView(text("✨  "+item.optString("title"),16,INK,true));
+        String category=item.optString("category","");if(!category.isEmpty())plan.addView(text(category,12,PURPLE,true));
+        String detail=item.optString("detail","");if(!detail.isEmpty())plan.addView(text(detail,13,MUTED,false));
+        JSONArray steps=item.optJSONArray("plan_steps");
+        if(steps!=null&&steps.length()>0){
+            int done=0;for(int i=0;i<steps.length();i++){JSONObject step=steps.optJSONObject(i);if(step!=null&&step.optBoolean("done"))done++;}
+            int progress=PlanProgress.percent(done,steps.length());
+            TextView progressLabel=text("Шаги · "+done+" из "+steps.length()+" · "+progress+"%",12,PURPLE,true);
+            progressLabel.setPadding(0,dp(8),0,dp(2));plan.addView(progressLabel);
+            android.widget.ProgressBar bar=new android.widget.ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal);
+            bar.setMax(100);bar.setProgress(progress);
+            bar.setProgressTintList(android.content.res.ColorStateList.valueOf(PURPLE));
+            LinearLayout.LayoutParams barParams=new LinearLayout.LayoutParams(-1,dp(8));barParams.bottomMargin=dp(6);
+            plan.addView(bar,barParams);
+            for(int i=0;i<steps.length();i++){
+                JSONObject step=steps.optJSONObject(i);if(step==null)continue;
+                android.widget.CheckBox check=new android.widget.CheckBox(this);check.setText(step.optString("title"));
+                check.setChecked(step.optBoolean("done"));
+                check.setButtonTintList(android.content.res.ColorStateList.valueOf(PURPLE));
+                plan.addView(check);
+                check.setOnCheckedChangeListener((button,checked)->{
+                    try{step.put("done",checked);item.put("plan_steps",steps);replaceItem("wishes",item);render();}
+                    catch(Exception e){toast("Не удалось обновить шаг плана: "+e.getMessage());}
+                });
+            }
+        }else plan.addView(text("Добавьте шаги, чтобы отслеживать продвижение",12,MUTED,false));
+        plan.setOnClickListener(v->editWishPlanDialog(item));
+        plan.setOnLongClickListener(v->{itemActions("wishes",item);return true;});
+    }
+
+    private void editWishPlanDialog(JSONObject existing){
+        LinearLayout form=column();form.setPadding(dp(18),dp(4),dp(18),dp(4));
+        EditText title=new EditText(this);title.setSingleLine(true);title.setHint("Мечта или план");
+        if(existing!=null)title.setText(existing.optString("title"));form.addView(title);
+        EditText category=new EditText(this);category.setSingleLine(true);category.setHint("Раздел / категория");
+        if(existing!=null)category.setText(existing.optString("category"));form.addView(category);
+        EditText detail=new EditText(this);detail.setMinLines(2);detail.setHint("Описание или заметка");
+        if(existing!=null)detail.setText(existing.optString("detail"));form.addView(detail);
+        EditText stepsInput=new EditText(this);stepsInput.setGravity(Gravity.TOP|Gravity.START);stepsInput.setMinLines(4);
+        stepsInput.setHint("Шаги плана — каждый с новой строки");
+        JSONArray oldSteps=existing==null?null:existing.optJSONArray("plan_steps");
+        if(oldSteps!=null){StringBuilder textValue=new StringBuilder();for(int i=0;i<oldSteps.length();i++){JSONObject step=oldSteps.optJSONObject(i);if(step!=null){if(textValue.length()>0)textValue.append('\n');textValue.append(step.optString("title"));}}stepsInput.setText(textValue.toString());}
+        form.addView(stepsInput);
+        ScrollView scroll=new ScrollView(this);scroll.addView(form);
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle(existing==null?"Новый план":"Изменить план")
+                .setView(scroll).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",null).create();
+        dialog.setOnShowListener(v->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button->{
+            String name=title.getText().toString().trim();
+            if(name.isEmpty()){title.setError("Введите мечту или план");return;}
+            try{
+                JSONObject plan=existing==null?new JSONObject():new JSONObject(existing.toString());
+                if(!plan.has("id"))plan.put("id",UUID.randomUUID().toString());
+                plan.put("title",name);plan.put("category",category.getText().toString().trim());
+                plan.put("detail",detail.getText().toString().trim());
+                JSONArray parsed=new JSONArray();String[] lines=stepsInput.getText().toString().split("\\r?\\n");
+                for(int i=0;i<lines.length;i++){
+                    String stepTitle=lines[i].trim();if(stepTitle.isEmpty())continue;
+                    JSONObject old=oldSteps!=null&&i<oldSteps.length()?oldSteps.optJSONObject(i):null;
+                    JSONObject step=new JSONObject();step.put("title",stepTitle);
+                    step.put("done",old!=null&&stepTitle.equals(old.optString("title"))&&old.optBoolean("done"));
+                    parsed.put(step);
+                }
+                plan.put("plan_steps",parsed);
+                if(existing==null){JSONArray rows=read("wishes");rows.put(plan);save("wishes",rows);syncItem("wishes",plan);}
+                else replaceItem("wishes",plan);
+                dialog.dismiss();render();
+            }catch(Exception e){toast("Не удалось сохранить план: "+e.getMessage());}
+        }));
+        dialog.show();
     }
 
     private void renderMore() {
@@ -867,6 +1092,88 @@ public class MainActivity extends Activity {
         heading("Инструменты", null);
         simpleCard("⏱", "Общий таймер", "Запустите отсчёт и следите за ним вместе", () -> open("shared_timer"));
         simpleCard("🔔", "Напомнить партнёру", "Общая дата и уведомление на телефонах пары", () -> open("shared_reminder"));
+        heading("Приложение", null);
+        simpleCard("⚙", "Настройки", "Профиль, внешний вид, подключение и обновления", () -> {
+            feature=null;
+            tab=NavigationModel.SETTINGS_TAB;
+            render();
+        });
+    }
+    private void renderSettingsTab(){
+        heading("Настройки","Профиль и параметры приложения собраны здесь");
+
+        LinearLayout profile=settingsGroup("Профиль");
+        String name=prefs.getString("profile_name","").trim();
+        String emoji=prefs.getString("profile_avatar","♡");
+        addSettingRow(profile,emoji,
+                name.isEmpty()?"Заполнить профиль":name,
+                "Имя, фото, описание и эмодзи для партнёра",
+                this::profileDialog);
+
+        LinearLayout appearance=settingsGroup("Внешний вид и навигация");
+        addSettingRow(appearance,"◐",softDark?"Светлая тема":"Тёмная тема",
+                "Переключить оформление приложения",()->{
+                    softDark=!softDark;
+                    prefs.edit().putBoolean("soft_dark_theme",softDark).apply();
+                    applyPalette();
+                    render();
+                });
+        addSettingRow(appearance,"☷","Разделы на панели",
+                "Выбрать основные вкладки и их порядок",this::navigationSettings);
+
+        LinearLayout connection=settingsGroup("Подключение");
+        addSettingRow(connection,"☁","Supabase",
+                sync.url().isEmpty()?"Настроить сервер синхронизации":"Параметры сервера синхронизации",
+                this::configureServer);
+        addSettingRow(connection,"♡","Аккаунт и пара",
+                sync.signedIn()?"Войти в другой аккаунт или зарегистрироваться":"Войти или создать аккаунт",
+                this::accountDialog);
+
+        LinearLayout updates=settingsGroup("Обновления");
+        addSettingRow(updates,"↻","Проверить обновления",
+                "Проверить доступную версию приложения на GitHub",
+                ()->checkGitHubUpdate(true));
+
+        LinearLayout account=settingsGroup("Аккаунт");
+        addSettingRow(account,"!", "Удалить аккаунт…",
+                "Удаление необратимо; сначала будет показано подтверждение",
+                this::confirmAccountDeletion);
+    }
+    private LinearLayout settingsGroup(String title){
+        heading(title,null);
+        LinearLayout group=card();
+        group.setPadding(dp(8),dp(4),dp(8),dp(4));
+        return group;
+    }
+    private void addSettingRow(LinearLayout group,String icon,String title,String summary,Runnable action){
+        LinearLayout row=new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(8),dp(6),dp(8),dp(6));
+        row.setMinimumHeight(dp(64));
+        row.setClickable(true);
+        row.setFocusable(true);
+        android.util.TypedValue background=new android.util.TypedValue();
+        if(getTheme().resolveAttribute(android.R.attr.selectableItemBackground,background,true))
+            row.setBackgroundResource(background.resourceId);
+        TextView glyph=text(icon,20,PURPLE,true);
+        glyph.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams glyphParams=new LinearLayout.LayoutParams(dp(40),dp(48));
+        glyphParams.rightMargin=dp(10);
+        row.addView(glyph,glyphParams);
+        LinearLayout labels=column();
+        labels.addView(text(title,15,INK,true));
+        TextView detail=text(summary,12,MUTED,false);
+        detail.setMaxLines(2);
+        detail.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        labels.addView(detail);
+        row.addView(labels,new LinearLayout.LayoutParams(0,-2,1));
+        TextView arrow=text("›",22,MUTED,false);
+        arrow.setGravity(Gravity.CENTER);
+        arrow.setMinWidth(dp(32));
+        row.addView(arrow,new LinearLayout.LayoutParams(dp(32),dp(48)));
+        row.setContentDescription(title+". "+summary);
+        row.setOnClickListener(v->action.run());
+        group.addView(row,new LinearLayout.LayoutParams(-1,-2));
     }
     private void renderGamesTab(){
         renderGameRating();
@@ -901,12 +1208,153 @@ public class MainActivity extends Activity {
         renderVoting("votes_activities","Чем заняться","Выберите занятие для ближайшего совместного времени");
     }
     private void renderFilesTab(){
-        simpleCard("📎", "Общие файлы", "Файлы, которые вы сохранили вместе", null);
-        renderEntries("files");
+        simpleCard("📎", "Общие файлы", "Передавайте документы, фото и APK партнёру. APK хранится как обычный файл и никогда не запускается автоматически.", null);
+        TextView attach=pill("＋  Выбрать файл",PURPLE);body.addView(attach);
+        attach.setOnClickListener(v->{Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);pick.setType("*/*");pick.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(pick,402);});
+        JSONArray rows=read("files");
+        for(int i=rows.length()-1;i>=0;i--){
+            JSONObject item=rows.optJSONObject(i);if(item==null)continue;
+            LinearLayout entry=card();
+            String mime=item.optString("mime","application/octet-stream");
+            if(mime.isEmpty())mime="application/octet-stream";
+            boolean apk=mime.equals("application/vnd.android.package-archive")
+                    ||item.optString("title").toLowerCase(Locale.ROOT).endsWith(".apk");
+            entry.addView(text((apk?"📦  ":"📎  ")+item.optString("title","Файл"),16,INK,true));
+            String detail=item.optString("detail","");
+            if(!detail.isEmpty())entry.addView(text(detail,12,MUTED,false));
+            entry.addView(text(apk?"APK · недоверенный файл · не запускается здесь"
+                    :"Общий файл · "+mime,11,PURPLE,true));
+            TextView saveCopy=pill("Сохранить копию",PURPLE);saveCopy.setMinHeight(dp(48));entry.addView(saveCopy);
+            saveCopy.setOnClickListener(v->requestFileDownload(item));
+            entry.setOnClickListener(v->openSharedFilePreview(item));
+            if(mime.startsWith("image/")&&!item.optString("path").isEmpty()){
+                ImageView preview=new ImageView(this);preview.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                preview.setBackground(shape(PALE,14));preview.setContentDescription("Предпросмотр "+item.optString("title"));
+                LinearLayout.LayoutParams previewParams=new LinearLayout.LayoutParams(-1,dp(180));
+                previewParams.topMargin=dp(8);entry.addView(preview,previewParams);
+                loadSharedImagePreview(item.optString("path"),preview);
+            }
+            entry.setOnLongClickListener(v->{itemActions("files",item);return true;});
+        }
+        if(rows.length()==0)simpleCard("🗂","Пока нет файлов","Выберите файл, чтобы передать его в защищённое хранилище пары.",null);
+    }
+
+    private void loadSharedImagePreview(String path,ImageView target){
+        if(!sync.ready())return;
+        network.execute(()->{try{
+            byte[] bytes=sync.downloadAttachment(path);
+            android.graphics.BitmapFactory.Options options=new android.graphics.BitmapFactory.Options();
+            options.inJustDecodeBounds=true;android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length,options);
+            int sample=1;
+            while(options.outWidth/sample>900||options.outHeight/sample>900)sample*=2;
+            options.inJustDecodeBounds=false;options.inSampleSize=sample;
+            android.graphics.Bitmap bitmap=android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length,options);
+            if(bitmap==null)throw new Exception("Формат изображения не поддерживается");
+            runOnUiThread(()->{if(target.getParent()!=null)target.setImageBitmap(bitmap);});
+        }catch(Exception e){android.util.Log.w("VmesteFiles","Could not load shared image preview",e);}});
+    }
+
+    private void openSharedFilePreview(JSONObject item){
+        String path=item.optString("path","");
+        String mime=item.optString("mime","application/octet-stream");
+        String title=item.optString("title","Файл");
+        if(path.isEmpty()){toast("Файл ещё не загружен в общее хранилище");return;}
+        if(mime.startsWith("image/")){
+            toast("Загружаю предпросмотр…");
+            network.execute(()->{try{
+                byte[] bytes=sync.downloadAttachment(path);
+                android.graphics.BitmapFactory.Options options=new android.graphics.BitmapFactory.Options();
+                options.inJustDecodeBounds=true;
+                android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length,options);
+                int sample=1;
+                while(options.outWidth/sample>1600||options.outHeight/sample>1600)sample*=2;
+                options.inJustDecodeBounds=false;options.inSampleSize=sample;
+                android.graphics.Bitmap bitmap=android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length,options);
+                if(bitmap==null)throw new Exception("Формат изображения не поддерживается");
+                runOnUiThread(()->{ImageView image=new ImageView(this);image.setImageBitmap(bitmap);
+                    image.setAdjustViewBounds(true);image.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                    new AlertDialog.Builder(this).setTitle(title).setView(image)
+                            .setPositiveButton("Закрыть",null).show();});
+            }catch(Exception e){runOnUiThread(()->toast("Не удалось открыть предпросмотр: "+e.getMessage()));}});
+            return;
+        }
+        if(mime.startsWith("text/")||mime.equals("application/json")||mime.equals("application/xml")){
+            network.execute(()->{try{
+                byte[] bytes=sync.downloadAttachment(path);
+                int maxPreview=256*1024;
+                String content=new String(bytes,0,Math.min(bytes.length,maxPreview),
+                        java.nio.charset.StandardCharsets.UTF_8);
+                runOnUiThread(()->{TextView preview=text(content,14,INK,false);
+                    preview.setTextIsSelectable(true);
+                    ScrollView scroll=new ScrollView(this);scroll.setPadding(dp(16),dp(12),dp(16),dp(12));
+                    scroll.addView(preview);
+                    new AlertDialog.Builder(this).setTitle(title).setView(scroll)
+                            .setPositiveButton("Закрыть",null).show();});
+            }catch(Exception e){runOnUiThread(()->toast("Не удалось открыть предпросмотр: "+e.getMessage()));}});
+            return;
+        }
+        boolean apk=mime.equals("application/vnd.android.package-archive")
+                ||title.toLowerCase(Locale.ROOT).endsWith(".apk");
+        String message=(apk?"APK · недоверенный установочный файл. Он не будет запущен или установлен автоматически.\n\n":"")
+                +item.optString("detail","Формат: "+mime)
+                +"\n\nДля просмотра или передачи сохраните копию на устройство.";
+        new AlertDialog.Builder(this).setTitle(title).setMessage(message)
+                .setNegativeButton("Закрыть",null)
+                .setPositiveButton("Сохранить копию",(d,w)->requestFileDownload(item)).show();
+    }
+
+    private void requestFileDownload(JSONObject item){
+        String path=item.optString("path","");
+        if(path.isEmpty()){toast("У этого файла нет загруженной копии");return;}
+        pendingFileDownloadPath=path;
+        String title=item.optString("title","vmeste-file");
+        pendingFileDownloadName=safeFileName(title);
+        String mime=item.optString("mime","application/octet-stream");
+        if(mime.equals("application/vnd.android.package-archive")
+                ||title.toLowerCase(Locale.ROOT).endsWith(".apk")){
+            mime="application/vnd.android.package-archive";
+            final String apkMime=mime;
+            new AlertDialog.Builder(this).setTitle("Сохранить APK")
+                    .setMessage("APK будет только сохранён как недоверенный файл. Приложение не запускает и не устанавливает его автоматически.")
+                    .setNegativeButton("Отмена",(d,w)->clearPendingFileDownload())
+                    .setPositiveButton("Продолжить",(d,w)->startFileSavePicker(apkMime)).show();
+        }else startFileSavePicker(mime);
+    }
+
+    private void startFileSavePicker(String mime){
+        Intent save=new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        save.addCategory(Intent.CATEGORY_OPENABLE);save.setType(mime);
+        save.putExtra(Intent.EXTRA_TITLE,pendingFileDownloadName);
+        try{startActivityForResult(save,409);}
+        catch(Exception e){clearPendingFileDownload();toast("Не удалось открыть выбор места сохранения: "+e.getMessage());}
+    }
+
+    private String safeFileName(String value){
+        String name=value==null?"":value.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]","_").trim();
+        if(name.isEmpty()||".".equals(name)||"..".equals(name))return "vmeste-file";
+        return name.length()>120?name.substring(name.length()-120):name;
+    }
+
+    private void clearPendingFileDownload(){pendingFileDownloadPath="";pendingFileDownloadName="";}
+
+    private void saveSharedFileCopy(Uri destination){
+        String path=pendingFileDownloadPath;
+        clearPendingFileDownload();
+        if(path.isEmpty()||destination==null){toast("Выбор сохранения отменён");return;}
+        toast("Скачиваю файл…");
+        network.execute(()->{try{
+            byte[] bytes=sync.downloadAttachment(path);
+            try(OutputStream out=getContentResolver().openOutputStream(destination,"wt")){
+                if(out==null)throw new Exception("Не удалось открыть файл для записи");
+                out.write(bytes);out.flush();
+            }
+            runOnUiThread(()->toast("Файл сохранён. Для APK установка остаётся ручным действием Android."));
+        }catch(Exception e){runOnUiThread(()->toast("Не удалось сохранить файл: "+e.getMessage()));}});
     }
     private String description(String title) {
         if (title.contains("Чат")) return "Сообщения, которые остаются между вами";
         if (title.contains("Заметки")) return "Мысли, рецепты и маленькие напоминания";
+        if (title.contains("Рецепты")) return "Ингредиенты, граммовки и шаги приготовления";
         if (title.contains("Файлы")) return "Билеты, фотографии и важные документы";
         if (title.contains("Карты")) return "Сохраняйте штрихкоды карт лояльности";
         if (title.contains("Подар")) return "Идеи подарков и даты-сюрпризы";
@@ -922,6 +1370,15 @@ public class MainActivity extends Activity {
         back.setOnClickListener(v -> { feature = null; render(); });
         if (feature.contains("Карты")) {
             renderLoyaltyCards();
+            return;
+        }
+        if (feature.contains("Календарь")) {
+            renderCalendar();
+            return;
+        }
+        if (feature.contains("Хотим вместе")) {
+            renderCollection("Хочется вместе", "Маленькие и большие мечты",
+                    "wishes", "Добавить хотелку");
             return;
         }
         heading(feature, description(feature));
@@ -950,6 +1407,8 @@ public class MainActivity extends Activity {
             renderPartnerCard();
         } else if (feature.contains("Заметки")) {
             renderNotes();
+        } else if (feature.contains("Рецепты")) {
+            renderRecipes();
         } else if (feature.contains("просмотра")) {
             renderMovieRoom();
         } else if (feature.contains("игры")) {
@@ -961,9 +1420,7 @@ public class MainActivity extends Activity {
             try{gameCard("Четыре в ряд", "Бросайте фишки в колонку и соберите четыре подряд", this::onlineConnectFour);}catch(Exception ignored){}
             try{gameCard("Точки и квадратики", "Соединяйте точки и замыкайте квадраты", this::onlineDotsAndBoxes);}catch(Exception ignored){}
         } else if (feature.contains("Файлы")) {
-            TextView attach = pill("＋  Выбрать файл", PURPLE); body.addView(attach);
-            attach.setOnClickListener(v -> { Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT); i.setType("*/*"); i.addCategory(Intent.CATEGORY_OPENABLE); startActivityForResult(i, 402); });
-            renderEntries(keyFor(feature));
+            renderFilesTab();
         } else if (feature.contains("Чат")) {
             renderChat();
         } else {
@@ -1341,7 +1798,36 @@ public class MainActivity extends Activity {
         for(int i=0;i<all.length();i++){JSONObject item=all.optJSONObject(i);if(item==null)continue;if(item.optBoolean("coin_result"))result=item;else options.add(item);}
         TextView add=pill("＋ Добавить вариант",PURPLE);body.addView(add);add.setOnClickListener(v->addDialog(storeKey,"Новый вариант"));
         for(JSONObject option:options){LinearLayout c=card();c.addView(text("🗳  "+option.optString("title"),16,INK,true));String detail=option.optString("detail");if(!detail.isEmpty())c.addView(text(detail,12,MUTED,false));c.setOnLongClickListener(v->{itemActions(storeKey,option);return true;});}
-        if(options.size()==2){TextView flip=pill("🪙 Подбросить монетку",PURPLE);body.addView(flip);TextView outcome=text(result==null?"Орёл — первый вариант · решка — второй":"Последний результат: "+result.optString("title"),15,INK,true);outcome.setGravity(Gravity.CENTER);body.addView(outcome);flip.setOnClickListener(v->flipCoin(storeKey,options,outcome,flip));}
+        if(options.size()==2){
+            JSONObject state=result==null?new JSONObject():result;
+            boolean sameOptions=result==null
+                    ||(options.get(0).optString("title").equals(state.optString("option_first"))
+                    &&options.get(1).optString("title").equals(state.optString("option_second")));
+            if(!sameOptions){
+                state=coinState(storeKey,options,state);
+                try{state.put("wins_first",0);state.put("wins_second",0);state.put("series_finished",false);state.put("series_winner","");state.put("title","");saveCoinState(storeKey,state);}
+                catch(Exception e){android.util.Log.w("VmesteCoin","Could not reset score after options changed",e);}
+            }
+            final JSONObject seriesState=state;
+            int winsA=seriesState.optInt("wins_first",0),winsB=seriesState.optInt("wins_second",0);
+            int target=Math.max(1,seriesState.optInt("target_wins",1));
+            boolean finished=seriesState.optBoolean("series_finished",false);
+            TextView targetButton=pill("🏁 До "+target+" "+(target==1?"победы":"побед"),PURPLE);
+            TextView score=text(options.get(0).optString("title")+"  "+winsA+" : "+winsB+"  "+options.get(1).optString("title"),16,INK,true);
+            score.setGravity(Gravity.CENTER);score.setPadding(dp(8),dp(8),dp(8),dp(8));
+            TextView outcome=text(finished?"Серия завершена · победитель: "+seriesState.optString("series_winner"):
+                    result==null?"Орёл — первый вариант · решка — второй":"Последний бросок: "+seriesState.optString("title"),13,MUTED,true);
+            outcome.setGravity(Gravity.CENTER);
+            body.addView(targetButton);body.addView(score);body.addView(outcome);
+            targetButton.setOnClickListener(v->chooseCoinTarget(storeKey,options,seriesState,winsA,winsB));
+            if(finished){
+                TextView restart=pill("Начать новую серию",PURPLE);body.addView(restart);
+                restart.setOnClickListener(v->{JSONObject next=coinState(storeKey,options,seriesState);try{next.put("wins_first",0);next.put("wins_second",0);next.put("series_finished",false);next.put("series_winner","");next.put("title","");saveCoinState(storeKey,next);render();}catch(Exception e){toast("Не удалось начать новую серию: "+e.getMessage());}});
+            }else{
+                TextView flip=pill("🪙 Подбросить монетку",PURPLE);body.addView(flip);
+                flip.setOnClickListener(v->flipCoin(storeKey,options,outcome,flip,score,seriesState));
+            }
+        }
         else if(options.size()>2)simpleCard("🎲","Можно выбрать любой из "+options.size()+" вариантов","Монетка доступна, когда останутся ровно два варианта.",null);
         else simpleCard("📝","Нужно два варианта","Добавьте ещё один вариант, чтобы подбросить монетку.",null);
     }
@@ -1354,39 +1840,188 @@ public class MainActivity extends Activity {
     }
     private void renderTimeCapsules(){
         TextView intro=pill("Письмо, которое откроется в выбранный день",PURPLE);body.addView(intro);TextView add=pill("＋ Запечатать послание",PURPLE);body.addView(add);add.setOnClickListener(v->createCapsule());
-        JSONArray rows=read("capsule");long now=System.currentTimeMillis();for(int i=0;i<rows.length();i++){JSONObject item=rows.optJSONObject(i);if(item==null)continue;long unlock=item.optLong("unlock_at",0);LinearLayout c=card();if(unlock>now){c.addView(text("🔒  Послание запечатано",16,INK,true));c.addView(text("Откроется "+new SimpleDateFormat("d MMMM yyyy · HH:mm",new Locale("ru")).format(new java.util.Date(unlock)),13,MUTED,false));}else{c.addView(text("💌  Послание открыто",15,PURPLE,true));c.addView(text(item.optString("title"),15,INK,false));}c.setOnLongClickListener(v->{itemActions("capsule",item);return true;});if(unlock>now)scheduleReminder(item.optString("id"),unlock,"Капсула времени открыта","Ваше общее послание ждёт вас");}
+        JSONArray rows=read("capsule");long now=System.currentTimeMillis();
+        for(int i=0;i<rows.length();i++){
+            JSONObject item=rows.optJSONObject(i);if(item==null)continue;
+            long unlock=item.optLong("unlock_at",0);LinearLayout c=card();
+            if(unlock>now){
+                LinearLayout seal=new LinearLayout(this);seal.setGravity(Gravity.CENTER_VERTICAL);
+                TextView lock=text(item.optString("id").equals(capsuleAnimationId)?"🔓":"🔒",22,PURPLE,true);
+                lock.setGravity(Gravity.CENTER);seal.addView(lock,new LinearLayout.LayoutParams(dp(42),dp(44)));
+                seal.addView(text("Послание запечатано",16,INK,true),new LinearLayout.LayoutParams(0,-2,1));
+                c.addView(seal);
+                if(item.optString("id").equals(capsuleAnimationId))animateCapsuleSeal(lock);
+                c.addView(text("Откроется "+new SimpleDateFormat("d MMMM yyyy · HH:mm",new Locale("ru")).format(new java.util.Date(unlock)),13,MUTED,false));
+            }else{
+                c.addView(text("💌  Послание открыто",15,PURPLE,true));
+                c.addView(text(item.optString("title"),15,INK,false));
+            }
+            c.setOnLongClickListener(v->{itemActions("capsule",item);return true;});
+            if(unlock>now)scheduleReminder(item.optString("id"),unlock,"Капсула времени открыта","Ваше общее послание ждёт вас");
+        }
+        capsuleAnimationId="";
     }
-    private void createCapsule(){EditText message=new EditText(this);message.setHint("Ваше послание будущим вам двоим");message.setMinLines(4);message.setGravity(Gravity.TOP|Gravity.START);Calendar date=Calendar.getInstance();date.add(Calendar.DAY_OF_YEAR,1);new android.app.DatePickerDialog(this,(p,y,m,d)->{date.set(y,m,d);new android.app.TimePickerDialog(this,(tp,h,min)->{date.set(Calendar.HOUR_OF_DAY,h);date.set(Calendar.MINUTE,min);date.set(Calendar.SECOND,0);new AlertDialog.Builder(this).setTitle("Запечатать капсулу времени").setView(message).setNegativeButton("Отмена",null).setPositiveButton("Запечатать",(dialog,w)->{String value=message.getText().toString().trim();if(value.isEmpty())return;JSONObject item=new JSONObject();try{item.put("id",UUID.randomUUID().toString());item.put("title",value);item.put("detail","Послание времени");item.put("unlock_at",date.getTimeInMillis());item.put("done",false);}catch(Exception ignored){}JSONArray rows=read("capsule");rows.put(item);save("capsule",rows);syncItem("capsule",item);render();}).show();},date.get(Calendar.HOUR_OF_DAY),date.get(Calendar.MINUTE),true).show();},date.get(Calendar.YEAR),date.get(Calendar.MONTH),date.get(Calendar.DAY_OF_MONTH)).show();}
+    private void animateCapsuleSeal(TextView lock){
+        float durationScale;
+        try{durationScale=android.provider.Settings.Global.getFloat(getContentResolver(),
+                android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,1f);}
+        catch(Exception e){durationScale=1f;}
+        if(durationScale<=0){lock.setText("🔒");return;}
+        lock.setRotation(36);lock.setScaleX(.78f);lock.setScaleY(.78f);
+        lock.animate().rotation(0).scaleX(1f).scaleY(1f).setDuration(280)
+                .setInterpolator(new android.view.animation.DecelerateInterpolator())
+                .withEndAction(()->lock.setText("🔒")).start();
+    }
+    private void createCapsule(){EditText message=new EditText(this);message.setHint("Ваше послание будущим вам двоим");message.setMinLines(4);message.setGravity(Gravity.TOP|Gravity.START);Calendar date=Calendar.getInstance();date.add(Calendar.DAY_OF_YEAR,1);new android.app.DatePickerDialog(this,(p,y,m,d)->{date.set(y,m,d);new android.app.TimePickerDialog(this,(tp,h,min)->{date.set(Calendar.HOUR_OF_DAY,h);date.set(Calendar.MINUTE,min);date.set(Calendar.SECOND,0);new AlertDialog.Builder(this).setTitle("Запечатать послание").setView(message).setNegativeButton("Отмена",null).setPositiveButton("Запечатать капсулу",(dialog,w)->{String value=message.getText().toString().trim();if(value.isEmpty())return;JSONObject item=new JSONObject();try{String id=UUID.randomUUID().toString();item.put("id",id);item.put("title",value);item.put("detail","Послание времени");item.put("unlock_at",date.getTimeInMillis());item.put("done",false);capsuleAnimationId=id;}catch(Exception e){toast("Не удалось подготовить капсулу: "+e.getMessage());return;}JSONArray rows=read("capsule");rows.put(item);save("capsule",rows);syncItem("capsule",item);render();}).show();},date.get(Calendar.HOUR_OF_DAY),date.get(Calendar.MINUTE),true).show();},date.get(Calendar.YEAR),date.get(Calendar.MONTH),date.get(Calendar.DAY_OF_MONTH)).show();}
     private void renderStories(){
-        simpleCard("💞","Только для вас двоих","Истории с текстом или фото видны участникам пары и исчезают через 24 часа.",null);
-        TextView add=pill("＋ Добавить историю",PURPLE);body.addView(add);add.setOnClickListener(v->createStoryDialog());
-        JSONArray rows=read("stories");long now=System.currentTimeMillis();int visibleStories=0;
+        heading("Истории для двоих","Фото и короткие моменты хранятся сутки");
+        JSONArray rows=read("stories");long now=System.currentTimeMillis();
+        ArrayList<JSONObject> visible=new ArrayList<>();
+        java.util.LinkedHashMap<String,JSONObject> authors=new java.util.LinkedHashMap<>();
         for(int i=rows.length()-1;i>=0;i--){
             JSONObject story=rows.optJSONObject(i);if(story==null)continue;
             if(story.optLong("expires_at",Long.MAX_VALUE)<=now){removeItem("stories",story.optString("id"));continue;}
-            visibleStories++;
-            LinearLayout entry=card();entry.setBackground(shape(softDark?0xFF342D39:0xFFFFFCFF,22));
-            String author=sync.userId().equals(story.optString("author_id"))?"Ваша история":"История · "+prefs.getString("partner_name","партнёр");
-            TextView heading=text(author,12,PURPLE,true);entry.addView(heading);
-            String mediaPath=story.optString("media_path","");
-            if(!mediaPath.isEmpty()){
-                ImageView photo=new ImageView(this);photo.setScaleType(ImageView.ScaleType.CENTER_CROP);photo.setBackground(shape(PALE,16));photo.setClipToOutline(true);
-                LinearLayout.LayoutParams photoParams=new LinearLayout.LayoutParams(-1,dp(250));photoParams.topMargin=dp(8);entry.addView(photo,photoParams);
-                photo.setContentDescription("Фото в истории для партнёра");
-                network.execute(()->{try{byte[] bytes=sync.downloadAttachment(mediaPath);android.graphics.BitmapFactory.Options opts=new android.graphics.BitmapFactory.Options();opts.inSampleSize=2;android.graphics.Bitmap bitmap=android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length,opts);runOnUiThread(()->{if(bitmap!=null&&photo.getParent()!=null)photo.setImageBitmap(bitmap);});}catch(Exception e){android.util.Log.w("VmesteStories","Could not load story photo",e);}});
-                photo.setOnClickListener(v->showStoryImage(mediaPath));
-            }
-            String caption=story.optString("title","");if(!caption.isEmpty()){TextView bodyText=text(caption,16,INK,false);bodyText.setPadding(0,dp(8),0,dp(3));entry.addView(bodyText);}
-            long left=Math.max(0,story.optLong("expires_at")-now);long hours=left/3600000L;long minutes=(left/60000L)%60;
-            entry.addView(text(hours>0?"Исчезнет через "+hours+" ч "+minutes+" мин":"Исчезнет менее чем через час",11,MUTED,false));
+            visible.add(story);
+            String authorId=story.optString("author_id","");
+            if(!authorId.isEmpty()&&!authors.containsKey(authorId))authors.put(authorId,story);
         }
-        if(visibleStories==0)simpleCard("📷","Ваша первая история начнётся здесь","Добавьте фото или короткий текст — он будет доступен партнёру сутки.",null);
+        if(!storiesFilter.isEmpty()&&!authors.containsKey(storiesFilter))storiesFilter="";
+        renderStoryAuthors(authors,visible.size());
+        if(visible.isEmpty()){
+            storiesFilter="";
+            simpleCard("📷","Ваша первая история начнётся здесь","Добавьте фото или короткий текст — партнёр увидит его в общей ленте.",null);
+            return;
+        }
+        for(JSONObject story:visible){
+            String authorId=story.optString("author_id","");
+            if(!storiesFilter.isEmpty()&&!storiesFilter.equals(authorId))continue;
+            renderStoryPost(story,now);
+        }
+    }
+
+    private void renderStoryAuthors(java.util.LinkedHashMap<String,JSONObject> authors,int total){
+        android.widget.HorizontalScrollView scroll=new android.widget.HorizontalScrollView(this);
+        scroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout strip=new LinearLayout(this);strip.setGravity(Gravity.CENTER_VERTICAL);
+        strip.setPadding(dp(3),dp(4),dp(3),dp(8));
+        scroll.addView(strip);
+        FrameLayout addBubble=new FrameLayout(this);
+        TextView addCircle=text("+",23,PURPLE,true);addCircle.setGravity(Gravity.CENTER);
+        addCircle.setBackground(shape(softDark?0xFF39333E:PALE,32));
+        FrameLayout.LayoutParams circleParams=new FrameLayout.LayoutParams(dp(54),dp(54),Gravity.CENTER);
+        addBubble.addView(addCircle,circleParams);
+        TextView addLabel=text("Ваша",11,INK,true);addLabel.setGravity(Gravity.CENTER);
+        FrameLayout.LayoutParams labelParams=new FrameLayout.LayoutParams(dp(70),dp(24),Gravity.BOTTOM|Gravity.CENTER_HORIZONTAL);
+        addBubble.addView(addLabel,labelParams);
+        LinearLayout.LayoutParams addParams=new LinearLayout.LayoutParams(dp(70),dp(82));addParams.rightMargin=dp(6);
+        strip.addView(addBubble,addParams);
+        addBubble.setFocusable(true);addBubble.setContentDescription("Добавить историю");
+        addBubble.setOnClickListener(v->createStoryDialog());
+        for(String authorId:authors.keySet()){
+            JSONObject latest=authors.get(authorId);
+            boolean mine=authorId.equals(sync.userId());
+            String name=mine?"Вы":prefs.getString("partner_name","Партнёр");
+            FrameLayout bubble=new FrameLayout(this);
+            int ring=authorId.equals(storiesFilter)?PURPLE:(softDark?0xFF766681:0xFFD8C7E6);
+            android.graphics.drawable.GradientDrawable ringShape=shape(softDark?0xFF211D25:PAPER,36);
+            ringShape.setStroke(dp(2),ring);bubble.setBackground(ringShape);
+            TextView initials=text(mine?firstCharacter(prefs.getString("profile_name","В")):
+                    firstCharacter(prefs.getString("partner_name","П")),18,PURPLE,true);
+            initials.setGravity(Gravity.CENTER);
+            bubble.addView(initials,new FrameLayout.LayoutParams(dp(48),dp(48),Gravity.CENTER));
+            TextView nameLabel=text(name,11,INK,true);nameLabel.setGravity(Gravity.CENTER);
+            FrameLayout.LayoutParams nameParams=new FrameLayout.LayoutParams(dp(70),dp(24),Gravity.BOTTOM|Gravity.CENTER_HORIZONTAL);
+            bubble.addView(nameLabel,nameParams);
+            LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(dp(70),dp(82));params.rightMargin=dp(6);
+            strip.addView(bubble,params);
+            bubble.setFocusable(true);bubble.setContentDescription("Показать истории: "+name);
+            bubble.setOnClickListener(v->{storiesFilter=storiesFilter.equals(authorId)?"":authorId;render();});
+        }
+        body.addView(scroll,new LinearLayout.LayoutParams(-1,dp(88)));
+        LinearLayout header=new LinearLayout(this);header.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title=text(storiesFilter.isEmpty()?"Лента · "+total: (authors.get(storiesFilter).optString("author_id").equals(sync.userId())?"Ваши истории":"Истории партнёра"),16,INK,true);
+        header.addView(title,new LinearLayout.LayoutParams(0,-2,1));
+        if(!storiesFilter.isEmpty()){
+            TextView all=pill("Все",PURPLE);all.setContentDescription("Показать все истории");
+            header.addView(all);all.setOnClickListener(v->{storiesFilter="";render();});
+        }
+        body.addView(header);
+    }
+
+    private String firstCharacter(String value){
+        String trimmed=value==null?"":value.trim();
+        return trimmed.isEmpty()?"♡":trimmed.substring(0,1).toUpperCase(new Locale("ru"));
+    }
+
+    private void renderStoryPost(JSONObject story,long now){
+        String authorId=story.optString("author_id","");
+        boolean mine=authorId.equals(sync.userId());
+        String author=mine?prefs.getString("profile_name","Вы"):prefs.getString("partner_name","Партнёр");
+        LinearLayout entry=card();
+        LinearLayout byline=new LinearLayout(this);byline.setGravity(Gravity.CENTER_VERTICAL);
+        TextView avatar=text(firstCharacter(author),16,PURPLE,true);avatar.setGravity(Gravity.CENTER);
+        avatar.setBackground(shape(softDark?0xFF49394F:PALE,24));
+        byline.addView(avatar,new LinearLayout.LayoutParams(dp(42),dp(42)));
+        LinearLayout authorInfo=column();authorInfo.setPadding(dp(10),0,0,0);
+        authorInfo.addView(text(author,14,INK,true));
+        long created=story.optLong("created_at",0);
+        String posted=created>0?new SimpleDateFormat("d MMM · HH:mm",new Locale("ru")).format(new java.util.Date(created)):"Недавно";
+        authorInfo.addView(text(posted,11,MUTED,false));
+        byline.addView(authorInfo,new LinearLayout.LayoutParams(0,-2,1));
+        entry.addView(byline);
+        String mediaPath=story.optString("media_path","");
+        String localPath=story.optString("local_path","");
+        if(!mediaPath.isEmpty()||!localPath.isEmpty()){
+            ImageView photo=new ImageView(this);photo.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            photo.setBackground(shape(softDark?0xFF39333E:PALE,16));photo.setClipToOutline(true);
+            LinearLayout.LayoutParams photoParams=new LinearLayout.LayoutParams(-1,dp(340));
+            photoParams.topMargin=dp(10);entry.addView(photo,photoParams);
+            photo.setContentDescription("Фото в истории от "+author);
+            network.execute(()->{try{
+                android.graphics.BitmapFactory.Options opts=new android.graphics.BitmapFactory.Options();opts.inSampleSize=2;
+                android.graphics.Bitmap bitmap;
+                if(!localPath.isEmpty()){
+                    Uri local=Uri.parse(localPath);
+                    if("file".equals(local.getScheme()))bitmap=android.graphics.BitmapFactory.decodeFile(local.getPath(),opts);
+                    else try(InputStream input=getContentResolver().openInputStream(local)){
+                        bitmap=input==null?null:android.graphics.BitmapFactory.decodeStream(input,null,opts);
+                    }
+                }else{
+                    byte[] bytes=sync.downloadAttachment(mediaPath);
+                    bitmap=android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length,opts);
+                }
+                if(bitmap==null)throw new Exception("Формат изображения не поддерживается");
+                runOnUiThread(()->{if(bitmap!=null&&photo.getParent()!=null)photo.setImageBitmap(bitmap);});
+            }catch(Exception e){android.util.Log.w("VmesteStories","Could not load story photo",e);runOnUiThread(()->{if(photo.getParent()!=null)photo.setContentDescription("Фото истории недоступно");});}});
+            photo.setOnClickListener(v->showStoryImage(mediaPath,localPath));
+            if(story.optBoolean("sync_pending")){
+                TextView retry=pill("↻  Повторить передачу партнёру",PURPLE);entry.addView(retry);
+                retry.setOnClickListener(v->retryStoryUpload(story));
+            }
+        }
+        String caption=story.optString("title","");
+        if(!caption.isEmpty()){
+            if(mediaPath.isEmpty()){
+                TextView textStory=text(caption,20,INK,true);textStory.setGravity(Gravity.CENTER);
+                textStory.setPadding(dp(18),dp(28),dp(18),dp(28));
+                textStory.setBackground(shape(softDark?0xFF403648:0xFFF0E8F6,18));
+                LinearLayout.LayoutParams textParams=new LinearLayout.LayoutParams(-1,-2);
+                textParams.topMargin=dp(10);entry.addView(textStory,textParams);
+            }else{
+                TextView captionView=text(caption,15,INK,false);
+                captionView.setPadding(dp(2),dp(10),dp(2),dp(4));entry.addView(captionView);
+            }
+        }
+        long left=Math.max(0,story.optLong("expires_at")-now);
+        long hours=left/3600000L,minutes=(left/60000L)%60;
+        entry.addView(text(hours>0?"История исчезнет через "+hours+" ч "+minutes+" мин":
+                "История исчезнет менее чем через час",11,MUTED,false));
+        entry.setOnLongClickListener(v->{itemActions("stories",story);return true;});
     }
 
     private void createStoryDialog(){
-        if(!sync.ready()){toast("Чтобы публиковать истории для двоих, сначала войдите и подключите пару");return;}
         EditText caption=new EditText(this);caption.setHint("Подпись к фото или короткая история");caption.setMinLines(3);caption.setGravity(Gravity.TOP|Gravity.START);
-        new AlertDialog.Builder(this).setTitle("Новая история").setMessage("История будет видна только вашей паре и исчезнет через 24 часа.")
+        new AlertDialog.Builder(this).setTitle("Новая история").setMessage("История сохранится на этом устройстве и синхронизируется с парой, когда подключение будет доступно. Через 24 часа она исчезнет.")
                 .setView(caption).setNegativeButton("Отмена",null)
                 .setNeutralButton("Добавить фото",(d,w)->{pendingStoryCaption=caption.getText().toString().trim();Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);pick.setType("image/*");pick.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(pick,407);})
                 .setPositiveButton("Опубликовать текст",(d,w)->publishStory(null,caption.getText().toString().trim())).show();
@@ -1395,19 +2030,74 @@ public class MainActivity extends Activity {
     private void publishStory(Uri photo,String caption){
         String value=caption==null?"":caption.trim();
         if(value.isEmpty()&&photo==null){toast("Напишите текст или добавьте фото");return;}
-        if(!sync.ready()){toast("Истории доступны после подключения пары");return;}
         JSONObject story=new JSONObject();String id=UUID.randomUUID().toString();
         try{story.put("id",id);story.put("title",value);story.put("author_id",sync.userId());story.put("expires_at",System.currentTimeMillis()+86400000L);story.put("created_at",System.currentTimeMillis());}
         catch(Exception e){toast("Не удалось подготовить историю");return;}
-        if(photo==null){JSONArray rows=read("stories");rows.put(story);save("stories",rows);syncItem("stories",story);render();return;}
-        toast("Загружаю фото истории…");
-        network.execute(()->{try{String path=sync.uploadAttachment(photo,id,this);story.put("media_path",path);JSONArray rows=read("stories");rows.put(story);save("stories",rows);syncItem("stories",story);runOnUiThread(()->{render();toast("История опубликована для вашей пары");});}
-            catch(Exception e){runOnUiThread(()->toast("Не удалось опубликовать фото: "+e.getMessage()));}});
+        if(photo==null){
+            JSONArray rows=read("stories");rows.put(story);save("stories",rows);syncItem("stories",story);render();
+            if(!sync.ready())toast("История сохранена на устройстве и отправится партнёру после подключения");
+            return;
+        }
+        toast("Сохраняю фото на устройстве…");
+        network.execute(()->{try{
+            Uri local=archiveChatAttachment(photo,id,"Фото","image/jpeg");
+            story.put("local_path",local.toString());story.put("sync_pending",true);
+            JSONArray rows=read("stories");rows.put(story);save("stories",rows);
+            runOnUiThread(()->{render();toast(sync.ready()?"Фото сохранено. Передаю партнёру…":"Фото сохранено на устройстве. Подключите пару, чтобы отправить его.");});
+            if(!sync.ready())return;
+            uploadStoryPhoto(story,local);
+        }catch(Exception e){runOnUiThread(()->toast("Не удалось сохранить фото истории: "+e.getMessage()));}});
     }
 
-    private void showStoryImage(String path){
+    private void retryStoryUpload(JSONObject story){
+        if(!sync.ready()){
+            toast("Подключите пару, чтобы передать сохранённое фото");
+            return;
+        }
+        String localPath=story.optString("local_path","");
+        Uri local=Uri.parse(localPath);
+        if(!"file".equals(local.getScheme())||!new File(local.getPath()).isFile()){
+            toast("Локальная копия фото недоступна");
+            return;
+        }
+        try{story.put("sync_pending",true);}
+        catch(Exception e){toast("Не удалось подготовить повторную отправку истории");return;}
+        toast("Повторяю передачу истории…");
+        network.execute(()->uploadStoryPhoto(story,local));
+    }
+
+    private void uploadStoryPhoto(JSONObject story,Uri local){
+        try{
+            String path=sync.uploadAttachment(local,story.optString("id"),this,"image/jpeg");
+            JSONObject saved=findItem(read("stories"),story.optString("id"));
+            if(saved==null)saved=story;
+            saved.put("media_path",path);saved.put("sync_pending",false);
+            JSONArray rows=read("stories");save("stories",replaceById(rows,saved));
+            syncItem("stories",saved);
+            runOnUiThread(()->{render();toast("История опубликована для вашей пары");});
+        }catch(Exception e){
+            android.util.Log.w("VmesteStories","Could not sync story photo",e);
+            runOnUiThread(()->{render();toast("Фото осталось на устройстве. Нажмите «Повторить передачу» после восстановления связи.");});
+        }
+    }
+
+    private void showStoryImage(String path,String localPath){
         toast("Открываю историю…");
-        network.execute(()->{try{byte[] bytes=sync.downloadAttachment(path);android.graphics.BitmapFactory.Options opts=new android.graphics.BitmapFactory.Options();opts.inSampleSize=2;android.graphics.Bitmap bitmap=android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length,opts);if(bitmap==null)throw new Exception("Формат изображения не поддерживается");runOnUiThread(()->{ImageView image=new ImageView(this);image.setImageBitmap(bitmap);image.setAdjustViewBounds(true);new AlertDialog.Builder(this).setTitle("История для двоих").setView(image).setPositiveButton("Закрыть",null).show();});}
+        network.execute(()->{try{
+            android.graphics.BitmapFactory.Options opts=new android.graphics.BitmapFactory.Options();opts.inSampleSize=2;
+            android.graphics.Bitmap bitmap;
+            if(!localPath.isEmpty()){
+                Uri local=Uri.parse(localPath);
+                if("file".equals(local.getScheme()))bitmap=android.graphics.BitmapFactory.decodeFile(local.getPath(),opts);
+                else try(InputStream input=getContentResolver().openInputStream(local)){
+                    bitmap=input==null?null:android.graphics.BitmapFactory.decodeStream(input,null,opts);
+                }
+            }else{
+                byte[] bytes=sync.downloadAttachment(path);
+                bitmap=android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length,opts);
+            }
+            if(bitmap==null)throw new Exception("Формат изображения не поддерживается");
+            runOnUiThread(()->{ImageView image=new ImageView(this);image.setImageBitmap(bitmap);image.setAdjustViewBounds(true);new AlertDialog.Builder(this).setTitle("История для двоих").setView(image).setPositiveButton("Закрыть",null).show();});}
             catch(Exception e){runOnUiThread(()->toast("Не удалось открыть фото истории: "+e.getMessage()));}});
     }
     private void renderPartnerCard(){
@@ -1418,20 +2108,288 @@ public class MainActivity extends Activity {
         TextView add=pill("＋ Добавить ещё о партнёре",PURPLE);body.addView(add);add.setOnClickListener(v->editPartnerFact(card,"Новая заметка о партнёре","notes_about"));
     }
     private void renderNotes(){
-        LinearLayout cover=card();cover.setBackground(shape(softDark?0xFF403648:0xFFF0E8F6,22));cover.addView(text("📖  Ваш тихий уголок",18,PURPLE,true));cover.addView(text("Личные заметки хранятся только на этом устройстве.",13,MUTED,false));
-        TextView add=pill("＋ Новая заметка",PURPLE);body.addView(add);add.setOnClickListener(v->addDialog("notes","Новая заметка"));JSONArray rows=read("notes");for(int i=rows.length()-1;i>=0;i--){JSONObject note=rows.optJSONObject(i);if(note==null)continue;LinearLayout entry=card();entry.setBackground(shape(softDark?0xFF302A35:0xFFFFFEFC,20));entry.addView(text(note.optString("title"),17,INK,true));String detail=note.optString("detail");if(!detail.isEmpty()){TextView bodyText=text(detail,14,MUTED,false);bodyText.setPadding(0,dp(5),0,dp(2));entry.addView(bodyText);}entry.addView(text("Личная заметка · только вы",10,PURPLE,true));entry.setOnClickListener(v->editItemDialog("notes",note));entry.setOnLongClickListener(v->{itemActions("notes",note);return true;});}
+        LinearLayout cover=card();cover.setBackground(shape(softDark?0xFF403648:0xFFF0E8F6,22));
+        cover.addView(text("📖  Ваш блокнот",18,PURPLE,true));
+        cover.addView(text("Свободный текст, планы, последовательности и карта мыслей. Заметки остаются на этом устройстве.",13,MUTED,false));
+        TextView add=pill("＋  Новая заметка",PURPLE);body.addView(add);
+        add.setOnClickListener(v->editNoteDialog(null));
+        JSONArray rows=read("notes");
+        for(int i=rows.length()-1;i>=0;i--){
+            JSONObject note=rows.optJSONObject(i);if(note==null)continue;
+            LinearLayout entry=card();entry.setBackground(shape(softDark?0xFF302A35:0xFFFFFEFC,20));
+            entry.addView(text(note.optString("title"),17,INK,true));
+            entry.addView(text(noteTypeLabel(note.optString("note_type","free")),11,PURPLE,true));
+            renderNoteContent(entry,note.optString("detail"),note.optString("note_type","free"));
+            entry.addView(text("Личная заметка · только вы",10,MUTED,true));
+            entry.setOnClickListener(v->editNoteDialog(note));
+            entry.setOnLongClickListener(v->{itemActions("notes",note);return true;});
+        }
+    }
+
+    private String noteTypeLabel(String type){
+        if("outline".equals(type))return "Структурированный список";
+        if("steps".equals(type))return "Последовательность шагов";
+        if("map".equals(type))return "Карта мыслей";
+        return "Свободная запись";
+    }
+
+    private void renderNoteContent(LinearLayout parent,String raw,String type){
+        if(raw==null||raw.trim().isEmpty())return;
+        if("map".equals(type)){
+            String[] lines=raw.split("\\r?\\n");
+            TextView rootIdea=text(lines[0].trim(),16,INK,true);rootIdea.setGravity(Gravity.CENTER);
+            rootIdea.setPadding(dp(12),dp(10),dp(12),dp(10));rootIdea.setBackground(shape(PALE,16));
+            parent.addView(rootIdea);
+            if(lines.length>1){
+                View stem=new View(this);stem.setBackgroundColor(PURPLE);
+                LinearLayout.LayoutParams stemParams=new LinearLayout.LayoutParams(dp(2),dp(12));
+                stemParams.gravity=Gravity.CENTER;parent.addView(stem,stemParams);
+                for(int i=1;i<lines.length;i++){
+                    String branch=lines[i].trim();if(branch.isEmpty())continue;
+                    TextView node=text("↳  "+branch,14,INK,false);
+                    node.setPadding(dp(12),dp(8),dp(12),dp(8));node.setBackground(shape(themedFill(PALE),14));
+                    LinearLayout.LayoutParams nodeParams=new LinearLayout.LayoutParams(-1,-2);
+                    nodeParams.bottomMargin=dp(4);parent.addView(node,nodeParams);
+                }
+            }
+            return;
+        }
+        String[] lines=raw.split("\\r?\\n");
+        for(int i=0;i<lines.length;i++){
+            if(lines[i].isEmpty())continue;
+            String line=lines[i];
+            if("steps".equals(type))line=(i+1)+".  "+line.replaceFirst("^\\d+[.)]?\\s*","");
+            else if("outline".equals(type)&&!line.matches("^\\s*[•–-].*"))line="•  "+line;
+            TextView item=text(line,14,INK,false);
+            item.setPadding(0,dp(3),0,dp(3));parent.addView(item);
+        }
+    }
+
+    private void editNoteDialog(JSONObject existing){
+        LinearLayout form=column();form.setPadding(dp(18),dp(4),dp(18),dp(4));
+        EditText title=new EditText(this);title.setSingleLine(true);title.setHint("Заголовок");
+        if(existing!=null)title.setText(existing.optString("title"));form.addView(title);
+        Spinner type=new Spinner(this);
+        String[] types={"Свободный текст","Список / план","Последовательность шагов","Карта мыслей"};
+        ArrayAdapter<String> adapter=new ArrayAdapter<>(this,android.R.layout.simple_spinner_item,types);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);type.setAdapter(adapter);
+        String[] keys={"free","outline","steps","map"};
+        if(existing!=null)for(int i=0;i<keys.length;i++)
+            if(keys[i].equals(existing.optString("note_type","free")))type.setSelection(i);
+        form.addView(type,new LinearLayout.LayoutParams(-1,dp(52)));
+        EditText content=new EditText(this);content.setHint("Пишите как в обычном блокноте");
+        content.setGravity(Gravity.TOP|Gravity.START);content.setMinLines(7);
+        content.setText(existing==null?"":existing.optString("detail"));form.addView(content);
+        TextView helper=text("Для карты мыслей: первая строка — тема, каждая следующая — отдельная ветка.",12,MUTED,false);
+        helper.setPadding(0,dp(5),0,dp(6));form.addView(helper);
+        TextView insert=pill("＋  Вставить пункт",PURPLE);form.addView(insert);
+        insert.setOnClickListener(v->{
+            int selection=Math.max(0,content.getSelectionStart());
+            String value=content.getText().toString();
+            int start=Math.min(selection,value.length());
+            String prefix=type.getSelectedItemPosition()==2
+                    ?(value.isEmpty()||value.endsWith("\n")?"":"\n")+(value.split("\\n",-1).length)+". "
+                    :(value.isEmpty()||value.endsWith("\n")?"":"\n")
+                            +(type.getSelectedItemPosition()==3?"Ветка: ":"• ");
+            content.getText().insert(start,prefix);content.setSelection(start+prefix.length());
+        });
+        ScrollView scroll=new ScrollView(this);scroll.addView(form);
+        AlertDialog dialog=new AlertDialog.Builder(this)
+                .setTitle(existing==null?"Новая заметка":"Изменить заметку").setView(scroll)
+                .setNegativeButton("Отмена",null).setPositiveButton("Сохранить",null).create();
+        dialog.setOnShowListener(v->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button->{
+            String name=title.getText().toString().trim();
+            if(name.isEmpty()){title.setError("Введите заголовок");return;}
+            try{
+                JSONObject note=existing==null?new JSONObject():new JSONObject(existing.toString());
+                if(!note.has("id"))note.put("id",UUID.randomUUID().toString());
+                note.put("title",name);note.put("detail",content.getText().toString());
+                note.put("note_type",keys[type.getSelectedItemPosition()]);
+                note.put("updated_at",System.currentTimeMillis());
+                if(existing==null){JSONArray rows=read("notes");rows.put(note);save("notes",rows);}
+                else replaceItem("notes",note);
+                dialog.dismiss();render();
+            }catch(Exception e){toast("Не удалось сохранить заметку: "+e.getMessage());}
+        }));
+        dialog.show();
+    }
+
+    private void renderRecipes(){
+        TextView intro=text("Ваши рецепты хранятся на устройстве и синхронизируются с подключённой парой.",13,MUTED,false);
+        intro.setPadding(0,0,0,dp(8));body.addView(intro);
+        TextView add=pill("＋  Добавить рецепт",PURPLE);body.addView(add);
+        add.setOnClickListener(v->editRecipeDialog(null));
+        JSONArray recipes=read("recipes");
+        for(int i=recipes.length()-1;i>=0;i--){
+            JSONObject recipe=recipes.optJSONObject(i);if(recipe==null)continue;
+            LinearLayout entry=card();entry.addView(text("🍲  "+recipe.optString("title"),17,INK,true));
+            String servings=recipe.optString("servings","");
+            if(!servings.isEmpty())entry.addView(text("Порции: "+servings,12,PURPLE,true));
+            String ingredients=recipe.optString("ingredients","");
+            if(!ingredients.isEmpty())entry.addView(text("Ингредиенты · "+firstNonEmptyLine(ingredients),13,MUTED,false));
+            entry.addView(text(recipe.optString("steps").isEmpty()?"Добавьте шаги приготовления":"Шагов: "+countNonEmptyLines(recipe.optString("steps")),
+                    12,MUTED,false));
+            entry.setOnClickListener(v->showRecipe(recipe));
+            entry.setOnLongClickListener(v->{itemActions("recipes",recipe);return true;});
+        }
+        if(recipes.length()==0)simpleCard("🥣","Первый рецепт","Запишите ингредиенты с граммовками и порядок приготовления.",null);
+    }
+
+    private String firstNonEmptyLine(String value){
+        for(String line:value.split("\\r?\\n"))if(!line.trim().isEmpty())return line.trim();
+        return "";
+    }
+
+    private int countNonEmptyLines(String value){
+        int count=0;for(String line:value.split("\\r?\\n"))if(!line.trim().isEmpty())count++;
+        return count;
+    }
+
+    private void showRecipe(JSONObject recipe){
+        LinearLayout details=column();details.setPadding(dp(18),dp(8),dp(18),dp(8));
+        String servings=recipe.optString("servings","");
+        if(!servings.isEmpty())details.addView(text("Порции: "+servings,13,PURPLE,true));
+        details.addView(text("Ингредиенты",16,INK,true));
+        TextView ingredients=text(recipe.optString("ingredients",""),14,INK,false);
+        ingredients.setPadding(0,dp(5),0,dp(12));details.addView(ingredients);
+        details.addView(text("Приготовление",16,INK,true));
+        renderNoteContent(details,recipe.optString("steps"),"steps");
+        ScrollView scroll=new ScrollView(this);scroll.addView(details);
+        new AlertDialog.Builder(this).setTitle(recipe.optString("title","Рецепт"))
+                .setView(scroll).setPositiveButton("Закрыть",null).show();
+    }
+
+    private void editRecipeDialog(JSONObject existing){
+        LinearLayout form=column();form.setPadding(dp(18),dp(4),dp(18),dp(4));
+        EditText title=new EditText(this);title.setSingleLine(true);title.setHint("Название блюда");
+        if(existing!=null)title.setText(existing.optString("title"));form.addView(title);
+        EditText servings=new EditText(this);servings.setSingleLine(true);
+        servings.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        servings.setHint("Количество порций");
+        if(existing!=null)servings.setText(existing.optString("servings"));form.addView(servings);
+        EditText ingredients=new EditText(this);ingredients.setHint("Ингредиенты и граммовки\nНапример: мука — 200 г");
+        ingredients.setGravity(Gravity.TOP|Gravity.START);ingredients.setMinLines(4);
+        if(existing!=null)ingredients.setText(existing.optString("ingredients"));form.addView(ingredients);
+        EditText steps=new EditText(this);steps.setHint("Шаги приготовления — каждый с новой строки");
+        steps.setGravity(Gravity.TOP|Gravity.START);steps.setMinLines(5);
+        if(existing!=null)steps.setText(existing.optString("steps"));form.addView(steps);
+        ScrollView scroll=new ScrollView(this);scroll.addView(form);
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle(existing==null?"Новый рецепт":"Изменить рецепт")
+                .setView(scroll).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",null).create();
+        dialog.setOnShowListener(v->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button->{
+            String name=title.getText().toString().trim();
+            if(name.isEmpty()){title.setError("Введите название блюда");return;}
+            if(ingredients.getText().toString().trim().isEmpty()){ingredients.setError("Добавьте ингредиенты");return;}
+            if(steps.getText().toString().trim().isEmpty()){steps.setError("Добавьте шаги приготовления");return;}
+            try{
+                JSONObject recipe=existing==null?new JSONObject():new JSONObject(existing.toString());
+                if(!recipe.has("id"))recipe.put("id",UUID.randomUUID().toString());
+                recipe.put("title",name);recipe.put("servings",servings.getText().toString().trim());
+                recipe.put("ingredients",ingredients.getText().toString().trim());
+                recipe.put("steps",steps.getText().toString().trim());
+                recipe.put("detail",firstNonEmptyLine(ingredients.getText().toString()));
+                recipe.put("updated_at",System.currentTimeMillis());
+                if(existing==null){JSONArray rows=read("recipes");rows.put(recipe);save("recipes",rows);syncItem("recipes",recipe);}
+                else replaceItem("recipes",recipe);
+                dialog.dismiss();render();
+            }catch(Exception e){toast("Не удалось сохранить рецепт: "+e.getMessage());}
+        }));
+        dialog.show();
     }
     private void editPartnerFact(JSONObject current,String title,String key){EditText value=new EditText(this);value.setHint("Напишите по-доброму и конкретно");value.setMinLines(3);value.setGravity(Gravity.TOP|Gravity.START);value.setText(current.optString(key,""));new AlertDialog.Builder(this).setTitle(title).setView(value).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",(d,w)->{try{current.put(key,value.getText().toString().trim());if(!current.has("id"))current.put("id",UUID.randomUUID().toString());JSONArray rows=new JSONArray();rows.put(current);save("partner_card",rows);syncItem("partner_card",current);render();}catch(Exception ignored){}}).show();}
-    private void flipCoin(String storeKey,ArrayList<JSONObject> options,TextView outcome,TextView button){
-        button.setEnabled(false);button.setText("Монетка крутится…");final int[] ticks={0};final Handler h=new Handler(Looper.getMainLooper());Runnable[] animation={null};animation[0]=()->{ticks[0]++;outcome.setText(ticks[0]%2==0?"🪙  Орёл":"🪙  Решка");if(ticks[0]<12)h.postDelayed(animation[0],85);else{int pick=new Random().nextInt(20)==0?-1:new Random().nextInt(2);if(pick<0){outcome.setText("Монетка встала на ребро · перебрасываем");h.postDelayed(()->flipCoin(storeKey,options,outcome,button),850);return;}String label=options.get(pick).optString("title");outcome.setText("Выпало: "+label);button.setEnabled(true);button.setText("🪙 Бросить ещё раз");JSONObject saved=new JSONObject();try{String resultId=UUID.nameUUIDFromBytes(("coin_result:"+storeKey+":"+sync.coupleId()).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();saved.put("id",resultId);saved.put("title",label);saved.put("coin_result",true);saved.put("updated_at",System.currentTimeMillis());}catch(Exception ignored){}JSONArray rows=read(storeKey);boolean found=false;for(int i=0;i<rows.length();i++){JSONObject old=rows.optJSONObject(i);if(old!=null&&old.optBoolean("coin_result")){try{rows.put(i,saved);}catch(Exception ignored){}found=true;break;}}if(!found)rows.put(saved);save(storeKey,rows);syncItem(storeKey,saved);}};h.post(animation[0]);
+    private JSONObject coinState(String storeKey,ArrayList<JSONObject> options,JSONObject previous){
+        JSONObject state;
+        try{state=previous==null?new JSONObject():new JSONObject(previous.toString());}catch(Exception e){state=new JSONObject();}
+        try{
+            if(!state.has("id"))state.put("id",UUID.nameUUIDFromBytes(("coin_result:"+storeKey+":"+sync.coupleId()).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString());
+            state.put("coin_result",true);
+            state.put("option_first",options.get(0).optString("title"));
+            state.put("option_second",options.get(1).optString("title"));
+            if(!state.has("target_wins"))state.put("target_wins",1);
+        }catch(Exception e){android.util.Log.w("VmesteCoin","Could not prepare shared coin state",e);}
+        return state;
+    }
+
+    private void saveCoinState(String storeKey,JSONObject state){
+        try{
+            state.put("updated_at",System.currentTimeMillis());
+            JSONArray rows=read(storeKey);boolean found=false;
+            for(int i=0;i<rows.length();i++){JSONObject item=rows.optJSONObject(i);if(item!=null&&item.optBoolean("coin_result")){rows.put(i,state);found=true;break;}}
+            if(!found)rows.put(state);
+            save(storeKey,rows);syncItem(storeKey,state);
+        }catch(Exception e){toast("Не удалось сохранить счёт: "+e.getMessage());}
+    }
+
+    private void chooseCoinTarget(String storeKey,ArrayList<JSONObject> options,JSONObject state,int winsA,int winsB){
+        String[] labels={"1 победа","3 победы","6 побед","10 побед"};
+        int[] targets={1,3,6,10};int selected=0;
+        for(int i=0;i<targets.length;i++)if(targets[i]==state.optInt("target_wins",1))selected=i;
+        new AlertDialog.Builder(this).setTitle("Сколько побед нужно для серии?")
+                .setSingleChoiceItems(labels,selected,(dialog,which)->{
+                    Runnable apply=()->{
+                        JSONObject next=coinState(storeKey,options,state);
+                        try{next.put("target_wins",targets[which]);next.put("wins_first",0);next.put("wins_second",0);next.put("series_finished",false);next.put("series_winner","");next.put("title","");saveCoinState(storeKey,next);render();}
+                        catch(Exception e){toast("Не удалось настроить серию: "+e.getMessage());}
+                    };
+                    if(winsA+ winsB>0)new AlertDialog.Builder(this).setTitle("Начать счёт заново?")
+                            .setMessage("Смена длины серии сбросит текущий счёт.")
+                            .setNegativeButton("Оставить как есть",(d,w)->{}).setPositiveButton("Сбросить и изменить",(d,w)->apply.run()).show();
+                    else apply.run();
+                    dialog.dismiss();
+                }).setNegativeButton("Отмена",null).show();
+    }
+
+    private void flipCoin(String storeKey,ArrayList<JSONObject> options,TextView outcome,TextView button,TextView score,JSONObject previous){
+        button.setEnabled(false);button.setText("Монетка крутится…");final int[] ticks={0};final Handler h=new Handler(Looper.getMainLooper());Runnable[] animation={null};
+        animation[0]=()->{
+            ticks[0]++;outcome.setText(ticks[0]%2==0?"🪙  Орёл":"🪙  Решка");
+            if(ticks[0]<12){h.postDelayed(animation[0],85);return;}
+            if(new Random().nextInt(300)==0){outcome.setText("Монетка встала на ребро · перебрасываем");h.postDelayed(()->flipCoin(storeKey,options,outcome,button,score,previous),850);return;}
+            int pick=new Random().nextInt(2);String label=options.get(pick).optString("title");
+            boolean sameOptions=previous!=null
+                    &&options.get(0).optString("title").equals(previous.optString("option_first"))
+                    &&options.get(1).optString("title").equals(previous.optString("option_second"));
+            JSONObject saved=coinState(storeKey,options,previous);
+            int winsA=sameOptions?saved.optInt("wins_first",0):0;
+            int winsB=sameOptions?saved.optInt("wins_second",0):0;
+            int target=Math.max(1,saved.optInt("target_wins",1));
+            CoinSeriesRules.Score nextScore=CoinSeriesRules.advance(winsA,winsB,target,pick);
+            winsA=nextScore.firstWins;winsB=nextScore.secondWins;boolean finished=!nextScore.winner.isEmpty();
+            try{saved.put("wins_first",winsA);saved.put("wins_second",winsB);saved.put("title",label);saved.put("series_finished",finished);saved.put("series_winner",finished?label:"");}
+            catch(Exception e){toast("Не удалось обновить счёт: "+e.getMessage());}
+            score.setText(options.get(0).optString("title")+"  "+winsA+" : "+winsB+"  "+options.get(1).optString("title"));
+            outcome.setText(finished?"Серия завершена · победитель: "+label:"Выпало: "+label);
+            button.setEnabled(true);button.setText("🪙 Бросить ещё раз");
+            saveCoinState(storeKey,saved);
+            if(finished)render();
+        };
+        h.post(animation[0]);
     }
 
     private void renderSharedTimer() {
         heading("Общий таймер","Отсчёт хранится в общем пространстве пары");
         JSONArray current=read("shared_timer");JSONObject timer=current.length()==0?null:current.optJSONObject(0);
         TextView counter=text("Таймер не запущен",24,PURPLE,true);counter.setGravity(Gravity.CENTER);LinearLayout timerCard=card();timerCard.addView(counter);
+        TextView currentMode=text(timer==null?"Выберите, для кого запустить таймер":
+                timer.optString("mode_label","Для нас"),13,MUTED,false);
+        currentMode.setGravity(Gravity.CENTER);timerCard.addView(currentMode);
+        TextView modeLabel=text("Кому поставить таймер",14,INK,true);
+        LinearLayout.LayoutParams modeLabelParams=new LinearLayout.LayoutParams(-1,-2);
+        modeLabelParams.topMargin=dp(8);body.addView(modeLabel,modeLabelParams);
+        Spinner mode=new Spinner(this);
+        String[] modes={"Для меня","Для партнёра","Для нас"};
+        ArrayAdapter<String> modeAdapter=new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_item,modes);
+        modeAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        mode.setAdapter(modeAdapter);
+        if(timer!=null){
+            String savedMode=timer.optString("mode_label","Для нас");
+            for(int i=0;i<modes.length;i++)if(modes[i].equals(savedMode))mode.setSelection(i);
+        }
+        mode.setContentDescription("Для кого запустить таймер");
+        body.addView(mode,new LinearLayout.LayoutParams(-1,dp(52)));
         EditText minutes=new EditText(this);minutes.setSingleLine(true);minutes.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);minutes.setHint("Минуты");body.addView(minutes);
-        TextView start=pill("Запустить общий таймер",PURPLE);body.addView(start);start.setOnClickListener(v->{int value;try{value=Integer.parseInt(minutes.getText().toString());}catch(Exception e){minutes.setError("Введите минуты");return;}if(value<1||value>1440){minutes.setError("От 1 минуты до суток");return;}JSONObject next=new JSONObject();try{next.put("id",UUID.randomUUID().toString());next.put("title","Общий таймер");next.put("minutes",value);next.put("timer_end",System.currentTimeMillis()+value*60000L);next.put("started_by",sync.userId());}catch(Exception ignored){}JSONArray rows=new JSONArray();rows.put(next);save("shared_timer",rows);syncItem("shared_timer",next);scheduleReminder(next.optString("id"),next.optLong("timer_end"),"Таймер завершён","Ваш общий таймер закончился");render();});
+        TextView start=pill("Запустить таймер",PURPLE);body.addView(start);start.setOnClickListener(v->{int value;try{value=Integer.parseInt(minutes.getText().toString());}catch(Exception e){minutes.setError("Введите минуты");return;}if(value<1||value>1440){minutes.setError("От 1 минуты до суток");return;}String target=modes[mode.getSelectedItemPosition()];JSONObject next=new JSONObject();try{String timerId=timer==null||timer.optString("id").isEmpty()?UUID.randomUUID().toString():timer.optString("id");next.put("id",timerId);next.put("title","Таймер · "+target);next.put("mode_label",target);next.put("minutes",value);next.put("timer_end",System.currentTimeMillis()+value*60000L);next.put("started_by",sync.userId());}catch(Exception ignored){}JSONArray rows=new JSONArray();rows.put(next);save("shared_timer",rows);syncItem("shared_timer",next);scheduleReminder(next.optString("id"),next.optLong("timer_end"),"Таймер завершён",target+" · отсчёт завершён");render();});
         if(timer!=null){TextView stop=pill("Остановить таймер",0xFFB44F69);body.addView(stop);stop.setOnClickListener(v->{removeRemoteItem(timer.optString("id"));prefs.edit().remove("shared_timer").apply();render();});}
         if(sharedTimerTick!=null)gameHandler.removeCallbacks(sharedTimerTick);if(sharedTimerPoll!=null)gameHandler.removeCallbacks(sharedTimerPoll);
         sharedTimerTick=new Runnable(){public void run(){if(!"shared_timer".equals(feature))return;JSONArray rows=read("shared_timer");JSONObject active=rows.length()==0?null:rows.optJSONObject(0);if(active==null)counter.setText("Таймер не запущен");else{long left=Math.max(0,active.optLong("timer_end")-System.currentTimeMillis());counter.setText(String.format(Locale.US,"%02d:%02d:%02d",left/3600000,(left/60000)%60,(left/1000)%60));if(left==0)counter.append("\nВремя вышло");}gameHandler.postDelayed(this,1000);}};gameHandler.post(sharedTimerTick);
@@ -1496,7 +2454,7 @@ public class MainActivity extends Activity {
         Object destination = nav.getChildAt(next).getTag();
         if (!(destination instanceof String)) return;
         String nextTab=(String)destination;
-        if("Чат".equals(nextTab))chatAutoScroll=true;
+        if("Чат".equals(nextTab))chatScrollPolicy.jumpToLatest();
         boolean reduceMotion=false;
         try{reduceMotion=android.provider.Settings.Global.getFloat(getContentResolver(),android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,1f)==0f;}catch(Exception ignored){}
         if(reduceMotion||contentScroll==null){tab=nextTab;feature=null;render();if(contentScroll!=null)contentScroll.scrollTo(0,0);return;}
@@ -1513,7 +2471,9 @@ public class MainActivity extends Activity {
         if (!sync.configured()) {
             simpleCard("☁", "Общее пространство", "Добавьте адрес и публичный ключ Supabase, чтобы связывать данные двух телефонов.", null);
             TextView configure = pill("Настроить подключение", PURPLE); body.addView(configure);
-            configure.setOnClickListener(v -> configureServer());
+            configure.setOnClickListener(v -> {
+                feature=null;tab=NavigationModel.SETTINGS_TAB;render();
+            });
             return;
         }
         if (!sync.signedIn()) {
@@ -1748,7 +2708,6 @@ public class MainActivity extends Activity {
         if (!ensureWatchRoomAccess()) return;
         new AlertDialog.Builder(this)
                 .setTitle("Подключиться к комнате")
-                .setMessage("Выберите активную комнату партнёра или используйте присланные ссылку, код или QR.")
                 .setItems(new String[]{"Выбрать активную комнату", "Ввести код или ссылку", "Сканировать QR-код"}, (dialog, choice) -> {
                     if (choice == 0) joinLiveRoom();
                     else if (choice == 1) showWatchRoomCodeEntry();
@@ -2127,12 +3086,10 @@ public class MainActivity extends Activity {
         for (EditText field : new EditText[]{name, avatar, bio}) { field.setTextColor(INK); field.setHintTextColor(MUTED); field.setPadding(dp(14), dp(11), dp(14), dp(11)); field.setBackground(shape(softDark ? 0xFF3A3440 : 0xFFFBF9FC, 14)); }
         TextView nameLabel = text("Имя", 12, MUTED, true); form.addView(nameLabel); form.addView(name);
         TextView avatarFieldLabel = text("Эмодзи профиля", 12, MUTED, true); avatarFieldLabel.setPadding(0,dp(8),0,0); form.addView(avatarFieldLabel); form.addView(avatar);
+        TextView emojiPicker=pill("Выбрать эмодзи профиля",PURPLE);form.addView(emojiPicker);
+        emojiPicker.setOnClickListener(v->showProfileEmojiPicker(avatar));
         TextView bioLabel = text("Пара слов о себе", 12, MUTED, true); bioLabel.setPadding(0, dp(8), 0, 0); form.addView(bioLabel); form.addView(bio);
         TextView previewName = text(name.getText().toString().trim().isEmpty() ? "Как вас будут видеть" : name.getText().toString().trim(), 12, MUTED, false); previewName.setGravity(Gravity.CENTER); previewName.setPadding(0,dp(4),0,0); form.addView(previewName);
-        TextView theme = pill(softDark ? "☼ Светлая тема" : "☾ Нежная тёмная тема", PURPLE); form.addView(theme);
-        theme.setOnClickListener(v -> { softDark = !softDark; prefs.edit().putBoolean("soft_dark_theme", softDark).apply(); applyPalette(); render(); });
-        TextView updateCheck = pill("Проверить обновления из GitHub", PURPLE); form.addView(updateCheck); updateCheck.setOnClickListener(v -> checkGitHubUpdate(true));
-        TextView navSettings = pill("Настроить вкладки и разделы", PURPLE); form.addView(navSettings); navSettings.setOnClickListener(v -> navigationSettings());
         TextView chooseAvatar = pill("📷 Выбрать фото", PURPLE); form.addView(chooseAvatar);
         chooseAvatar.setOnClickListener(v -> { Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT); pick.setType("image/*"); pick.addCategory(Intent.CATEGORY_OPENABLE); startActivityForResult(pick, 406); });
         TextView takeAvatar = pill("Сделать фото в приложении", PURPLE); form.addView(takeAvatar); takeAvatar.setOnClickListener(v -> startCameraCapture(406));
@@ -2152,8 +3109,6 @@ public class MainActivity extends Activity {
             } catch(Exception e){android.util.Log.w("VmesteProfile","Could not prepare profile photo removal",e);}
             showApp();
         });
-        TextView deleteAccount = pill("Удалить аккаунт…", 0xFFB54D62); form.addView(deleteAccount);
-        deleteAccount.setOnClickListener(v -> confirmAccountDeletion());
         name.addTextChangedListener(new android.text.TextWatcher() {
             public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
             public void onTextChanged(CharSequence s, int start, int before, int count) { previewName.setText(s.length() == 0 ? "Как вас будут видеть" : s); }
@@ -2177,6 +3132,23 @@ public class MainActivity extends Activity {
                 }).create();
         profileDialog.setOnShowListener(v -> { if (profileDialog.getWindow() != null) profileDialog.getWindow().setBackgroundDrawable(shape(PAPER, 24)); int titleId=getResources().getIdentifier("alertTitle", "id", "android"); TextView titleView=profileDialog.findViewById(titleId); if(titleView!=null)titleView.setTextColor(INK); profileDialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(PURPLE); profileDialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(MUTED); });
         profileDialog.show();
+    }
+
+    private void showProfileEmojiPicker(EditText avatar){
+        String[] choices={"♡","🌿","🌙","☀️","✨","🌸","🌻","🍀","🪻","🦋","🐈","🐇","🦊","🐻","🐼","🐧","🐢","🐬","🍓","🍒","🍑","🍉","🍋","🍄","☕","🎧","🎨","📚","🧸","💌","💜","🩵"};
+        android.widget.GridLayout grid=new android.widget.GridLayout(this);grid.setColumnCount(4);
+        grid.setPadding(dp(8),dp(8),dp(8),dp(8));
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Эмодзи профиля")
+                .setView(grid).setNegativeButton("Закрыть",null).create();
+        for(String choice:choices){
+            TextView item=text(choice,25,INK,false);item.setGravity(Gravity.CENTER);
+            item.setContentDescription("Выбрать "+choice);
+            android.widget.GridLayout.LayoutParams params=new android.widget.GridLayout.LayoutParams();
+            params.width=dp(58);params.height=dp(54);params.setMargins(dp(2),dp(2),dp(2),dp(2));
+            grid.addView(item,params);
+            item.setOnClickListener(v->{avatar.setText(choice);dialog.dismiss();});
+        }
+        dialog.show();
     }
 
     private void checkGitHubUpdate(boolean userInitiated) {
@@ -2714,11 +3686,52 @@ public class MainActivity extends Activity {
             if(("waiting".equals(game.optString("status"))||"active".equals(game.optString("status")))&&p2.isEmpty()){
                 state.put("p2",me);
                 if("sea_battle".equals(type))state.put("p2Fleet",randomFleet());
+                else if(isRandomTurnGame(type))setRandomFirstTurn(state,type);
                 String next="sea_battle".equals(type)?"waiting":"active";
                 game=pairGames.update(game.getString("id"),game.optLong("version"),state,next);
             }else throw new Exception("Идёт другая партия; её можно открыть только в аккаунте вашего партнёра");
         }
+        if(!"sea_battle".equals(type)&&!state.optString("p2").isEmpty()
+                &&isRandomTurnGame(type)&&state.optString("first_player").isEmpty()){
+            setRandomFirstTurn(state,type);
+            try{game=pairGames.update(game.getString("id"),game.optLong("version"),state,game.optString("status"));}
+            catch(Exception race){
+                JSONObject latest=pairGames.fetch(game.getString("id"));
+                JSONObject latestState=latest==null?null:latest.optJSONObject("state");
+                if(latestState==null||latestState.optString("first_player").isEmpty())throw race;
+                game=latest;
+            }
+        }
         return game;
+    }
+    private boolean isRandomTurnGame(String type){
+        return "tic_tac_toe".equals(type)||"connect_four".equals(type)||"checkers".equals(type)
+                ||"dots_boxes".equals(type)||"durak".equals(type);
+    }
+    private void setRandomFirstTurn(JSONObject state,String type)throws Exception{
+        String first=GameStartRules.chooseOrKeepFirstPlayer(
+                state.optString("p1"),state.optString("p2"),
+                state.optString("first_player"),new Random());
+        state.put("first_player",first);
+        if(state.has("turn"))state.put("turn",first);
+        if("durak".equals(type))state.put("attacker",first);
+    }
+    private void startNextGame(String type,JSONObject[] current,Runnable draw){
+        network.execute(()->{
+            try{
+                JSONObject previous=pairGames.fetch(current[0].getString("id"));
+                if(previous==null||!"finished".equals(previous.optString("status")))
+                    throw new Exception("Новая партия доступна после завершения текущей");
+                JSONObject state=previous.optJSONObject("state");
+                String me=pairGames.userId();
+                if(state==null||(!me.equals(state.optString("p1"))&&!me.equals(state.optString("p2"))))
+                    throw new Exception("Вы не участник этой партии");
+                if(state.optString("p2").isEmpty())
+                    throw new Exception("Для новой партии дождитесь подключения партнёра");
+                JSONObject next=openOrJoinGame(type);
+                runOnUiThread(()->{current[0]=next;draw.run();});
+            }catch(Exception e){runOnUiThread(()->toast("Не удалось начать новую партию: "+e.getMessage()));}
+        });
     }
     private JSONArray randomFleet(){
         JSONArray fleet=new JSONArray();java.util.HashSet<Integer> occupied=new java.util.HashSet<>();Random random=new Random();int[] lengths={4,3,3,2,1,1,1,1,1,1,1,1};
@@ -2732,7 +3745,32 @@ public class MainActivity extends Activity {
         LinearLayout rating=card();rating.setBackground(shape(softDark?0xFF403648:PALE,20));rating.addView(text("🏆  Счёт ваших партий",16,INK,true));
         TextView score=text("Считаем победы…",13,MUTED,false);score.setPadding(0,dp(5),0,0);rating.addView(score);body.addView(rating);
         if(!pairGames.ready()){score.setText("Подключите пару, чтобы вести общий счёт");return;}
-        network.execute(()->{try{JSONArray games=pairGames.history();int mine=0,theirs=0,draws=0;String me=pairGames.userId(),partner=prefs.getString("partner_user_id","");for(int i=0;i<games.length();i++){JSONObject g=games.optJSONObject(i),s=g==null?null:g.optJSONObject("state");if(s==null)continue;String winner=s.optString("winner");if(me.equals(winner))mine++;else if(!partner.isEmpty()&&partner.equals(winner))theirs++;else if("draw".equals(winner))draws++;}final String result=prefs.getString("profile_name","Вы")+"  "+mine+"  ·  "+prefs.getString("partner_name","Партнёр")+"  "+theirs+(draws>0?"  ·  ничьи "+draws:"");runOnUiThread(()->{if(!isFinishing())score.setText(result);});}catch(Exception e){runOnUiThread(()->score.setText("Счёт будет показан после первой завершённой партии"));}});
+        score.setOnClickListener(v->render());
+        network.execute(()->{
+            try{
+                JSONArray games=pairGames.history();
+                ArrayList<GameScoreRules.Outcome> outcomes=new ArrayList<>();
+                for(int i=0;i<games.length();i++){
+                    JSONObject row=games.optJSONObject(i);
+                    JSONObject state=row==null?null:row.optJSONObject("state");
+                    if(state==null)continue;
+                    outcomes.add(new GameScoreRules.Outcome(state.optString("winner"),
+                            state.optString("p1"),state.optString("p2")));
+                }
+                GameScoreRules.Summary summary=GameScoreRules.summarize(outcomes,
+                        pairGames.userId(),prefs.getString("partner_user_id",""));
+                String result=prefs.getString("profile_name","Вы")+"  "+summary.playerWins
+                        +"  ·  "+prefs.getString("partner_name","Партнёр")+"  "+summary.partnerWins
+                        +"  ·  ничьи "+summary.draws;
+                runOnUiThread(()->{if(!isFinishing())score.setText(result);});
+            }catch(Exception e){
+                runOnUiThread(()->{
+                    if(isFinishing())return;
+                    score.setText("Не удалось обновить общий счёт · нажмите, чтобы повторить");
+                    score.setOnClickListener(v->render());
+                });
+            }
+        });
     }
 
     private void onlineTicTacToe(){
@@ -2746,11 +3784,12 @@ public class MainActivity extends Activity {
         LinearLayout board=column();board.setGravity(Gravity.CENTER);board.setPadding(dp(8),dp(8),dp(8),dp(8));board.setBackground(shape(0xFFEDE4F1,20));LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(-1,-2);bp.topMargin=dp(10);panel.addView(board,bp);
         TextView restart=pill("Новая партия",PURPLE);restart.setGravity(Gravity.CENTER);LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,-2);rp.topMargin=dp(10);panel.addView(restart,rp);
         AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Крестики-нолики · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();
-        Runnable[] draw={null};draw[0]=()->{JSONObject g=game[0],s=g.optJSONObject("state");if(s==null)return;String me=pairGames.userId(),p1=s.optString("p1"),p2=s.optString("p2"),boardState=s.optString("board","........."),turn=s.optString("turn"),winner=s.optString("winner");boolean active="active".equals(g.optString("status"));
-            if(p2.isEmpty())status.setText("Комната создана. Ждём, пока партнёр откроет эту игру на своём телефоне.");else if(!winner.isEmpty())status.setText(winner.equals(me)?"Вы победили! ✨":"Партнёр победил. Сыграем ещё? 💛");else if(!active)status.setText("Партия завершена");else status.setText(turn.equals(me)?"Ваш ход · "+(me.equals(p1)?"X":"O"):"Ход партнёра · "+(me.equals(p1)?"O":"X"));
-            board.removeAllViews();for(int row=0;row<3;row++){LinearLayout line=new LinearLayout(this);line.setGravity(Gravity.CENTER);board.addView(line);for(int col=0;col<3;col++){int i=row*3+col;char mark=i<boardState.length()?boardState.charAt(i):'.';TextView cell=text(mark=='.'?"":String.valueOf(mark),31,mark=='X'?0xFF71529B:0xFFD66D92,true);cell.setGravity(Gravity.CENTER);cell.setBackground(shape(0xFFFBF9FC,14));LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(0,dp(70),1);cp.setMargins(dp(3),dp(3),dp(3),dp(3));line.addView(cell,cp);cell.setEnabled(active&&turn.equals(me)&&mark=='.'&&winner.isEmpty());cell.setOnClickListener(v->{network.execute(()->{try{JSONObject fresh=pairGames.fetch(g.getString("id"));if(fresh==null)return;JSONObject ns=new JSONObject(fresh.getJSONObject("state").toString());if(!pairGames.userId().equals(ns.optString("turn")))return;String b=ns.optString("board",".........");if(b.charAt(i)!='.')return;char player=me.equals(ns.optString("p1"))?'X':'O';StringBuilder sb=new StringBuilder(b);sb.setCharAt(i,player);ns.put("board",sb.toString());boolean won=hasWinner(sb.toString(),player);boolean full=sb.indexOf(".")<0;if(won)ns.put("winner",me);else if(!full)ns.put("turn",me.equals(ns.optString("p1"))?ns.optString("p2"):ns.optString("p1"));String newStatus=won||full?"finished":"active";JSONObject saved=pairGames.update(fresh.getString("id"),fresh.optLong("version"),ns,newStatus);runOnUiThread(()->{try{game[0]=saved;draw[0].run();}catch(Exception e){toast("Ошибка игры: "+e.getMessage());}});}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});});}}
+        Runnable[] draw={null};draw[0]=()->{JSONObject g=game[0],s=g.optJSONObject("state");if(s==null)return;String me=pairGames.userId(),p1=s.optString("p1"),p2=s.optString("p2"),boardState=s.optString("board","........."),turn=s.optString("turn"),winner=s.optString("winner");boolean active="active".equals(g.optString("status"));char myMark=GameStartRules.ticTacToeMarkForPlayer(me,s.optString("first_player"),p1),partnerMark=myMark=='X'?'O':'X';
+            if(p2.isEmpty())status.setText("Комната создана. Ждём, пока партнёр откроет эту игру на своём телефоне.");else if(!winner.isEmpty())status.setText(winner.equals(me)?"Вы победили! ✨":"Партнёр победил. Сыграем ещё? 💛");else if(!active)status.setText("Партия завершена");else status.setText(turn.equals(me)?"Ваш ход · "+myMark:"Ход партнёра · "+partnerMark);
+            restart.setVisibility(active||p2.isEmpty()?View.GONE:View.VISIBLE);
+            board.removeAllViews();for(int row=0;row<3;row++){LinearLayout line=new LinearLayout(this);line.setGravity(Gravity.CENTER);board.addView(line);for(int col=0;col<3;col++){int i=row*3+col;char mark=i<boardState.length()?boardState.charAt(i):'.';TextView cell=text(mark=='.'?"":String.valueOf(mark),31,mark=='X'?0xFF71529B:0xFFD66D92,true);cell.setGravity(Gravity.CENTER);cell.setBackground(shape(0xFFFBF9FC,14));LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(0,dp(70),1);cp.setMargins(dp(3),dp(3),dp(3),dp(3));line.addView(cell,cp);cell.setEnabled(active&&turn.equals(me)&&mark=='.'&&winner.isEmpty());cell.setOnClickListener(v->{network.execute(()->{try{JSONObject fresh=pairGames.fetch(g.getString("id"));if(fresh==null)return;JSONObject ns=new JSONObject(fresh.getJSONObject("state").toString());if(!pairGames.userId().equals(ns.optString("turn")))return;String b=ns.optString("board",".........");if(b.charAt(i)!='.')return;char player=GameStartRules.ticTacToeMarkForPlayer(me,ns.optString("first_player"),ns.optString("p1"));StringBuilder sb=new StringBuilder(b);sb.setCharAt(i,player);ns.put("board",sb.toString());boolean won=hasWinner(sb.toString(),player);boolean full=sb.indexOf(".")<0;if(won)ns.put("winner",me);else if(!full)ns.put("turn",me.equals(ns.optString("p1"))?ns.optString("p2"):ns.optString("p1"));String newStatus=won||full?"finished":"active";JSONObject saved=pairGames.update(fresh.getString("id"),fresh.optLong("version"),ns,newStatus);runOnUiThread(()->{try{game[0]=saved;draw[0].run();}catch(Exception e){toast("Ошибка игры: "+e.getMessage());}});}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});});}}
         };
-        restart.setOnClickListener(v->{JSONObject g=game[0],s=g.optJSONObject("state");if(s==null||!s.optString("p1").equals(pairGames.userId())&&!s.optString("p2").equals(pairGames.userId()))return;network.execute(()->{try{JSONObject ns=new JSONObject(s.toString());ns.put("board",".........");ns.put("winner","");ns.put("turn",ns.optString("p1"));JSONObject saved=pairGames.update(g.getString("id"),g.optLong("version"),ns,"active");runOnUiThread(()->{try{game[0]=saved;draw[0].run();}catch(Exception e){toast("Ошибка игры: "+e.getMessage());}});}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});});
+        restart.setOnClickListener(v->startNextGame("tic_tac_toe",game,draw[0]));
         draw[0].run();dialog.setOnDismissListener(d->{closed[0]=true;});dialog.show();poll[0]=()->{if(closed[0])return;network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));if(fresh!=null)runOnUiThread(()->{try{game[0]=fresh;draw[0].run();}catch(Exception ignored){}});}catch(Exception ignored){}if(!closed[0])gameHandler.postDelayed(poll[0],1400);});};gameHandler.postDelayed(poll[0],1400);
     }
     private boolean hasWinner(String board,char p){int[][] lines={{0,1,2},{3,4,5},{6,7,8},{0,3,6},{1,4,7},{2,5,8},{0,4,8},{2,4,6}};for(int[] l:lines)if(board.charAt(l[0])==p&&board.charAt(l[1])==p&&board.charAt(l[2])==p)return true;return false;}
@@ -2787,7 +3826,27 @@ public class MainActivity extends Activity {
             for(int row=0;row<10;row++){
                 LinearLayout line=new LinearLayout(this);line.setGravity(Gravity.CENTER_VERTICAL);board.addView(line);
                 TextView label=text(String.valueOf(row+1),10,INK,true);label.setGravity(Gravity.CENTER);line.addView(label,new LinearLayout.LayoutParams(dp(22),dp(29)));
-                for(int col=0;col<10;col++){int index=row*10+col;boolean wasShot=contains(shownShots,index);TextView cell=text("",11,INK,true);cell.setGravity(Gravity.CENTER);int bg=0xFFB9D9E4;if(showOwn&&ownCells.contains(index)){cell.setText(wasShot?"✦":"▰");bg=wasShot?0xFFF0C8CC:0xFF597F91;}else if(wasShot){boolean hit=displayedShips.contains(index);cell.setText(hit?"✦":"·");bg=hit?0xFFF0C8CC:0xFFEAF4F6;}cell.setBackground(shape(bg,4));LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(0,dp(29),1);cp.setMargins(dp(1),dp(1),dp(1),dp(1));line.addView(cell,cp);cell.setEnabled(setup||active&&turn.equals(me)&&!wasShot&&winner.isEmpty());if(setup&&manualMode[0])cell.setOnClickListener(v->{if(placeManualShip(manualFleet[0],index,horizontal[0]))draw[0].run();else toast("Корабль не помещается или касается другого");});else if(!setup&&!showOwn)cell.setOnClickListener(v->fireSeaShot(index,game,draw));}
+                for(int col=0;col<10;col++){
+                    int index=row*10+col;boolean wasShot=contains(shownShots,index);
+                    TextView cell=text("",11,INK,true);cell.setGravity(Gravity.CENTER);
+                    int bg=0xFFB9D9E4;
+                    if(showOwn&&ownCells.contains(index)){
+                        cell.setText(wasShot?"✦":shipCellSymbol(shownOwn,index));
+                        cell.setTextColor(wasShot?0xFF8F3444:PAPER);
+                        bg=wasShot?0xFFF0C8CC:0xFF597F91;
+                        cell.setContentDescription(wasShot?"Попадание по кораблю":
+                                "Корабль · "+shipLengthAt(shownOwn,index)+" клеток");
+                    }else if(wasShot){
+                        boolean hit=displayedShips.contains(index);cell.setText(hit?"✦":"·");
+                        bg=hit?0xFFF0C8CC:0xFFEAF4F6;
+                    }
+                    cell.setBackground(shape(bg,4));
+                    LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(0,dp(29),1);
+                    cp.setMargins(dp(1),dp(1),dp(1),dp(1));line.addView(cell,cp);
+                    cell.setEnabled(setup||active&&turn.equals(me)&&!wasShot&&winner.isEmpty());
+                    if(setup&&manualMode[0])cell.setOnClickListener(v->{if(placeManualShip(manualFleet[0],index,horizontal[0]))draw[0].run();else toast("Корабль не помещается или касается другого");});
+                    else if(!setup&&!showOwn)cell.setOnClickListener(v->fireSeaShot(index,game,draw));
+                }
             }
         };
         myFleetTab.setOnClickListener(v->{ownBoardSelected[0]=true;draw[0].run();});enemyTab.setOnClickListener(v->{JSONObject state=game[0].optJSONObject("state");if(state==null||!state.optBoolean("p1Ready")||!state.optBoolean("p2Ready"))return;ownBoardSelected[0]=false;draw[0].run();});
@@ -2795,7 +3854,7 @@ public class MainActivity extends Activity {
         rotate.setOnClickListener(v->{horizontal[0]=!horizontal[0];rotate.setText(horizontal[0]?"↔":"↕");});
         undo.setOnClickListener(v->{if(manualFleet[0].length()>0)manualFleet[0].remove(manualFleet[0].length()-1);draw[0].run();});
         shuffle.setOnClickListener(v->{manualMode[0]=false;network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));JSONObject s=new JSONObject(fresh.getJSONObject("state").toString());s.put(meets(s,"p1")?"p1Fleet":"p2Fleet",randomFleet());s.put(meets(s,"p1")?"p1Ready":"p2Ready",false);JSONObject saved=pairGames.update(fresh.getString("id"),fresh.optLong("version"),s,"waiting");runOnUiThread(()->{try{game[0]=saved;draw[0].run();}catch(Exception e){toast("Ошибка игры: "+e.getMessage());}});}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});});
-        ready.setOnClickListener(v->{if(manualMode[0]&&manualFleet[0].length()!=12){toast("Расставьте все 12 кораблей");return;}network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));JSONObject s=new JSONObject(fresh.getJSONObject("state").toString());boolean first=pairGames.userId().equals(s.optString("p1"));String key=first?"p1Ready":"p2Ready";if(manualMode[0])s.put(first?"p1Fleet":"p2Fleet",manualFleet[0]);s.put(key,true);boolean start=s.optBoolean(first?"p2Ready":"p1Ready")&&!s.optString("p2").isEmpty();if(start)s.put("turn",s.optString("p1"));JSONObject saved=pairGames.update(fresh.getString("id"),fresh.optLong("version"),s,start?"active":"waiting");runOnUiThread(()->{try{game[0]=saved;draw[0].run();}catch(Exception e){toast("Ошибка игры: "+e.getMessage());}});}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});});
+        ready.setOnClickListener(v->{if(manualMode[0]&&manualFleet[0].length()!=12){toast("Расставьте все 12 кораблей");return;}network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));JSONObject s=new JSONObject(fresh.getJSONObject("state").toString());boolean first=pairGames.userId().equals(s.optString("p1"));String key=first?"p1Ready":"p2Ready";if(manualMode[0])s.put(first?"p1Fleet":"p2Fleet",manualFleet[0]);s.put(key,true);boolean start=s.optBoolean(first?"p2Ready":"p1Ready")&&!s.optString("p2").isEmpty();if(start&&s.optString("first_player").isEmpty())setRandomFirstTurn(s,"sea_battle");JSONObject saved=pairGames.update(fresh.getString("id"),fresh.optLong("version"),s,start?"active":"waiting");runOnUiThread(()->{try{game[0]=saved;draw[0].run();}catch(Exception e){toast("Ошибка игры: "+e.getMessage());}});}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});});
         draw[0].run();dialog.setOnDismissListener(d->{closed[0]=true;});dialog.show();poll[0]=()->{if(closed[0])return;network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));if(fresh!=null)runOnUiThread(()->{try{game[0]=fresh;draw[0].run();}catch(Exception ignored){}});}catch(Exception ignored){}if(!closed[0])gameHandler.postDelayed(poll[0],1400);});};gameHandler.postDelayed(poll[0],1400);
     }
     private boolean placeManualShip(JSONArray fleet,int start,boolean horizontal){
@@ -2810,6 +3869,27 @@ public class MainActivity extends Activity {
     }
     private boolean meets(JSONObject s,String key){return pairGames.userId().equals(s.optString(key));}
     private boolean contains(JSONArray values,int n){for(int i=0;i<values.length();i++)if(values.optInt(i,-1)==n)return true;return false;}
+    private int shipLengthAt(JSONArray fleet,int cell){
+        for(int i=0;i<fleet.length();i++){
+            JSONArray ship=fleet.optJSONArray(i);if(ship==null)continue;
+            for(int j=0;j<ship.length();j++)if(ship.optInt(j,-1)==cell)return ship.length();
+        }
+        return 1;
+    }
+    private String shipCellSymbol(JSONArray fleet,int cell){
+        for(int i=0;i<fleet.length();i++){
+            JSONArray ship=fleet.optJSONArray(i);if(ship==null)continue;
+            for(int j=0;j<ship.length();j++){
+                if(ship.optInt(j,-1)!=cell)continue;
+                if(ship.length()==1)return "●";
+                boolean horizontal=ship.optInt(1)-ship.optInt(0)==1;
+                if(j==0)return horizontal?"◀":"▲";
+                if(j==ship.length()-1)return horizontal?"▶":"▼";
+                return horizontal?"━":"┃";
+            }
+        }
+        return "●";
+    }
     private void fireSeaShot(int index,JSONObject[] game,Runnable[] draw){network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));JSONObject s=new JSONObject(fresh.getJSONObject("state").toString());String me=pairGames.userId();if(!"active".equals(fresh.optString("status"))||!me.equals(s.optString("turn")))return;boolean first=me.equals(s.optString("p1"));String shotsKey=first?"p1Shots":"p2Shots",targetFleetKey=first?"p2Fleet":"p1Fleet";JSONArray shots=s.optJSONArray(shotsKey);if(shots==null)shots=new JSONArray();if(contains(shots,index))return;shots.put(index);s.put(shotsKey,shots);JSONArray fleet=s.optJSONArray(targetFleetKey);boolean hit=false;int totalHits=0;if(fleet!=null)for(int j=0;j<fleet.length();j++){JSONArray ship=fleet.optJSONArray(j);if(ship!=null)for(int k=0;k<ship.length();k++){int cell=ship.optInt(k,-1);if(cell==index)hit=true;if(contains(shots,cell))totalHits++;}}String winner=s.optString("winner");String status="active";if(totalHits>=20){winner=me;s.put("winner",me);status="finished";}else if(!hit)s.put("turn",first?s.optString("p2"):s.optString("p1"));JSONObject saved=pairGames.update(fresh.getString("id"),fresh.optLong("version"),s,status);runOnUiThread(()->{try{game[0]=saved;draw[0].run();}catch(Exception e){toast("Ошибка игры: "+e.getMessage());}});}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});}
     private void onlineDurak(){
         if(!pairGames.ready()){toast("Войдите в аккаунт и подключитесь к партнёру по коду приглашения");return;}
@@ -2932,7 +4012,7 @@ public class MainActivity extends Activity {
         draw[0].run();dialog.show();
     }
     private String keyFor(String s) {
-        if (s.contains("Заметки")) return "notes"; if (s.contains("Файлы")) return "files";
+        if (s.contains("Заметки")) return "notes"; if (s.contains("Рецепты")) return "recipes"; if (s.contains("Файлы")) return "files";
         if (s.contains("Карты")) return "loyalty"; if (s.contains("Подар")) return "gifts";
         if (s.contains("Капсула")) return "capsule"; if (s.contains("Голос")) return "votes";
         if (s.contains("планы")) return "plans"; return "items_" + s;
@@ -2947,25 +4027,43 @@ public class MainActivity extends Activity {
     }
 
     private void renderChat() {
+        if(contentScroll!=null)contentScroll.setFillViewport(true);
         JSONArray messages=read("messages");
-        TextView latest=text(chatNewMessageCount>0?"↓  Новые сообщения ("+chatNewMessageCount+")":"↓  К последнему сообщению",13,PURPLE,true);
+        TextView latest=text(chatScrollPolicy.pendingIncomingCount()>0?"↓  Новые сообщения ("+chatScrollPolicy.pendingIncomingCount()+")":"↓  К последнему сообщению",13,PURPLE,true);
         latest.setGravity(Gravity.CENTER);
         latest.setPadding(dp(12),dp(10),dp(12),dp(10));
         latest.setBackground(shape(PALE,18));
-        latest.setVisibility(!chatAutoScroll&&chatNewMessageCount>0?View.VISIBLE:View.GONE);
+        latest.setVisibility(!chatScrollPolicy.isFollowingLatest()&&chatScrollPolicy.pendingIncomingCount()>0?View.VISIBLE:View.GONE);
         LinearLayout.LayoutParams latestParams=new LinearLayout.LayoutParams(-1,-2);
         latestParams.bottomMargin=dp(6);
         body.addView(latest,latestParams);
-        latest.setOnClickListener(v->{chatAutoScroll=true;chatNewMessageCount=0;chatScrollY=Integer.MAX_VALUE;latest.setVisibility(View.GONE);if(body.getParent() instanceof ScrollView){ScrollView parent=(ScrollView)body.getParent();parent.post(()->parent.fullScroll(ScrollView.FOCUS_DOWN));}});
+        final ScrollView[] messageScroll={null};
+        latest.setOnClickListener(v->{
+            chatScrollPolicy.jumpToLatest();
+            chatScrollY=Integer.MAX_VALUE;
+            latest.setVisibility(View.GONE);
+            ScrollView list=messageScroll[0];
+            if(list!=null)list.post(()->list.fullScroll(ScrollView.FOCUS_DOWN));
+        });
         LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(8),dp(8),dp(8),dp(8));box.setBackgroundColor(0x00000000);
-        ScrollView scroll=new ScrollView(this);scroll.setFillViewport(true);scroll.addView(box);body.addView(scroll);
+        ScrollView scroll=new ScrollView(this);messageScroll[0]=scroll;scroll.setFillViewport(true);
+        scroll.addView(box,new ScrollView.LayoutParams(-1,-2));
+        body.addView(scroll,new LinearLayout.LayoutParams(-1,0,1));
+        scroll.addOnLayoutChangeListener((view,left,top,right,bottom,oldLeft,oldTop,oldRight,oldBottom)->{
+            if(bottom-top==oldBottom-oldTop||!chatScrollPolicy.isFollowingLatest())return;
+            scroll.post(()->{
+                if(!chatScrollPolicy.isFollowingLatest())return;
+                scroll.fullScroll(ScrollView.FOCUS_DOWN);
+                chatScrollPolicy.onScroll(scroll.getScrollY(),scroll.getHeight(),box.getHeight(),dp(48));
+            });
+        });
         final boolean[] restoringScroll = {true};
         scroll.setOnScrollChangeListener((View view,int x,int y,int oldX,int oldY)->{
             if(restoringScroll[0])return;
             chatScrollY=y;
-            chatAutoScroll=y+scroll.getHeight()>=box.getHeight()-dp(48);
-            if(chatAutoScroll&&chatNewMessageCount>0){chatNewMessageCount=0;latest.setVisibility(View.GONE);}
-            else if(!chatAutoScroll&&chatNewMessageCount>0)latest.setVisibility(View.VISIBLE);
+            boolean followingLatest=chatScrollPolicy.onScroll(y,scroll.getHeight(),box.getHeight(),dp(48));
+            if(followingLatest)latest.setVisibility(View.GONE);
+            else if(chatScrollPolicy.pendingIncomingCount()>0)latest.setVisibility(View.VISIBLE);
         });
         if(messages.length()==0){TextView empty=text("Напишите первое сообщение — чат только для вас двоих",13,MUTED,false);empty.setGravity(Gravity.CENTER);empty.setPadding(0,dp(30),0,dp(30));box.addView(empty);}
         String lastSender=null;
@@ -3007,7 +4105,7 @@ public class MainActivity extends Activity {
         }
         startChatRefresh();
         box.post(()->{
-            if(chatAutoScroll)scroll.fullScroll(ScrollView.FOCUS_DOWN);
+            if(chatScrollPolicy.isFollowingLatest())scroll.fullScroll(ScrollView.FOCUS_DOWN);
             else scroll.scrollTo(0,Math.min(chatScrollY,Math.max(0,box.getHeight()-scroll.getHeight())));
             restoringScroll[0]=false;
         });
@@ -3072,7 +4170,7 @@ public class MainActivity extends Activity {
                         final int newCount=unread;
                         runOnUiThread(()->{
                             if(!isChatOpen()||!activityResumed)return;
-                            if(newCount>0&&!chatAutoScroll)chatNewMessageCount+=newCount;
+                            chatScrollPolicy.onMessagesAdded(newCount,false);
                             if(changed)render();
                             else if(chatRefreshRunnable==this)gameHandler.postDelayed(this,3000);
                         });
@@ -3129,7 +4227,7 @@ public class MainActivity extends Activity {
     }
 
     private View createChatComposer(){
-        LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);row.setPadding(dp(8),dp(5),dp(8),dp(5));row.setBackgroundColor(PAPER);
+        LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);row.setPadding(dp(8),dp(5),dp(8),dp(5));row.setBackground(glassSurface(PAPER,18));row.setElevation(dp(2));
         TextView attach=text("＋",24,PURPLE,true);attach.setGravity(Gravity.CENTER);row.addView(attach,new LinearLayout.LayoutParams(dp(48),dp(48)));
         attach.setContentDescription("Добавить фото, файл, GIF или видеокружок");
         attach.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Вложение").setItems(new String[]{"Фото, видео или аудио из телефона","GIF из телефона","Записать видеокружок (до минуты)"},(d,which)->{try{if(which==0){Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);pick.setType("*/*");pick.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(pick,404);}else if(which==1){Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);pick.setType("image/gif");pick.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(pick,408);}else startCameraCapture(405);}catch(Exception e){toast("Не удалось открыть камеру или галерею: "+e.getMessage());}}).show());
@@ -3159,7 +4257,7 @@ public class MainActivity extends Activity {
                 }
                 else toast("Чтобы отправить фото партнёру, сначала подключите пару");
             }
-            if(!value.isEmpty()){chatAutoScroll=true;chatScrollY=Integer.MAX_VALUE;append("messages",value,"Сейчас");}
+            if(!value.isEmpty()){chatScrollPolicy.onMessagesAdded(0,true);chatScrollY=Integer.MAX_VALUE;append("messages",value,"Сейчас");}
             pendingSharedText="";
             if(!value.isEmpty()||pendingSharedUri==null)render();
         });
@@ -3381,10 +4479,11 @@ public class MainActivity extends Activity {
     }
     private JSONArray read(String key) { try { return new JSONArray(prefs.getString(key, "[]")); } catch(Exception e) { return new JSONArray(); } }
     private void save(String key, JSONArray items) { prefs.edit().putString(key, items.toString()).apply(); }
-    private void syncItem(String key,JSONObject item){if("notes".equals(key)||sync==null||item==null)return;if("events".equals(key)&&item.optBoolean("remind_partner"))prefs.edit().putBoolean("owned_partner_reminder_"+item.optString("id"),true).apply();try{JSONArray pending=new JSONArray(prefs.getString("pending_shared_sync","[]"));JSONObject queued=new JSONObject();queued.put("key",key);queued.put("item",new JSONObject(item.toString()));boolean found=false;for(int i=0;i<pending.length();i++){JSONObject e=pending.optJSONObject(i);if(e==null)continue;JSONObject ei=e.optJSONObject("item");if(ei==null)continue;if(item.optString("id").equals(ei.optString("id"))){pending.put(i,queued);found=true;break;}}if(!found)pending.put(queued);prefs.edit().putString("pending_shared_sync",pending.toString()).apply();}catch(Exception ignored){}flushPendingSync();}
+    private boolean isPersonalCalendarKey(String key){return key.startsWith("personal_");}
+    private void syncItem(String key,JSONObject item){if("notes".equals(key)||isPersonalCalendarKey(key)||sync==null||item==null)return;if("events".equals(key)&&item.optBoolean("remind_partner"))prefs.edit().putBoolean("owned_partner_reminder_"+item.optString("id"),true).apply();try{JSONArray pending=new JSONArray(prefs.getString("pending_shared_sync","[]"));JSONObject queued=new JSONObject();queued.put("key",key);queued.put("item",new JSONObject(item.toString()));boolean found=false;for(int i=0;i<pending.length();i++){JSONObject e=pending.optJSONObject(i);if(e==null)continue;JSONObject ei=e.optJSONObject("item");if(ei==null)continue;if(item.optString("id").equals(ei.optString("id"))){pending.put(i,queued);found=true;break;}}if(!found)pending.put(queued);prefs.edit().putString("pending_shared_sync",pending.toString()).apply();}catch(Exception ignored){}flushPendingSync();}
     private void replaceItem(String key,JSONObject item){JSONArray rows=read(key);for(int i=0;i<rows.length();i++){JSONObject old=rows.optJSONObject(i);if(old!=null&&old.optString("id").equals(item.optString("id"))){try{rows.put(i,item);save(key,rows);syncItem(key,item);}catch(Exception ignored){}return;}}}
     private void removeRemoteItem(String id){if(sync!=null&&sync.ready())network.execute(()->{try{sync.deleteItem(id);}catch(Exception e){android.util.Log.w("VmesteSync","Could not delete shared item",e);}});}
-    private void removeItem(String key,String id){JSONArray rows=read(key);for(int i=rows.length()-1;i>=0;i--){JSONObject item=rows.optJSONObject(i);if(item!=null&&id.equals(item.optString("id"))){rows.remove(i);break;}}save(key,rows);removeRemoteItem(id);}
+    private void removeItem(String key,String id){JSONArray rows=read(key);for(int i=rows.length()-1;i>=0;i--){JSONObject item=rows.optJSONObject(i);if(item!=null&&id.equals(item.optString("id"))){rows.remove(i);break;}}save(key,rows);if(!isPersonalCalendarKey(key))removeRemoteItem(id);}
     private void append(String key, String title, String detail) {
         JSONArray list=read(key); JSONObject item=new JSONObject();
         try { item.put("id", UUID.randomUUID().toString()); item.put("title", title); item.put("detail", detail); item.put("done", false); item.put("ts", System.currentTimeMillis()); if ("messages".equals(key)) item.put("sender_id", sync.userId()); if("gifts".equals(key))item.put("owner_id",sync.userId()); list.put(item); } catch(Exception ignored) { }
@@ -3398,13 +4497,19 @@ public class MainActivity extends Activity {
     private void itemActions(String key,JSONObject item){
         ArrayList<String> options=new ArrayList<>();options.add("Редактировать");if("plans".equals(key))options.add("Добавить фото-отчёт");options.add("Удалить");
         String[] choices=options.toArray(new String[0]);new AlertDialog.Builder(this).setItems(choices,(d,which)->{
-            String choice=choices[which];if(choice.equals("Редактировать")){editItemDialog(key,item);return;}
+            String choice=choices[which];if(choice.equals("Редактировать")){
+                if("notes".equals(key))editNoteDialog(item);
+                else if("recipes".equals(key))editRecipeDialog(item);
+                else editItemDialog(key,item);
+                return;
+            }
             if(choice.equals("Добавить фото-отчёт")){pendingPhotoKey=key;pendingPhotoItemId=item.optString("id");Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);pick.setType("image/*");pick.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(pick,403);return;}
             new AlertDialog.Builder(this).setMessage("Удалить «"+item.optString("title")+"»?").setNegativeButton("Отмена",null).setPositiveButton("Удалить",(x,y)->{removeItem(key,item.optString("id"));render();}).show();
         }).show();
     }
 
     private void editItemDialog(String key,JSONObject item){
+        if("wishes".equals(key)){editWishPlanDialog(item);return;}
         LinearLayout form=column();form.setPadding(dp(18),0,dp(18),0);
         EditText title=new EditText(this);title.setSingleLine(true);title.setHint("Название");title.setText(item.optString("title"));form.addView(title);
         EditText detail=new EditText(this);detail.setHint("Описание или заметка");detail.setText(item.optString("detail"));form.addView(detail);
@@ -3488,7 +4593,7 @@ public class MainActivity extends Activity {
         }
     }
     private LinearLayout card() {
-        LinearLayout c=column(); c.setPadding(dp(17),dp(16),dp(17),dp(16)); c.setBackground(shape(PAPER,22)); c.setElevation(dp(1));
+        LinearLayout c=column(); c.setPadding(dp(17),dp(16),dp(17),dp(16));         c.setBackground(glassSurface(PAPER,22)); c.setElevation(dp(2));
         LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.bottomMargin=dp(9);body.addView(c,p);return c;
     }
     private void heading(String title,String sub) {
@@ -3496,6 +4601,14 @@ public class MainActivity extends Activity {
         if(sub!=null){TextView s=text(sub,12,MUTED,false);LinearLayout.LayoutParams q=new LinearLayout.LayoutParams(-1,-2);q.bottomMargin=dp(11);body.addView(s,q);}
     }
     private TextView pill(String value,int color) { TextView b=text(value,13,color,true);b.setGravity(Gravity.CENTER);b.setMinHeight(dp(48));b.setPadding(dp(16),dp(11),dp(16),dp(11));b.setBackground(shape(PALE,22));LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-2,-2);p.bottomMargin=dp(10);b.setLayoutParams(p);return b; }
+    private GradientDrawable glassSurface(int fill,int radius) {
+        GradientDrawable surface=new GradientDrawable();
+        int base=themedFill(fill);
+        surface.setColor((base&0x00FFFFFF)|(0xF7<<24));
+        surface.setCornerRadius(dp(radius));
+        surface.setStroke(dp(1),softDark?0x665F5268:0x99FFFFFF);
+        return surface;
+    }
     private void addGap(LinearLayout parent,int h) { View gap=new View(this);parent.addView(gap,new LinearLayout.LayoutParams(1,dp(h))); }
 
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent data) {
@@ -3540,8 +4653,54 @@ public class MainActivity extends Activity {
             String caption=pendingStoryCaption;pendingStoryCaption="";publishStory(uri,caption);return;
         }
         if(requestCode==402&&resultCode==RESULT_OK&&data!=null&&data.getData()!=null) {
-            Uri uri=data.getData(); String name=uri.getLastPathSegment(); append("files",name==null?"Выбранный файл":name,uri.toString()); render();
+            Uri uri=data.getData();
+            try{getContentResolver().takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION);}
+            catch(Exception ignored){}
+            publishSharedFile(uri);return;
         }
+        if(requestCode==409){
+            if(resultCode==RESULT_OK&&data!=null&&data.getData()!=null)saveSharedFileCopy(data.getData());
+            else clearPendingFileDownload();
+        }
+    }
+
+    private void publishSharedFile(Uri uri){
+        if(!sync.ready()){toast("Чтобы передать файл партнёру, сначала войдите и подключите пару");return;}
+        String name=uri.getLastPathSegment();
+        long size=-1;
+        try(android.database.Cursor cursor=getContentResolver().query(uri,
+                new String[]{android.provider.OpenableColumns.DISPLAY_NAME,
+                        android.provider.OpenableColumns.SIZE},null,null,null)){
+            if(cursor!=null&&cursor.moveToFirst()){
+                int nameColumn=cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                int sizeColumn=cursor.getColumnIndex(android.provider.OpenableColumns.SIZE);
+                if(nameColumn>=0)name=cursor.getString(nameColumn);
+                if(sizeColumn>=0&&!cursor.isNull(sizeColumn))size=cursor.getLong(sizeColumn);
+            }
+        }catch(Exception e){android.util.Log.w("VmesteFiles","Could not read selected file metadata",e);}
+        name=safeFileName(name);
+        if(size>12L*1024*1024){toast("Файлы больше 12 МиБ пока нельзя передать");return;}
+        String mime=getContentResolver().getType(uri);
+        if(mime==null||mime.isEmpty()){
+            String extension=android.webkit.MimeTypeMap.getFileExtensionFromUrl(name);
+            mime=android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+        }
+        if(mime==null||mime.isEmpty())mime="application/octet-stream";
+        final String selectedName=name,selectedMime=mime;
+        final long selectedSize=size;
+        String id=UUID.randomUUID().toString();
+        toast("Загружаю файл для вашей пары…");
+        network.execute(()->{try{
+            String path=sync.uploadAttachment(uri,id,this,selectedMime);
+            JSONObject item=new JSONObject();
+            item.put("id",id);item.put("title",selectedName);item.put("mime",selectedMime);
+            item.put("path",path);item.put("size_bytes",selectedSize);
+            item.put("detail",selectedSize>=0?android.text.format.Formatter.formatShortFileSize(this,selectedSize)
+                    :"Размер уточняется при загрузке");
+            item.put("created_at",System.currentTimeMillis());
+            JSONArray rows=read("files");rows.put(item);save("files",rows);syncItem("files",item);
+            runOnUiThread(()->{render();toast("Файл передан в общее хранилище");});
+        }catch(Exception e){runOnUiThread(()->toast("Файл не передан: "+e.getMessage()));}});
     }
     @Override public void onRequestPermissionsResult(int requestCode,String[] permissions,int[] results){
         super.onRequestPermissionsResult(requestCode,permissions,results);
@@ -3575,7 +4734,7 @@ public class MainActivity extends Activity {
         final int ROWS=6,COLS=7;
         LinearLayout panel=column();panel.setPadding(dp(10),dp(6),dp(10),dp(6));
         TextView status=text("",14,INK,true);status.setGravity(Gravity.CENTER);status.setPadding(dp(10),dp(10),dp(10),dp(10));status.setBackground(shape(PALE,14));panel.addView(status);
-        LinearLayout board=column();board.setGravity(Gravity.CENTER);board.setPadding(dp(6),dp(6),dp(6),dp(6));board.setBackground(shape(0xFFEDE4F1,20));LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(-1,-2);bp.topMargin=dp(8);panel.addView(board,bp);
+        LinearLayout board=column();board.setGravity(Gravity.CENTER);board.setPadding(dp(6),dp(6),dp(6),dp(6));board.setBackground(shape(0xFF214D6B,20));LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(-1,-2);bp.topMargin=dp(8);panel.addView(board,bp);
         TextView restart=pill("Новая партия",PURPLE);restart.setGravity(Gravity.CENTER);LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,-2);rp.topMargin=dp(10);panel.addView(restart,rp);
         AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Четыре в ряд · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();
         Runnable[] draw={null};
@@ -3599,15 +4758,31 @@ public class MainActivity extends Activity {
             else status.setText(moveBusy[0]?"Сохраняю ход…":turn.equals(me)?"Ваш ход — выберите колонку":"Ход партнёра");
             restart.setVisibility(participant&&!p2.isEmpty()&&"finished".equals(g.optString("status"))?View.VISIBLE:View.GONE);
             board.removeAllViews();
+            int cellSize=Math.max(dp(34),Math.min(dp(48),
+                    (getResources().getDisplayMetrics().widthPixels-dp(80))/COLS));
             for(int r=0;r<ROWS;r++){
                 LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER);board.addView(row);
                 for(int c=0;c<COLS;c++){
                     final int col=c;
                     int i=r*COLS+c;
                     char mark=i<boardState.length()?boardState.charAt(i):'.';
-                    TextView cell=text(mark=='.'?" ":String.valueOf(mark),26,mark=='R'?0xFFD84B5E:0xFF4B8BD8,true);
-                    cell.setGravity(Gravity.CENTER);cell.setBackground(shape(0xFFB9D9E4,14));
-                    LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(dp(56),dp(56));cp.setMargins(dp(3),dp(3),dp(3),dp(3));
+                    FrameLayout cell=new FrameLayout(this);
+                    cell.setFocusable(true);
+                    int holeSize=(int)(cellSize*.78f);
+                    View hole=new View(this);
+                    hole.setBackground(gameDisc(0xFF12364F,0xFF54748A));
+                    cell.addView(hole,new FrameLayout.LayoutParams(holeSize,holeSize,Gravity.CENTER));
+                    if(mark!='.'){
+                        View token=new View(this);
+                        token.setBackground(gameDisc(mark=='R'?0xFFD84B5E:0xFF4B8BD8,0xFFF5ECDD));
+                        token.setElevation(dp(2));
+                        int tokenSize=(int)(holeSize*.88f);
+                        cell.addView(token,new FrameLayout.LayoutParams(tokenSize,tokenSize,Gravity.CENTER));
+                    }
+                    cell.setContentDescription("Колонка "+(c+1)+", "
+                            +(mark=='.'?"пустая ячейка":mark=='R'?"красная фишка":"синяя фишка"));
+                    LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(cellSize,cellSize);
+                    cp.setMargins(dp(1),dp(1),dp(1),dp(1));
                     row.addView(cell,cp);
                     cell.setEnabled(active&&participant&&!p2.isEmpty()&&turn.equals(me)&&winner.isEmpty()&&!moveBusy[0]);
                     cell.setOnClickListener(v->{
@@ -3642,7 +4817,7 @@ public class MainActivity extends Activity {
                 }
             }
         };
-        restart.setOnClickListener(v->{network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));if(fresh==null||!"finished".equals(fresh.optString("status")))throw new Exception("Начать новую партию можно после завершения текущей");JSONObject ns=new JSONObject(fresh.getJSONObject("state").toString());String me=pairGames.userId();if(!me.equals(ns.optString("p1"))&&!me.equals(ns.optString("p2")))throw new Exception("Вы не участник этой партии");if(ns.optString("p2").isEmpty())throw new Exception("Ожидается подключение партнёра");ns.put("board",emptyBoard(42));ns.put("winner","");ns.put("turn",ns.optString("p1"));JSONObject saved=pairGames.update(fresh.getString("id"),fresh.optLong("version"),ns,"active");runOnUiThread(()->{try{game[0]=saved;draw[0].run();}catch(Exception e){toast("Ошибка игры: "+e.getMessage());}});}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});});
+        restart.setOnClickListener(v->startNextGame("connect_four",game,draw[0]));
         draw[0].run();dialog.setOnDismissListener(d->{closed[0]=true;});dialog.show();poll[0]=()->{if(closed[0])return;network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));if(fresh!=null)runOnUiThread(()->{try{game[0]=fresh;draw[0].run();}catch(Exception ignored){}});}catch(Exception ignored){}if(!closed[0])gameHandler.postDelayed(poll[0],1400);});};gameHandler.postDelayed(poll[0],1400);
     }
     private boolean hasConnectFour(String b,char p){int ROWS=6,COLS=7;for(int r=0;r<ROWS;r++)for(int c=0;c<COLS;c++){int i=r*COLS+c;if(c+3<COLS&&b.charAt(i)==p&&b.charAt(i+1)==p&&b.charAt(i+2)==p&&b.charAt(i+3)==p)return true;if(r+3<ROWS&&b.charAt(i)==p&&b.charAt(i+COLS)==p&&b.charAt(i+2*COLS)==p&&b.charAt(i+3*COLS)==p)return true;if(c+3<COLS&&r+3<ROWS&&b.charAt(i)==p&&b.charAt(i+COLS+1)==p&&b.charAt(i+2*(COLS+1))==p&&b.charAt(i+3*(COLS+1))==p)return true;if(c-3>=0&&r+3<ROWS&&b.charAt(i)==p&&b.charAt(i+COLS-1)==p&&b.charAt(i+2*(COLS-1))==p&&b.charAt(i+3*(COLS-1))==p)return true;}return false;}
@@ -3656,17 +4831,71 @@ public class MainActivity extends Activity {
         final int[] selected={-1};final boolean[] moveBusy={false};
         LinearLayout panel=column();panel.setPadding(dp(10),dp(6),dp(10),dp(6));
         TextView status=text("",14,INK,true);status.setGravity(Gravity.CENTER);status.setPadding(dp(10),dp(10),dp(10),dp(10));status.setBackground(shape(PALE,14));panel.addView(status);
-        LinearLayout board=column();board.setGravity(Gravity.CENTER);board.setPadding(dp(6),dp(6),dp(6),dp(6));board.setBackground(shape(0xFFEDE4F1,20));LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(-1,-2);bp.topMargin=dp(8);panel.addView(board,bp);
+        LinearLayout board=column();board.setGravity(Gravity.CENTER);board.setPadding(dp(6),dp(6),dp(6),dp(6));board.setBackground(shape(0xFF4B3628,18));LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(-1,-2);bp.topMargin=dp(8);panel.addView(board,bp);
         TextView restart=pill("Новая партия",PURPLE);restart.setGravity(Gravity.CENTER);LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,-2);rp.topMargin=dp(10);panel.addView(restart,rp);
         AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Шашки · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();
-        Runnable[] draw={null};draw[0]=()->{JSONObject g=game[0],s=g.optJSONObject("state");if(s==null)return;String me=pairGames.userId(),p1=s.optString("p1"),p2=s.optString("p2"),boardState=s.optString("board",initialCheckersBoard()),turn=s.optString("turn"),winner=s.optString("winner");int chain=s.optInt("chain",-1);boolean active="active".equals(g.optString("status")),participant=me.equals(p1)||me.equals(p2);char mine=me.equals(p1)?'r':'b';
-            if(p2.isEmpty())status.setText("Игра создана. Ждём партнёра.");else if(!winner.isEmpty())status.setText(winner.equals(me)?"Вы победили! 🎉":"Партнёр победил.");else if(!active)status.setText("Партия завершена");else status.setText(moveBusy[0]?"Сохраняю ход…":turn.equals(me)?"Ваш ход · выберите шашку":"Ход партнёра");
+        Runnable[] draw={null};draw[0]=()->{JSONObject g=game[0],s=g.optJSONObject("state");if(s==null)return;String me=pairGames.userId(),p1=s.optString("p1"),p2=s.optString("p2"),boardState=s.optString("board",initialCheckersBoard()),turn=s.optString("turn"),winner=s.optString("winner");int chain=s.optInt("chain",-1);boolean active="active".equals(g.optString("status")),participant=me.equals(p1)||me.equals(p2);char mine=me.equals(p1)?'r':'b';boolean rotated=!me.equals(p1);
+            String sideLabel="Ваши шашки "+(mine=='r'?"красные":"синие")+" · ваша сторона внизу";
+            if(p2.isEmpty())status.setText("Игра создана. Ждём партнёра.");else if(!winner.isEmpty())status.setText((winner.equals(me)?"Вы победили! 🎉":"Партнёр победил.")+"\n"+sideLabel);else if(!active)status.setText("Партия завершена\n"+sideLabel);else status.setText((moveBusy[0]?"Сохраняю ход…":turn.equals(me)?"Ваш ход · выберите шашку":"Ход партнёра")+"\n"+sideLabel);
             java.util.Map<Integer,java.util.List<Integer>> legal=active&&participant&&!p2.isEmpty()&&turn.equals(me)?BoardGameRules.legalCheckersMoves(boardState,me,p1,chain):java.util.Collections.emptyMap();
             java.util.List<Integer> destinations=selected[0]<0?java.util.Collections.emptyList():legal.getOrDefault(selected[0],java.util.Collections.emptyList());
             restart.setVisibility(!p2.isEmpty()&&"finished".equals(g.optString("status"))?View.VISIBLE:View.GONE);
-            board.removeAllViews();for(int r=0;r<8;r++){LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER);board.addView(row);for(int c=0;c<8;c++){int i=r*8+c;char mark=i<boardState.length()?boardState.charAt(i):'.';boolean dark=(r+c)%2==1;boolean own=mark=='r'&&mine=='r'||mark=='R'&&mine=='r'||mark=='b'&&mine=='b'||mark=='B'&&mine=='b';boolean target=destinations.contains(i);String piece=mark=='.'?"":Character.isUpperCase(mark)?"♛":String.valueOf(mark).toUpperCase(Locale.ROOT);TextView cell=text(piece,21,mark=='r'||mark=='R'?0xFFD84B5E:mark=='b'||mark=='B'?0xFF4B4B8B:INK,true);cell.setGravity(Gravity.CENTER);int bg=dark?0xFF8B5A2B:0xFFD2B48C;if(target)bg=0xFF8BCB88;else if(i==selected[0])bg=0xFFB4D77B;else if(own&&active&&turn.equals(me)&&!moveBusy[0])bg=0xFF9CCC65;cell.setBackground(shape(bg,6));LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(dp(39),dp(39));cp.setMargins(dp(1),dp(1),dp(1),dp(1));row.addView(cell,cp);cell.setEnabled(!moveBusy[0]&&active&&participant&&!p2.isEmpty()&&turn.equals(me)&&winner.isEmpty());cell.setOnClickListener(v->{if(moveBusy[0])return;if(destinations.contains(i)){int from=selected[0];selected[0]=-1;moveBusy[0]=true;draw[0].run();submitCheckersMove(game,from,i,moveBusy,draw);return;}if(own&&legal.containsKey(i)){selected[0]=i;}else selected[0]=-1;draw[0].run();});}}
+            board.removeAllViews();
+            int cellSize=Math.max(dp(28),Math.min(dp(44),
+                    (getResources().getDisplayMetrics().widthPixels-dp(92))/8));
+            for(int r=0;r<8;r++){
+                LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER);board.addView(row);
+                for(int c=0;c<8;c++){
+                    int i=BoardGameRules.checkersBoardIndexForView(r,c,rotated);
+                    char mark=i<boardState.length()?boardState.charAt(i):'.';
+                    boolean dark=(i/8+i%8)%2==1;
+                    boolean own=mark=='r'&&mine=='r'||mark=='R'&&mine=='r'
+                            ||mark=='b'&&mine=='b'||mark=='B'&&mine=='b';
+                    boolean target=destinations.contains(i);
+                    FrameLayout cell=new FrameLayout(this);
+                    int bg=dark?0xFF79553A:0xFFE7D2AF;
+                    if(target)bg=0xFF6D9A6E;
+                    else if(i==selected[0])bg=0xFFB98A35;
+                    else if(own&&active&&turn.equals(me)&&!moveBusy[0])bg=dark?0xFF916C42:0xFFF0D9AA;
+                    cell.setBackground(shape(bg,4));
+                    if(mark!='.'){
+                        int pieceColor=mark=='r'||mark=='R'?0xFFB9384D:0xFF3F568C;
+                        int pieceSize=(int)(cellSize*.68f);
+                        View piece=new View(this);
+                        piece.setBackground(gameDisc(pieceColor,0xFFF1DFC2));
+                        piece.setElevation(dp(2));
+                        cell.addView(piece,new FrameLayout.LayoutParams(pieceSize,pieceSize,Gravity.CENTER));
+                        if(Character.isUpperCase(mark)){
+                            int crownSize=Math.max(12,(int)(cellSize
+                                    /getResources().getDisplayMetrics().density/2f));
+                            TextView crown=text("♛",crownSize,0xFFFFD66B,true);
+                            crown.setGravity(Gravity.CENTER);
+                            cell.addView(crown,new FrameLayout.LayoutParams(-1,-1,Gravity.CENTER));
+                        }
+                    }
+                    String description=mark=='.'?(target?"доступный ход":"пустая клетка")
+                            :own?"ваша шашка":"шашка партнёра";
+                    cell.setContentDescription("Ряд "+(8-r)+", колонка "+(c+1)+": "+description);
+                    cell.setFocusable(true);
+                    LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(cellSize,cellSize);
+                    cp.setMargins(dp(1),dp(1),dp(1),dp(1));
+                    row.addView(cell,cp);
+                    cell.setEnabled(!moveBusy[0]&&active&&participant&&!p2.isEmpty()
+                            &&turn.equals(me)&&winner.isEmpty());
+                    cell.setOnClickListener(v->{
+                        if(moveBusy[0])return;
+                        if(destinations.contains(i)){
+                            int from=selected[0];selected[0]=-1;moveBusy[0]=true;
+                            draw[0].run();submitCheckersMove(game,from,i,moveBusy,draw);return;
+                        }
+                        if(own&&legal.containsKey(i))selected[0]=i;
+                        else selected[0]=-1;
+                        draw[0].run();
+                    });
+                }
+            }
         };
-        restart.setOnClickListener(v->{network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));if(fresh==null||!"finished".equals(fresh.optString("status")))throw new Exception("Начать новую партию можно после завершения текущей");JSONObject ns=new JSONObject(fresh.getJSONObject("state").toString());if(!pairGames.userId().equals(ns.optString("p1"))&&!pairGames.userId().equals(ns.optString("p2")))throw new Exception("Вы не участник этой партии");ns.put("board",initialCheckersBoard());ns.put("winner","");ns.put("turn",ns.optString("p1"));ns.put("chain",-1);JSONObject saved=pairGames.update(fresh.getString("id"),fresh.optLong("version"),ns,"active");runOnUiThread(()->{try{game[0]=saved;draw[0].run();}catch(Exception e){toast("Ошибка игры: "+e.getMessage());}});}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});});
+        restart.setOnClickListener(v->startNextGame("checkers",game,draw[0]));
         draw[0].run();dialog.setOnDismissListener(d->{closed[0]=true;});dialog.show();poll[0]=()->{if(closed[0])return;network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));if(fresh!=null)runOnUiThread(()->{try{game[0]=fresh;draw[0].run();}catch(Exception ignored){}});}catch(Exception ignored){}if(!closed[0])gameHandler.postDelayed(poll[0],1400);});};gameHandler.postDelayed(poll[0],1400);
     }
 
@@ -3682,7 +4911,7 @@ public class MainActivity extends Activity {
         final JSONObject[] game={initial};final boolean[] closed={false};final Runnable[] poll={null};
         LinearLayout panel=column();panel.setPadding(dp(8),dp(4),dp(8),dp(4));
         TextView status=text("",13,INK,true);status.setGravity(Gravity.CENTER);status.setPadding(dp(8),dp(8),dp(8),dp(8));status.setBackground(shape(PALE,12));panel.addView(status);
-        LinearLayout board=column();board.setGravity(Gravity.CENTER);board.setPadding(dp(6),dp(6),dp(6),dp(6));board.setBackground(shape(0xFFEDE4F1,18));LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(-1,-2);bp.topMargin=dp(6);panel.addView(board,bp);
+        LinearLayout board=column();board.setGravity(Gravity.CENTER);board.setPadding(dp(4),dp(4),dp(4),dp(4));board.setBackground(shape(0xFF604832,18));LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(-1,-2);bp.topMargin=dp(6);panel.addView(board,bp);
         TextView restart=pill("Новая партия",PURPLE);restart.setGravity(Gravity.CENTER);LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,-2);rp.topMargin=dp(8);panel.addView(restart,rp);
         AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Точки и квадратики · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();
         final boolean[] moveBusy={false};
@@ -3690,42 +4919,60 @@ public class MainActivity extends Activity {
             if(p2.isEmpty())status.setText("Игра создана. Ждём партнёра.");else if(!winner.isEmpty())status.setText("draw".equals(winner)?"Ничья!":winner.equals(me)?"Вы победили! 🎉":"Партнёр победил.");else if(!active)status.setText("Партия завершена");else status.setText((moveBusy[0]?"Сохраняю ход…":turn.equals(me)?"Ваш ход":"Ход партнёра")+" · "+score1+":"+score2);
             restart.setVisibility(!p2.isEmpty()&&"finished".equals(g.optString("status"))?View.VISIBLE:View.GONE);
             board.removeAllViews();
+            int stepSize=Math.max(dp(26),Math.min(dp(38),
+                    (getResources().getDisplayMetrics().widthPixels-dp(96))/9));
+            int dotSize=Math.max(dp(6),stepSize/4);
             for(int rowIndex=0;rowIndex<9;rowIndex++){
                 LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER);board.addView(row);
                 for(int col=0;col<9;col++){
                     if(rowIndex%2==0&&col%2==0){
-                        TextView dot=text("●",10,0xFF4D3C59,true);dot.setGravity(Gravity.CENTER);
-                        row.addView(dot,new LinearLayout.LayoutParams(dp(10),dp(10)));
+                        FrameLayout dotSlot=new FrameLayout(this);
+                        View dot=new View(this);dot.setBackground(gameDisc(0xFF3D2F25,0xFFE4CFA9));
+                        dotSlot.addView(dot,new FrameLayout.LayoutParams(dotSize,dotSize,Gravity.CENTER));
+                        dotSlot.setContentDescription("Точка "+(rowIndex/2+1)+", "+(col/2+1));
+                        row.addView(dotSlot,new LinearLayout.LayoutParams(stepSize,stepSize));
                     }else if(rowIndex%2==0){
                         int edge=(rowIndex/2)*4+col/2;
-                        addDotsEdge(row,edgesState,edge,true,active&&turn.equals(me)&&!p2.isEmpty()&&!moveBusy[0],game,moveBusy,draw);
+                        addDotsEdge(row,edgesState,edge,true,stepSize,
+                                active&&turn.equals(me)&&!p2.isEmpty()&&!moveBusy[0],game,moveBusy,draw);
                     }else if(col%2==0){
                         int edge=20+(rowIndex/2)*5+col/2;
-                        addDotsEdge(row,edgesState,edge,false,active&&turn.equals(me)&&!p2.isEmpty()&&!moveBusy[0],game,moveBusy,draw);
+                        addDotsEdge(row,edgesState,edge,false,stepSize,
+                                active&&turn.equals(me)&&!p2.isEmpty()&&!moveBusy[0],game,moveBusy,draw);
                     }else{
                         int boxIndex=(rowIndex/2)*4+col/2;char owner=boxIndex<boxesState.length()?boxesState.charAt(boxIndex):'.';
-                        TextView box=text(owner=='.'?"": "●",18,owner=='A'?0xFFD84B5E:0xFF4B4B8B,true);box.setGravity(Gravity.CENTER);
-                        box.setBackground(shape(owner=='.'?0xFFD2B48C:0xFFEEE7F4,4));
-                        row.addView(box,new LinearLayout.LayoutParams(dp(38),dp(38)));
+                        TextView box=text(owner=='.'?"":"●",18,
+                                owner=='A'?0xFFB9384D:0xFF3F568C,true);box.setGravity(Gravity.CENTER);
+                        box.setBackground(shape(owner=='.'?0xFFF0E2C8:
+                                owner=='A'?0xFFF2D8D9:0xFFDDE2F0,4));
+                        box.setContentDescription(owner=='.'?"Пустой квадрат":
+                                owner=='A'?"Квадрат игрока 1":"Квадрат игрока 2");
+                        row.addView(box,new LinearLayout.LayoutParams(stepSize,stepSize));
                     }
                 }
             }
         };
-        restart.setOnClickListener(v->{network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));if(fresh==null||!"finished".equals(fresh.optString("status")))throw new Exception("Начать новую партию можно после завершения текущей");JSONObject ns=new JSONObject(fresh.getJSONObject("state").toString());if(!pairGames.userId().equals(ns.optString("p1"))&&!pairGames.userId().equals(ns.optString("p2")))throw new Exception("Вы не участник этой партии");ns.put("edges",emptyBoard(40));ns.put("boxes",emptyBoard(16));ns.put("score1",0);ns.put("score2",0);ns.put("winner","");ns.put("turn",ns.optString("p1"));JSONObject saved=pairGames.update(fresh.getString("id"),fresh.optLong("version"),ns,"active");runOnUiThread(()->{try{game[0]=saved;draw[0].run();}catch(Exception e){toast("Ошибка игры: "+e.getMessage());}});}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});});
+        restart.setOnClickListener(v->startNextGame("dots_boxes",game,draw[0]));
         draw[0].run();dialog.setOnDismissListener(d->{closed[0]=true;});dialog.show();poll[0]=()->{if(closed[0])return;network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));if(fresh!=null)runOnUiThread(()->{try{game[0]=fresh;draw[0].run();}catch(Exception ignored){}});}catch(Exception ignored){}if(!closed[0])gameHandler.postDelayed(poll[0],1400);});};gameHandler.postDelayed(poll[0],1400);
     }
 
-    private void addDotsEdge(LinearLayout row,String edges,int edge,boolean horizontal,boolean enabled,
+    private void addDotsEdge(LinearLayout row,String edges,int edge,boolean horizontal,int stepSize,boolean enabled,
                              JSONObject[] game,boolean[] busy,Runnable[] draw){
         char mark=edge<edges.length()?edges.charAt(edge):'.';
-        TextView line=text(mark=='.'?(horizontal?"—":"│"):mark=='A'?(horizontal?"━":"┃"):(horizontal?"━":"┃"),
-                20,mark=='A'?0xFFD84B5E:mark=='B'?0xFF4B4B8B:0xFF887C8D,true);
-        line.setGravity(Gravity.CENTER);line.setBackground(shape(mark=='.'?0xFFD2B48C:0xFFEEE7F4,4));
-        LinearLayout.LayoutParams lp=horizontal
-                ?new LinearLayout.LayoutParams(dp(38),dp(10))
-                :new LinearLayout.LayoutParams(dp(10),dp(38));
-        row.addView(line,lp);line.setEnabled(enabled&&mark=='.');
-        if(mark=='.')line.setOnClickListener(v->{if(busy[0])return;busy[0]=true;draw[0].run();submitDotsMove(game,edge,busy,draw);});
+        FrameLayout slot=new FrameLayout(this);
+        slot.setFocusable(true);
+        int lineColor=mark=='A'?0xFFB9384D:mark=='B'?0xFF3F568C:0xFFB49B76;
+        View line=new View(this);
+        line.setBackground(shape(lineColor,4));
+        int thickness=Math.max(dp(5),stepSize/6);
+        slot.setContentDescription(mark=='.'?"Поставить линию "+(edge+1):"Линия "+(edge+1));
+        FrameLayout.LayoutParams lp=horizontal
+                ?new FrameLayout.LayoutParams(stepSize,thickness,Gravity.CENTER)
+                :new FrameLayout.LayoutParams(thickness,stepSize,Gravity.CENTER);
+        slot.addView(line,lp);
+        row.addView(slot,new LinearLayout.LayoutParams(stepSize,stepSize));
+        slot.setEnabled(enabled&&mark=='.');
+        if(mark=='.')slot.setOnClickListener(v->{if(busy[0])return;busy[0]=true;draw[0].run();submitDotsMove(game,edge,busy,draw);});
     }
 
     private void submitDotsMove(JSONObject[] game,int edge,boolean[] busy,Runnable[] draw){

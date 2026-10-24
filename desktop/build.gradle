@@ -4,7 +4,7 @@ plugins {
 }
 
 group = 'com.example.lira'
-version = '1.0.0'
+version = '2.32'
 
 repositories {
     mavenCentral()
@@ -30,6 +30,7 @@ dependencies {
     implementation 'org.xerial:sqlite-jdbc:3.46.1.0'
     implementation 'com.alphacephei:vosk:0.3.45'
     implementation 'com.google.code.gson:gson:2.11.0'
+    implementation 'com.google.zxing:core:3.5.3'
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
 }
 

@@ -2,7 +2,7 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="160dp"
-    android:background="#0E1621"
+    android:background="@color/lira_background"
     android:orientation="vertical"
     android:gravity="bottom"
     android:padding="16dp">
@@ -17,7 +17,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="L.I.R.A. Assistant"
-        android:textColor="#FFFFFF"
+        android:textColor="@color/lira_text"
         android:textSize="18sp"
         android:textStyle="bold" />
 
@@ -25,7 +25,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="Нативный ассистент"
-        android:textColor="#788B9B"
+        android:textColor="@color/lira_muted"
         android:textSize="14sp" />
 
 </LinearLayout>

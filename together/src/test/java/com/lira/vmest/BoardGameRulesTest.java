@@ -7,6 +7,14 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public final class BoardGameRulesTest {
+    @Test public void checkersPerspectivePutsEachPlayersSideAtTheBottom() {
+        assertEquals(0, BoardGameRules.checkersBoardIndexForView(0, 0, false));
+        assertEquals(63, BoardGameRules.checkersBoardIndexForView(0, 0, true));
+        assertEquals(0, BoardGameRules.checkersBoardIndexForView(7, 7, true));
+        assertEquals(-1, BoardGameRules.checkersBoardIndexForView(8, 0, false));
+        assertEquals(-1, BoardGameRules.checkersBoardIndexForView(0, 8, true));
+    }
+
     @Test public void connectFourUsesGravityAndFindsWin() {
         String board = "..........................................";
         assertEquals(35, BoardGameRules.connectFourLandingRow(board, 0));

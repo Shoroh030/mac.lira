@@ -185,7 +185,7 @@ final class SyncServer implements AutoCloseable {
                 Enumeration<InetAddress> values = network.getInetAddresses();
                 while (values.hasMoreElements()) {
                     InetAddress address = values.nextElement();
-                    if (!address.isLoopbackAddress() && address.getAddress().length == 4) {
+                    if (isPrivateIpv4(address)) {
                         addresses.add(address.getHostAddress());
                     }
                 }
@@ -194,6 +194,18 @@ final class SyncServer implements AutoCloseable {
             return List.of();
         }
         return addresses;
+    }
+
+    private static boolean isPrivateIpv4(InetAddress address) {
+        byte[] bytes = address.getAddress();
+        if (bytes.length != 4 || address.isLoopbackAddress() || address.isMulticastAddress()) {
+            return false;
+        }
+        int first = bytes[0] & 0xff;
+        int second = bytes[1] & 0xff;
+        return first == 10 || first == 192 && second == 168
+                || first == 172 && second >= 16 && second <= 31
+                || first == 169 && second == 254;
     }
 
     @Override

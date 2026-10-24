@@ -35,15 +35,15 @@ import java.util.Locale;
 
 public class FinanceFragment extends Fragment {
 
-    private static final int BACKGROUND = 0xFF0E1621;
-    private static final int CARD = 0xFF17212B;
-    private static final int TILE = 0xFF1E1E1E;
-    private static final int STROKE = 0xFF2E7D32;
-    private static final int TEXT = 0xFFFFFFFF;
-    private static final int MUTED = 0xFF8A9BA8;
-    private static final int GREEN = 0xFF00E676;
-    private static final int RED = 0xFFFF6B6B;
-    private static final int BLUE = 0xFF5288C1;
+    private int BACKGROUND;
+    private int CARD;
+    private int TILE;
+    private int STROKE;
+    private int TEXT;
+    private int MUTED;
+    private int GREEN;
+    private int RED;
+    private int BLUE;
     private static final String[] DEFAULT_CATEGORIES = {
             "Дом", "Продукты", "Кафе и еда", "Транспорт", "Покупки", "Здоровье"
     };
@@ -61,6 +61,7 @@ public class FinanceFragment extends Fragment {
     public View onCreateView(@NonNull android.view.LayoutInflater inflater,
                              @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
         dataStore = new OfflineDataStore(requireContext());
+        loadPalette();
         currentMonth = new SimpleDateFormat("yyyy-MM", Locale.US).format(new Date());
         microphonePermissionLauncher = registerForActivityResult(
                 new ActivityResultContracts.RequestPermission(), granted -> {
@@ -81,6 +82,18 @@ public class FinanceFragment extends Fragment {
         scrollView.addView(content);
         refresh();
         return scrollView;
+    }
+
+    private void loadPalette() {
+        BACKGROUND = ContextCompat.getColor(requireContext(), R.color.lira_background);
+        CARD = ContextCompat.getColor(requireContext(), R.color.lira_surface);
+        TILE = ContextCompat.getColor(requireContext(), R.color.lira_input);
+        STROKE = ContextCompat.getColor(requireContext(), R.color.lira_card_stroke);
+        TEXT = ContextCompat.getColor(requireContext(), R.color.lira_text);
+        MUTED = ContextCompat.getColor(requireContext(), R.color.lira_muted);
+        GREEN = ContextCompat.getColor(requireContext(), R.color.lira_green);
+        RED = ContextCompat.getColor(requireContext(), R.color.lira_red);
+        BLUE = ContextCompat.getColor(requireContext(), R.color.lira_accent);
     }
 
     private void refresh() {

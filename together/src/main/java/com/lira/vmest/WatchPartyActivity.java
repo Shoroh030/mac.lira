@@ -91,6 +91,8 @@ public final class WatchPartyActivity extends Activity {
     private final ExecutorService media = Executors.newSingleThreadExecutor();
     private final List<IceCandidate> pendingCandidates = new ArrayList<>();
     private final Object offerLock = new Object();
+    private final Object answerLock = new Object();
+    private final WatchNegotiationQueue remoteOfferQueue = new WatchNegotiationQueue();
     private SupabaseSync sync;
     private String roomId, title;
     private String playerUrl;
@@ -139,6 +141,8 @@ public final class WatchPartyActivity extends Activity {
     private boolean uiReady = false;
     private boolean mediaStarted = false;
     private boolean offerReady, offerInProgress, offerPending;
+    private boolean answerInProgress;
+    private String lastRemoteAnswerSdp = "";
     private final Runnable playbackPoll = new Runnable() {
         @Override public void run() {
             if (closed || playerSource == null) return;
@@ -229,6 +233,9 @@ public final class WatchPartyActivity extends Activity {
             LinearLayout playerControls = new LinearLayout(this); playerControls.setGravity(Gravity.CENTER_VERTICAL);
             playerControls.setPadding(0, dp(2), 0, dp(6));
             playerAddress = new EditText(this); playerAddress.setSingleLine(true);
+            playerAddress.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                    | android.text.InputType.TYPE_TEXT_VARIATION_URI
+                    | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
             playerAddress.setHint("YouTube или HTTPS-ссылка на MP4/HLS");
             if (playerUrl != null) playerAddress.setText(playerUrl);
             playerControls.addView(playerAddress, new LinearLayout.LayoutParams(0, dp(48), 1));
@@ -947,14 +954,33 @@ public final class WatchPartyActivity extends Activity {
                 try {
                     JSONArray batch = sync.fetchWatchSignals(roomId, lastSignalId);
                     List<JSONObject> incoming = new ArrayList<>();
+                    long newestRemoteOfferId = -1;
+                    long newestRemoteAnswerId = -1;
                     for (int i = 0; i < batch.length(); i++) {
                         JSONObject item = batch.getJSONObject(i);
                         lastSignalId = Math.max(lastSignalId, item.optLong("id"));
-                        if (!sync.userId().equals(item.optString("sender_id"))) incoming.add(item);
+                        if (!sync.userId().equals(item.optString("sender_id"))) {
+                            incoming.add(item);
+                            JSONObject payload = item.optJSONObject("payload");
+                            if (payload != null && !payload.optBoolean("renegotiation_request")) {
+                                if (!host && "offer".equals(item.optString("kind"))) {
+                                    newestRemoteOfferId = Math.max(newestRemoteOfferId, item.optLong("id"));
+                                } else if (host && "answer".equals(item.optString("kind"))) {
+                                    newestRemoteAnswerId = Math.max(newestRemoteAnswerId, item.optLong("id"));
+                                }
+                            }
+                        }
                     }
                     for (int phase = 0; phase < 3 && !closed; phase++) {
                         for (JSONObject item : incoming) {
                             if (WatchSignalOrder.phase(item.optString("kind")) == phase) {
+                                if (!host && "offer".equals(item.optString("kind"))) {
+                                    JSONObject payload = item.optJSONObject("payload");
+                                    if (payload != null && !payload.optBoolean("renegotiation_request")
+                                            && item.optLong("id") != newestRemoteOfferId) continue;
+                                }
+                                if (host && "answer".equals(item.optString("kind"))
+                                        && item.optLong("id") != newestRemoteAnswerId) continue;
                                 processSignalSafe(item);
                             }
                         }
@@ -1022,18 +1048,68 @@ public final class WatchPartyActivity extends Activity {
             return;
         }
         if (host && "answer".equals(kind)) {
+            String answerSdp = data.optString("sdp", "");
+            if (answerSdp.isEmpty() || peer == null) return;
+            synchronized (answerLock) {
+                if (answerInProgress || answerSdp.equals(lastRemoteAnswerSdp)
+                        || peer.signalingState() != PeerConnection.SignalingState.HAVE_LOCAL_OFFER) return;
+                answerInProgress = true;
+            }
             remoteReady = false;
-            peer.setRemoteDescription(sdpObserverSafe(() -> {
-                remoteReady = true; flushCandidatesSafe();
-                status.setText("Партнёр подключён · общий плеер готов");
-                maybeCreatePendingOfferSafe();
-            }), new SessionDescription(SessionDescription.Type.ANSWER, data.optString("sdp")));
+            peer.setRemoteDescription(new SdpObserver() {
+                @Override public void onSetSuccess() {
+                    synchronized (answerLock) {
+                        answerInProgress = false;
+                        lastRemoteAnswerSdp = answerSdp;
+                    }
+                    remoteReady = true;
+                    flushCandidatesSafe();
+                    main.post(() -> {
+                        if (closed) return;
+                        status.setText("Партнёр подключён · общий плеер готов");
+                        maybeCreatePendingOfferSafe();
+                    });
+                }
+                @Override public void onSetFailure(String error) {
+                    synchronized (answerLock) { answerInProgress = false; }
+                    showErrorSafe(error);
+                }
+                @Override public void onCreateSuccess(SessionDescription ignored) { }
+                @Override public void onCreateFailure(String error) { }
+            }, new SessionDescription(SessionDescription.Type.ANSWER, answerSdp));
         } else if (!host && "offer".equals(kind)) {
-            remoteReady = false;
-            peer.setRemoteDescription(sdpObserverSafe(() -> {
-                remoteReady = true; flushCandidatesSafe(); createAnswerSafe();
-            }), new SessionDescription(SessionDescription.Type.OFFER, data.optString("sdp")));
+            String offerSdp = data.optString("sdp", "");
+            String readyOffer = remoteOfferQueue.accept(offerSdp,
+                    peer != null && peer.signalingState() == PeerConnection.SignalingState.STABLE);
+            if (readyOffer != null) applyRemoteOfferSafe(readyOffer);
         }
+    }
+
+    private void applyRemoteOfferSafe(String offerSdp) {
+        if (peer == null || closed) {
+            completeRemoteOfferSafe();
+            return;
+        }
+        remoteReady = false;
+        peer.setRemoteDescription(new SdpObserver() {
+            @Override public void onSetSuccess() {
+                remoteReady = true;
+                flushCandidatesSafe();
+                createAnswerSafe(WatchPartyActivity.this::completeRemoteOfferSafe);
+            }
+            @Override public void onSetFailure(String error) {
+                showErrorSafe(error);
+                completeRemoteOfferSafe();
+            }
+            @Override public void onCreateSuccess(SessionDescription ignored) { }
+            @Override public void onCreateFailure(String error) { }
+        }, new SessionDescription(SessionDescription.Type.OFFER, offerSdp));
+    }
+
+    private void completeRemoteOfferSafe() {
+        String nextOffer = remoteOfferQueue.complete(
+                peer != null && peer.signalingState() == PeerConnection.SignalingState.STABLE);
+        if (nextOffer != null) applyRemoteOfferSafe(nextOffer);
     }
 
     private SdpObserver sdpObserverSafe(Runnable success) {
@@ -1045,18 +1121,43 @@ public final class WatchPartyActivity extends Activity {
         };
     }
 
-    private void createAnswerSafe() {
-        if (peer == null) return;
+    private void createAnswerSafe(Runnable completed) {
+        if (peer == null
+                || peer.signalingState() != PeerConnection.SignalingState.HAVE_REMOTE_OFFER) {
+            completed.run();
+            return;
+        }
         peer.createAnswer(new SdpObserver() {
             @Override public void onCreateSuccess(SessionDescription sdp) {
-                peer.setLocalDescription(sdpObserverSafe(() -> {
-                    try { JSONObject p = new JSONObject(); p.put("sdp", sdp.description); sendSignalSafe("answer", p); }
-                    catch (Exception e) { showErrorSafe(e.getMessage()); }
-                }), sdp);
+                peer.setLocalDescription(new SdpObserver() {
+                    @Override public void onSetSuccess() {
+                        try {
+                            JSONObject p = new JSONObject();
+                            p.put("sdp", sdp.description);
+                            sendSignalSafe("answer", p);
+                        } catch (Exception e) {
+                            showErrorSafe(e.getMessage());
+                        } finally {
+                            completed.run();
+                        }
+                    }
+                    @Override public void onSetFailure(String error) {
+                        showErrorSafe(error);
+                        completed.run();
+                    }
+                    @Override public void onCreateSuccess(SessionDescription ignored) { }
+                    @Override public void onCreateFailure(String error) { }
+                }, sdp);
             }
             @Override public void onSetSuccess() { }
-            @Override public void onCreateFailure(String error) { showErrorSafe(error); }
-            @Override public void onSetFailure(String error) { showErrorSafe(error); }
+            @Override public void onCreateFailure(String error) {
+                showErrorSafe(error);
+                completed.run();
+            }
+            @Override public void onSetFailure(String error) {
+                showErrorSafe(error);
+                completed.run();
+            }
         }, new MediaConstraints());
     }
 

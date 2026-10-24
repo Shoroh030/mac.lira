@@ -39,16 +39,16 @@ import java.util.UUID;
 
 public class GoalsFragment extends Fragment {
 
-    private static final int BACKGROUND = 0xFF0E1621;
-    private static final int CARD = 0xFF17212B;
-    private static final int TILE = 0xFF1E1E1E;
-    private static final int STROKE = 0xFF2E7D32;
-    private static final int TEXT = 0xFFFFFFFF;
-    private static final int MUTED = 0xFF8A9BA8;
-    private static final int ACCENT = 0xFF00E676;
-    private static final int GREEN = 0xFF69C987;
-    private static final int YELLOW = 0xFFF0C84A;
-    private static final int FIRE = 0xFFFF875F;
+    private int BACKGROUND;
+    private int CARD;
+    private int TILE;
+    private int STROKE;
+    private int TEXT;
+    private int MUTED;
+    private int ACCENT;
+    private int GREEN;
+    private int YELLOW;
+    private int FIRE;
 
     private static final BlockGroup[] BLOCK_GROUPS = {
             new BlockGroup("🌅  Утро", "Запустить день без перегруза", new Block[]{
@@ -119,6 +119,7 @@ public class GoalsFragment extends Fragment {
     public View onCreateView(@NonNull android.view.LayoutInflater inflater,
                              @Nullable ViewGroup container, @Nullable Bundle savedInstanceState) {
         dataStore = new OfflineDataStore(requireContext());
+        loadPalette();
         dataStore.ensureDailyBlocks(defaultDailyBlocks());
         selectedDay = Calendar.getInstance();
         if (savedInstanceState != null) {
@@ -168,6 +169,19 @@ public class GoalsFragment extends Fragment {
         buildVoiceNotesCard();
         refreshDay();
         return scrollView;
+    }
+
+    private void loadPalette() {
+        BACKGROUND = ContextCompat.getColor(requireContext(), R.color.lira_background);
+        CARD = ContextCompat.getColor(requireContext(), R.color.lira_surface);
+        TILE = ContextCompat.getColor(requireContext(), R.color.lira_input);
+        STROKE = ContextCompat.getColor(requireContext(), R.color.lira_card_stroke);
+        TEXT = ContextCompat.getColor(requireContext(), R.color.lira_text);
+        MUTED = ContextCompat.getColor(requireContext(), R.color.lira_muted);
+        ACCENT = ContextCompat.getColor(requireContext(), R.color.lira_accent);
+        GREEN = ContextCompat.getColor(requireContext(), R.color.lira_green);
+        YELLOW = ContextCompat.getColor(requireContext(), R.color.lira_yellow);
+        FIRE = ContextCompat.getColor(requireContext(), R.color.lira_red);
     }
 
     private void buildHeader() {
@@ -220,7 +234,7 @@ public class GoalsFragment extends Fragment {
         Button addGoal = new Button(requireContext());
         addGoal.setText("＋  Новая цель");
         addGoal.setTextColor(TEXT);
-        addGoal.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF315D82));
+        addGoal.setBackgroundTintList(android.content.res.ColorStateList.valueOf(ACCENT));
         addGoal.setOnClickListener(view -> showGoalEditor(null));
         card.addView(addGoal, params(0, 0, 0, 8));
         longTermGoalList = verticalChoices();
@@ -820,7 +834,7 @@ public class GoalsFragment extends Fragment {
         recordButton.setText("🎙  Записать / остановить");
         recordButton.setTextColor(TEXT);
         recordButton.setBackgroundTintList(
-                android.content.res.ColorStateList.valueOf(0xFF344B25));
+                android.content.res.ColorStateList.valueOf(GREEN));
         recordButton.setOnClickListener(v -> toggleDiaryRecording());
         card.addView(recordButton, params(0, 7, 0, 8));
 
@@ -836,7 +850,7 @@ public class GoalsFragment extends Fragment {
         saveDiary.setText("Сохранить дневник");
         saveDiary.setTextColor(TEXT);
         saveDiary.setBackgroundTintList(
-                android.content.res.ColorStateList.valueOf(0xFF315D82));
+                android.content.res.ColorStateList.valueOf(ACCENT));
         saveDiary.setOnClickListener(v -> saveDiary());
         card.addView(saveDiary);
 
@@ -1042,7 +1056,7 @@ public class GoalsFragment extends Fragment {
         View toggle = content.findViewWithTag("work_cycle_toggle");
         if (toggle instanceof TextView) {
             ((TextView) toggle).setText(isWorkCycleEnabled() ? "Вкл." : "Выкл.");
-            toggle.setBackground(background(isWorkCycleEnabled() ? 0xFF29361D : TILE,
+            toggle.setBackground(background(isWorkCycleEnabled() ? GREEN : TILE,
                     isWorkCycleEnabled() ? ACCENT : STROKE, 18));
         }
         Calendar anchor = parseDate(dataStore.getSetting("work_cycle_start", dateString(today())));
@@ -1064,7 +1078,7 @@ public class GoalsFragment extends Fragment {
             Object tag = child.getTag();
             if (tag instanceof String) {
                 boolean selected = tag.equals(selectedValue);
-                child.setBackground(background(selected ? 0xFF20291A : TILE,
+                child.setBackground(background(selected ? GREEN : TILE,
                         selected ? ACCENT : STROKE, 14));
             }
         }
@@ -1201,7 +1215,7 @@ public class GoalsFragment extends Fragment {
                     isSelected ? BACKGROUND : percent > 0 ? ACCENT : MUTED, isSelected);
             day.setGravity(Gravity.CENTER);
             day.setMinHeight(dp(42));
-            int fill = isSelected ? ACCENT : todayDay(date) ? 0xFF22291B : TILE;
+            int fill = isSelected ? ACCENT : todayDay(date) ? GREEN : TILE;
             day.setBackground(background(fill, isSelected ? ACCENT : STROKE, 11));
             day.setOnClickListener(v -> {
                 persistDayRecord();
@@ -1499,7 +1513,7 @@ public class GoalsFragment extends Fragment {
         TextView chip = text(label, 13, selected ? ACCENT : MUTED, selected);
         chip.setGravity(Gravity.CENTER);
         chip.setPadding(dp(12), dp(9), dp(12), dp(9));
-        chip.setBackground(background(selected ? 0xFF20291A : TILE,
+        chip.setBackground(background(selected ? GREEN : TILE,
                 selected ? ACCENT : STROKE, 18));
         chip.setOnClickListener(view -> action.run());
         return chip;

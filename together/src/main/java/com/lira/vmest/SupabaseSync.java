@@ -181,7 +181,7 @@ final class SupabaseSync {
         byte[] data;
         try(InputStream in=context.getContentResolver().openInputStream(uri);ByteArrayOutputStream out=new ByteArrayOutputStream()){
             if(in==null)throw new Exception("Не удалось открыть выбранное фото");
-            byte[] buf=new byte[8192];int n;while((n=in.read(buf))!=-1){out.write(buf,0,n);if(out.size()>12*1024*1024)throw new Exception("Фото больше 12 МБ");}
+            byte[] buf=new byte[8192];int n;while((n=in.read(buf))!=-1){out.write(buf,0,n);if(out.size()>12*1024*1024)throw new Exception("Файл больше 12 МиБ");}
             data=out.toByteArray();
         }
         String ext="jpg";int dot=type.lastIndexOf('/');if(dot>=0&&dot+1<type.length())ext=type.substring(dot+1).replaceAll("[^A-Za-z0-9]","");
@@ -200,7 +200,7 @@ final class SupabaseSync {
         HttpURLConnection c=(HttpURLConnection)new URL(url()+"/storage/v1/object/authenticated/couple-files/"+safe).openConnection();
         c.setRequestMethod("GET");c.setConnectTimeout(10000);c.setReadTimeout(16000);c.setRequestProperty("apikey",key());c.setRequestProperty("Authorization","Bearer "+prefs.getString("sb_access",""));
         int status=c.getResponseCode();InputStream stream=status>=400?c.getErrorStream():c.getInputStream();ByteArrayOutputStream out=new ByteArrayOutputStream();
-        if(stream!=null){byte[] buffer=new byte[8192];int n;while((n=stream.read(buffer))!=-1)out.write(buffer,0,n);stream.close();}
+        if(stream!=null){byte[] buffer=new byte[8192];int n;while((n=stream.read(buffer))!=-1){out.write(buffer,0,n);if(out.size()>12*1024*1024){stream.close();c.disconnect();throw new Exception("Файл больше 12 МиБ");}}stream.close();}
         c.disconnect();if(status<200||status>=300)throw new Exception("Не удалось открыть фото (HTTP "+status+")");return out.toByteArray();
     }
 
