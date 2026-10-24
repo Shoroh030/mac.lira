@@ -582,7 +582,26 @@ public class MainActivity extends Activity {
         else simpleCard("🗓", nextEvent.optString("title"), new SimpleDateFormat("d MMMM · HH:mm",new Locale("ru")).format(new java.util.Date(best)), () -> { tab = "Календарь"; render(); });
 
         heading("Проведите время вместе", "Выбирайте настроение");
-        simpleCard("🎬", "Кино-комната", "Соберитесь на совместный просмотр", () -> open("🎬  Комната просмотра"));
+        LinearLayout watchRoomCard = card();
+        watchRoomCard.addView(text("🎬  Комната просмотра", 16, INK, true));
+        TextView watchRoomDescription = text(
+                "Создайте комнату и отправьте партнёру QR-код, ссылку или код подключения.",
+                13, MUTED, false);
+        LinearLayout.LayoutParams watchRoomDescriptionParams =
+                new LinearLayout.LayoutParams(-1, -2);
+        watchRoomDescriptionParams.topMargin = dp(4);
+        watchRoomDescriptionParams.bottomMargin = dp(12);
+        watchRoomCard.addView(watchRoomDescription, watchRoomDescriptionParams);
+        TextView createWatchRoom = pill("Создать комнату", PURPLE);
+        createWatchRoom.setMinHeight(dp(48));
+        createWatchRoom.setLayoutParams(new LinearLayout.LayoutParams(-1, -2));
+        watchRoomCard.addView(createWatchRoom);
+        createWatchRoom.setOnClickListener(v -> prepareLiveRoomCreation());
+        TextView joinWatchRoom = pill("Подключиться к комнате партнёра", PURPLE);
+        joinWatchRoom.setMinHeight(dp(48));
+        joinWatchRoom.setLayoutParams(new LinearLayout.LayoutParams(-1, -2));
+        watchRoomCard.addView(joinWatchRoom);
+        joinWatchRoom.setOnClickListener(v -> showWatchRoomJoinOptions());
         simpleCard("🗳", "Выбрать, чем заняться", "Отдельное голосование за совместные занятия", () -> open("🗳 Голосование: чем заняться"));
         simpleCard("🎁", "Подарочный радар", "Сохраняйте идеи подарков", () -> open("🎁  Подарочный радар"));
     }
