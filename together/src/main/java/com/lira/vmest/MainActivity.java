@@ -25,6 +25,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 import android.widget.Button;
 import android.widget.ImageView;
+import android.widget.FrameLayout;
 import android.widget.ArrayAdapter;
 import android.widget.SeekBar;
 import android.widget.Spinner;
@@ -66,6 +67,8 @@ public class MainActivity extends Activity {
     private int PALE = 0xFFF0E8F6;
     private int LINE = 0xFFE9E1ED;
     private boolean softDark;
+    private boolean firstRunWelcomeVisible;
+    private boolean deferGameNotificationPermission;
     private android.content.SharedPreferences prefs;
     private LinearLayout root, body, nav;
     private ScrollView contentScroll;
@@ -123,19 +126,76 @@ public class MainActivity extends Activity {
         pairGames = new PairGameSync(this);
         coupleRestorePending = sync.signedIn() && sync.coupleId().isEmpty();
         showApp();
+        boolean incomingShare = Intent.ACTION_SEND.equals(getIntent().getAction())
+                || Intent.ACTION_SEND_MULTIPLE.equals(getIntent().getAction());
+        boolean firstRunWelcome = FirstRunOnboarding.shouldShow(sync.signedIn(),
+                prefs.getBoolean("first_run_auth_prompt_shown", false), incomingShare);
+        if (firstRunWelcome) {
+            deferGameNotificationPermission = true;
+            showFirstRunWelcome();
+        }
         if (coupleRestorePending) root.post(this::restoreCoupleBinding);
         handleIncomingShare(getIntent());
         if(sync.projectChanged())toast("Supabase-проект изменён. Войдите заново и подключите пару.");
-        if (!sync.signedIn() && !prefs.getBoolean("first_run_auth_prompt_shown", false)
-                && !Intent.ACTION_SEND.equals(getIntent().getAction())
-                && !Intent.ACTION_SEND_MULTIPLE.equals(getIntent().getAction())) {
+        if (!firstRunWelcome && !sync.signedIn()
+                && !prefs.getBoolean("first_run_auth_prompt_shown", false) && !incomingShare) {
             prefs.edit().putBoolean("first_run_auth_prompt_shown", true).apply();
             root.postDelayed(this::accountDialog, 500);
         }
         refreshProfiles();
-        requestGameNotificationPermission();
+        if (!firstRunWelcome) requestGameNotificationPermission();
         startGameInvitePolling();
         gameHandler.postDelayed(() -> checkGitHubUpdate(false), 2500);
+    }
+
+    private void showFirstRunWelcome() {
+        firstRunWelcomeVisible = true;
+        FrameLayout welcome = new FrameLayout(this);
+        welcome.setBackgroundColor(BG);
+        GalaxyBackdropView galaxy = new GalaxyBackdropView(this);
+        welcome.addView(galaxy, new FrameLayout.LayoutParams(-1, -1));
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        LinearLayout content = column();
+        content.setGravity(Gravity.CENTER);
+        content.setPadding(dp(28), dp(24), dp(28), dp(24));
+        TextView title = text("Ближе, даже когда далеко", 29, INK, true);
+        title.setGravity(Gravity.CENTER);
+        content.addView(title);
+        TextView description = text(
+                "Общие планы, разговоры и маленькие поводы быть рядом — в одном месте.",
+                16, MUTED, false);
+        description.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams descriptionParams = new LinearLayout.LayoutParams(-1, -2);
+        descriptionParams.topMargin = dp(12);
+        content.addView(description, descriptionParams);
+
+        Button continueButton = new Button(this);
+        continueButton.setText("Продолжить");
+        LinearLayout.LayoutParams continueParams = new LinearLayout.LayoutParams(-1, dp(52));
+        continueParams.topMargin = dp(28);
+        content.addView(continueButton, continueParams);
+        TextView skip = text("Пропустить", 15, PURPLE, true);
+        skip.setGravity(Gravity.CENTER);
+        skip.setMinHeight(dp(48));
+        LinearLayout.LayoutParams skipParams = new LinearLayout.LayoutParams(-1, dp(48));
+        skipParams.topMargin = dp(4);
+        content.addView(skip, skipParams);
+        skip.setOnClickListener(v -> completeFirstRunWelcome());
+        continueButton.setOnClickListener(v -> completeFirstRunWelcome());
+
+        scroll.addView(content, new ScrollView.LayoutParams(-1, -1));
+        welcome.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
+        setContentView(welcome);
+    }
+
+    private void completeFirstRunWelcome() {
+        if (!firstRunWelcomeVisible) return;
+        firstRunWelcomeVisible = false;
+        prefs.edit().putBoolean("first_run_auth_prompt_shown", true).apply();
+        showApp();
+        root.postDelayed(this::accountDialog, 180);
     }
 
     @Override protected void onNewIntent(Intent intent) {
@@ -1299,6 +1359,10 @@ public class MainActivity extends Activity {
     private void authenticate(String email, String password, boolean signUp) {
         if (email.trim().isEmpty() || password.length() < 6) { toast("Введите почту и пароль не короче 6 символов"); return; }
         runNetwork(() -> sync.authenticate(email.trim(), password, signUp), result -> {
+            if (deferGameNotificationPermission) {
+                deferGameNotificationPermission = false;
+                requestGameNotificationPermission();
+            }
             if ("EMAIL_CONFIRMATION_REQUIRED".equals(result)) toast("Подтвердите почту по ссылке из письма, затем войдите");
             else { toast(signUp ? "Аккаунт создан" : "Вы вошли"); restoreCoupleBinding(); }
         });
@@ -2754,6 +2818,7 @@ public class MainActivity extends Activity {
         }
     }
     @Override public void onBackPressed() {
+        if(firstRunWelcomeVisible){completeFirstRunWelcome();return;}
         if(feature!=null){feature=null;render();} else if(!tab.equals("Главная")){tab="Главная";render();} else super.onBackPressed();
     }
 
