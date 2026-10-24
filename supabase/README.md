@@ -15,7 +15,7 @@ The clients currently receive missing-table errors until the migrations have run
 7. `migrations/20261025000100_watch_player_signals.sql`
 8. `migrations/20261026000100_watch_camera_renegotiation.sql` (legacy compatibility only)
 
-The last migration remains local and has **not** been applied to the shared Supabase project. It is required only for clients that send camera renegotiation using signal kind `renegotiate`. The current Android client sends an `offer` signal with a renegotiation request payload, which is already allowed by the base watch-party schema; do not apply this optional migration without explicit approval.
+The last migration is committed on the feature branch, but this work did not apply it to Supabase. The remote migration history was not verified, so treat its remote state as unknown and do not apply it without explicit approval. It is required only for clients that send camera renegotiation using signal kind `renegotiate`. The current Android client sends an `offer` signal with a renegotiation request payload, which is already allowed by the base watch-party schema.
 
 To deploy with the Supabase CLI, authenticate and link this repository, then inspect the remote migration history before applying anything:
 
