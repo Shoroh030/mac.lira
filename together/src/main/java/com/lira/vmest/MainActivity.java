@@ -31,7 +31,6 @@ import android.widget.Spinner;
 
 import com.google.zxing.BarcodeFormat;
 import com.google.zxing.integration.android.IntentResult;
-import com.google.zxing.MultiFormatWriter;
 import com.google.zxing.WriterException;
 import com.google.zxing.common.BitMatrix;
 import com.google.zxing.integration.android.IntentIntegrator;
@@ -77,6 +76,7 @@ public class MainActivity extends Activity {
     private java.io.File chatRecording;
     private boolean movieRoomFetchInFlight;
     private boolean pendingLoyaltyScan;
+    private boolean coupleRestorePending, coupleRestoreFailed;
     private String pendingPhotoKey = "", pendingPhotoItemId = "";
     private String pendingStoryCaption = "";
     private String pendingSharedText = "";
@@ -121,7 +121,9 @@ public class MainActivity extends Activity {
         softDark = prefs.getBoolean("soft_dark_theme", false); applyPalette();
         sync = new SupabaseSync(this);
         pairGames = new PairGameSync(this);
+        coupleRestorePending = sync.signedIn() && sync.coupleId().isEmpty();
         showApp();
+        if (coupleRestorePending) root.post(this::restoreCoupleBinding);
         handleIncomingShare(getIntent());
         if(sync.projectChanged())toast("Supabase-проект изменён. Войдите заново и подключите пару.");
         if (!sync.signedIn() && !prefs.getBoolean("first_run_auth_prompt_shown", false)
@@ -1239,6 +1241,16 @@ public class MainActivity extends Activity {
             account.setOnClickListener(v -> accountDialog());
             return;
         }
+        if (sync.coupleId().isEmpty() && coupleRestorePending) {
+            simpleCard("♡", "Проверяем вашу пару", "Восстанавливаем приглашение, связанное с этим аккаунтом.", null);
+            return;
+        }
+        if (sync.coupleId().isEmpty() && coupleRestoreFailed) {
+            simpleCard("!", "Не удалось проверить пару", "Не создавайте новую пару, пока не удалось проверить существующее приглашение.", null);
+            TextView retry = pill("Повторить проверку", PURPLE); body.addView(retry);
+            retry.setOnClickListener(v -> restoreCoupleBinding());
+            return;
+        }
         if (sync.coupleId().isEmpty()) {
             simpleCard("♡", "Создайте пространство для двоих", "Один из вас создаёт пару и отправляет код приглашения второму.", null);
             TextView create = pill("Создать приглашение", PURPLE); body.addView(create);
@@ -1288,7 +1300,28 @@ public class MainActivity extends Activity {
         if (email.trim().isEmpty() || password.length() < 6) { toast("Введите почту и пароль не короче 6 символов"); return; }
         runNetwork(() -> sync.authenticate(email.trim(), password, signUp), result -> {
             if ("EMAIL_CONFIRMATION_REQUIRED".equals(result)) toast("Подтвердите почту по ссылке из письма, затем войдите");
-            else { toast(signUp ? "Аккаунт создан" : "Вы вошли"); if(sync.ready())persistCurrentProfile(); render(); }
+            else { toast(signUp ? "Аккаунт создан" : "Вы вошли"); restoreCoupleBinding(); }
+        });
+    }
+
+    private void restoreCoupleBinding() {
+        if (!sync.signedIn()) return;
+        coupleRestorePending = true;
+        coupleRestoreFailed = false;
+        render();
+        runNetwork(sync::restoreCoupleMembership, restored -> {
+            coupleRestorePending = false;
+            coupleRestoreFailed = false;
+            if (Boolean.TRUE.equals(restored)) {
+                persistCurrentProfile();
+                refreshProfiles();
+            }
+            render();
+        }, error -> {
+            coupleRestorePending = false;
+            coupleRestoreFailed = true;
+            render();
+            toast("Вход выполнен, но пару не удалось проверить: " + error.getMessage());
         });
     }
 
@@ -1340,7 +1373,7 @@ public class MainActivity extends Activity {
         LinearLayout content = column(); content.setGravity(Gravity.CENTER); content.setPadding(dp(20), dp(8), dp(20), dp(8));
         ImageView qrImage = new ImageView(this); qrImage.setContentDescription("QR-код приглашения в пару");
         try {
-            BitMatrix matrix = new MultiFormatWriter().encode("VMESTE:" + code, BarcodeFormat.QR_CODE, dp(232), dp(232));
+            BitMatrix matrix = InviteQrCode.encode(code, dp(232));
             android.graphics.Bitmap bitmap = android.graphics.Bitmap.createBitmap(matrix.getWidth(), matrix.getHeight(), android.graphics.Bitmap.Config.ARGB_8888);
             for (int y=0;y<matrix.getHeight();y++) for (int x=0;x<matrix.getWidth();x++)
                 bitmap.setPixel(x,y,matrix.get(x,y)?android.graphics.Color.BLACK:android.graphics.Color.WHITE);

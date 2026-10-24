@@ -10,6 +10,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.URLEncoder;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
@@ -89,6 +90,35 @@ final class SupabaseSync {
         prefs.edit().putString("sb_access",access).putString("sb_refresh",result.optString("refresh_token",""))
                 .putString("sb_user",user==null?"":user.optString("id", "")).apply();
         return "OK";
+    }
+
+    boolean restoreCoupleMembership()throws Exception{
+        String user=userId();
+        if(!signedIn()||user.isEmpty())throw new IllegalStateException("Войдите в аккаунт, чтобы восстановить пару");
+        String encodedUser=URLEncoder.encode(user,StandardCharsets.UTF_8.name());
+        Object membersResult=requestValue("GET",
+                "/rest/v1/couple_members?select=couple_id&user_id=eq."+encodedUser,null,true);
+        if(!(membersResult instanceof JSONArray))throw new Exception("Не удалось проверить существующую пару");
+        JSONArray members=(JSONArray)membersResult;
+        if(members.length()==0){
+            prefs.edit().remove("sb_couple").remove("sb_invite").apply();
+            return false;
+        }
+        if(members.length()!=1)throw new Exception("У аккаунта найдено несколько пар; требуется поддержка");
+        String coupleId=members.getJSONObject(0).optString("couple_id","");
+        try{UUID.fromString(coupleId);}catch(IllegalArgumentException e){throw new Exception("Некорректная связь пары в профиле",e);}
+        String encodedCouple=URLEncoder.encode(coupleId,StandardCharsets.UTF_8.name());
+        Object coupleResult=requestValue("GET",
+                "/rest/v1/couples?select=id,invite_code&id=eq."+encodedCouple,null,true);
+        if(!(coupleResult instanceof JSONArray))throw new Exception("Не удалось загрузить приглашение пары");
+        JSONArray couples=(JSONArray)coupleResult;
+        if(couples.length()!=1)throw new Exception("Приглашение пары не найдено");
+        JSONObject couple=couples.getJSONObject(0);
+        String invite=InviteCode.normalize(couple.optString("invite_code",""));
+        if(!coupleId.equals(couple.optString("id",""))||invite.isEmpty())
+            throw new Exception("Данные приглашения пары некорректны");
+        prefs.edit().putString("sb_couple",coupleId).putString("sb_invite",invite).apply();
+        return true;
     }
 
     JSONObject createCouple(String name)throws Exception{
