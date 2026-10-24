@@ -1950,11 +1950,15 @@ public class MainActivity extends Activity {
         String fileName=own?"profile-avatar.jpg":"partner-avatar.jpg";
         File file=new File(getFilesDir(),fileName);
         boolean same=remotePath.equals(prefs.getString(pathKey,""));
-        if(!same||!file.isFile()||file.length()==0){
+        boolean fileExists=file.isFile();
+        long fileLength=fileExists?file.length():0;
+        boolean decodable=fileExists&&fileLength>0&&isAvatarFileDecodable(file);
+        if(AvatarCachePolicy.shouldDownload(same,fileExists,fileLength,decodable)){
             byte[] bytes=sync.downloadAttachment(remotePath);
-            if(bytes.length==0)throw new Exception("Сервер вернул пустой файл фото");
+            if(!isAvatarImageDecodable(bytes))throw new Exception("Сервер вернул повреждённый файл фото");
             File temporary=new File(getFilesDir(),fileName+".tmp");
             try(FileOutputStream output=new FileOutputStream(temporary)){output.write(bytes);output.flush();}
+            if(!isAvatarFileDecodable(temporary)){temporary.delete();throw new Exception("Не удалось проверить миниатюру профиля");}
             if(file.exists()&&!file.delete())throw new Exception("Не удалось заменить локальную миниатюру");
             if(!temporary.renameTo(file)){temporary.delete();throw new Exception("Не удалось сохранить миниатюру профиля");}
         }
@@ -1964,6 +1968,40 @@ public class MainActivity extends Activity {
         if(own&&prefs.getString("profile_avatar","").isEmpty())changed|=putProfileValue("profile_avatar","♡");
         else if(!own&&prefs.getString("partner_avatar","").isEmpty())changed|=putProfileValue("partner_avatar","♡");
         return changed;
+    }
+
+    private boolean isAvatarFileDecodable(File file){
+        if(file==null||!file.isFile()||file.length()==0)return false;
+        android.graphics.BitmapFactory.Options bounds=new android.graphics.BitmapFactory.Options();
+        bounds.inJustDecodeBounds=true;
+        android.graphics.BitmapFactory.decodeFile(file.getAbsolutePath(),bounds);
+        if(bounds.outWidth<1||bounds.outHeight<1)return false;
+        android.graphics.BitmapFactory.Options options=new android.graphics.BitmapFactory.Options();
+        options.inSampleSize=avatarSampleSize(bounds.outWidth,bounds.outHeight);
+        android.graphics.Bitmap bitmap=android.graphics.BitmapFactory.decodeFile(file.getAbsolutePath(),options);
+        if(bitmap==null)return false;
+        bitmap.recycle();
+        return true;
+    }
+
+    private boolean isAvatarImageDecodable(byte[] bytes){
+        if(bytes==null||bytes.length==0)return false;
+        android.graphics.BitmapFactory.Options bounds=new android.graphics.BitmapFactory.Options();
+        bounds.inJustDecodeBounds=true;
+        android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length,bounds);
+        if(bounds.outWidth<1||bounds.outHeight<1)return false;
+        android.graphics.BitmapFactory.Options options=new android.graphics.BitmapFactory.Options();
+        options.inSampleSize=avatarSampleSize(bounds.outWidth,bounds.outHeight);
+        android.graphics.Bitmap bitmap=android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length,options);
+        if(bitmap==null)return false;
+        bitmap.recycle();
+        return true;
+    }
+
+    private int avatarSampleSize(int width,int height){
+        int sample=1;
+        while(width/sample>512||height/sample>512)sample*=2;
+        return sample;
     }
 
     private JSONObject readMovieRoom() { try { String raw = prefs.getString("movie_room", ""); return raw.isEmpty() ? null : new JSONObject(raw); } catch (Exception e) { return null; } }
