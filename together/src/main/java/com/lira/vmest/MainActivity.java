@@ -291,8 +291,29 @@ public class MainActivity extends Activity {
             if(uri.startsWith("data:image/")){byte[] bytes=android.util.Base64.decode(uri.substring(uri.indexOf(',')+1),android.util.Base64.DEFAULT);android.graphics.BitmapFactory.Options opts=new android.graphics.BitmapFactory.Options();opts.inSampleSize=2;bitmap=android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length,opts);}
             else if(uri.startsWith("file://")){java.io.File f=new java.io.File(Uri.parse(uri).getPath());if(!f.exists()){view.setImageBitmap(null);return false;}android.graphics.BitmapFactory.Options bounds=new android.graphics.BitmapFactory.Options();bounds.inJustDecodeBounds=true;try(java.io.InputStream in=new java.io.FileInputStream(f)){android.graphics.BitmapFactory.decodeStream(in,null,bounds);}int sample=1;while(bounds.outWidth>0&&bounds.outHeight>0&&(bounds.outWidth/sample>1024||bounds.outHeight/sample>1024))sample*=2;android.graphics.BitmapFactory.Options opts=new android.graphics.BitmapFactory.Options();opts.inSampleSize=sample;try(java.io.InputStream in=new java.io.FileInputStream(f)){bitmap=android.graphics.BitmapFactory.decodeStream(in,null,opts);}}
             else{android.graphics.BitmapFactory.Options bounds=new android.graphics.BitmapFactory.Options();bounds.inJustDecodeBounds=true;try(java.io.InputStream in=getContentResolver().openInputStream(Uri.parse(uri))){android.graphics.BitmapFactory.decodeStream(in,null,bounds);}int sample=1;while(bounds.outWidth>0&&bounds.outHeight>0&&(bounds.outWidth/sample>1024||bounds.outHeight/sample>1024))sample*=2;android.graphics.BitmapFactory.Options opts=new android.graphics.BitmapFactory.Options();opts.inSampleSize=sample;try(java.io.InputStream in=getContentResolver().openInputStream(Uri.parse(uri))){bitmap=android.graphics.BitmapFactory.decodeStream(in,null,opts);}}
+            bitmap=orientAvatar(bitmap,uri);
             android.graphics.Bitmap rounded=cropAvatar(bitmap,dp(size));if(rounded!=null){view.setImageBitmap(rounded);return true;}view.setImageBitmap(null);return false;
         }catch(Exception ignored){view.setImageBitmap(null);return false;}}
+    private android.graphics.Bitmap orientAvatar(android.graphics.Bitmap source,String uri){
+        if(source==null||uri==null||uri.isEmpty())return source;
+        int orientation=android.media.ExifInterface.ORIENTATION_NORMAL;
+        try(java.io.InputStream input=avatarInputStream(uri)){
+            if(input!=null)orientation=new android.media.ExifInterface(input).getAttributeInt(android.media.ExifInterface.TAG_ORIENTATION,android.media.ExifInterface.ORIENTATION_NORMAL);
+        }catch(Exception e){android.util.Log.i("VmesteProfile","Photo orientation metadata is unavailable",e);}
+        AvatarImageTransform transform=AvatarImageTransform.fromExifOrientation(orientation);
+        if(transform.rotationDegrees==0&&!transform.flipHorizontal)return source;
+        android.graphics.Matrix matrix=new android.graphics.Matrix();
+        matrix.setRotate(transform.rotationDegrees);
+        if(transform.flipHorizontal)matrix.postScale(-1f,1f);
+        android.graphics.Bitmap oriented=android.graphics.Bitmap.createBitmap(source,0,0,source.getWidth(),source.getHeight(),matrix,true);
+        if(oriented!=source)source.recycle();
+        return oriented;
+    }
+    private java.io.InputStream avatarInputStream(String uri)throws Exception{
+        if(uri.startsWith("data:image/"))return new java.io.ByteArrayInputStream(android.util.Base64.decode(uri.substring(uri.indexOf(',')+1),android.util.Base64.DEFAULT));
+        if(uri.startsWith("file://"))return new java.io.FileInputStream(new File(Uri.parse(uri).getPath()));
+        return getContentResolver().openInputStream(Uri.parse(uri));
+    }
     private String avatarData(Uri uri)throws Exception{
         android.graphics.BitmapFactory.Options bounds=new android.graphics.BitmapFactory.Options();bounds.inJustDecodeBounds=true;
         try(java.io.InputStream in=getContentResolver().openInputStream(uri)){if(in==null)throw new Exception("Фото не найдено");android.graphics.BitmapFactory.decodeStream(in,null,bounds);}
@@ -302,6 +323,7 @@ public class MainActivity extends Activity {
         android.graphics.Bitmap source;
         try(java.io.InputStream in=getContentResolver().openInputStream(uri)){if(in==null)throw new Exception("Фото больше недоступно");source=android.graphics.BitmapFactory.decodeStream(in,null,opts);}
         if(source==null)throw new Exception("Формат изображения не поддерживается");
+        source=orientAvatar(source,uri.toString());
         int side=Math.min(source.getWidth(),source.getHeight());
         android.graphics.Bitmap square=android.graphics.Bitmap.createBitmap(source,(source.getWidth()-side)/2,(source.getHeight()-side)/2,side,side);
         android.graphics.Bitmap scaled=android.graphics.Bitmap.createScaledBitmap(square,256,256,true);
