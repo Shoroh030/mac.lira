@@ -83,6 +83,7 @@ public final class WatchPartyActivity extends Activity {
     public static final String EXTRA_HOST = "host";
     public static final String EXTRA_TITLE = "title";
     public static final String EXTRA_PLAYER_URL = "player_url";
+    public static final String EXTRA_SHOW_INVITE = "show_invite";
     private static final int REQUEST_MIC = 7102;
     private static final int REQUEST_CAMERA = 7104;
     private final Handler main = new Handler(Looper.getMainLooper());
@@ -174,7 +175,7 @@ public final class WatchPartyActivity extends Activity {
             sync = new SupabaseSync(this);
             buildUiSafe();
             if (!sync.configured() || !sync.signedIn() || sync.coupleId().isEmpty()) {
-                showErrorSafe("Сначала подключите Supabase, войдите и создайте общее пространство в разделе «Пригласить партнёра».");
+                showErrorSafe("Сначала войдите в свой аккаунт и подключитесь к той же паре, что и ведущий.");
                 return;
             }
             validateRoomBeforeStartSafe();
@@ -197,6 +198,10 @@ public final class WatchPartyActivity extends Activity {
                     return;
                 }
                 startRtcSafe();
+                if (host && getIntent().getBooleanExtra(EXTRA_SHOW_INVITE, false)) {
+                    getIntent().removeExtra(EXTRA_SHOW_INVITE);
+                    main.post(this::showRoomInviteSafe);
+                }
             } catch (Exception e) {
                 String message = WatchRoomSignalError.label(e.getMessage());
                 main.post(() -> showErrorSafe("Не удалось проверить комнату: " + message));
@@ -213,9 +218,12 @@ public final class WatchPartyActivity extends Activity {
             root.addView(topPanel, new LinearLayout.LayoutParams(-1, -2));
             TextView heading = labelSafe("🎬  " + title, 20, Color.rgb(48, 43, 53), true);
             topPanel.addView(heading);
-            roomCode = labelSafe("Код комнаты: " + roomId, 12, Color.GRAY, false);
+            roomCode = labelSafe((host ? "Вы ведущий" : "Вы подключаетесь к ведущему")
+                    + " · Код: " + roomId, 12, Color.GRAY, false);
+            roomCode.setTextIsSelectable(true);
             roomCode.setPadding(0, dp(3), 0, dp(2)); topPanel.addView(roomCode);
-            status = labelSafe("Плеер и чат доступны · камера и микрофон выключены", 14,
+            status = labelSafe((host ? "Комната создана · ждём партнёра" : "Подключаемся к ведущему")
+                    + " · плеер и чат доступны · камера и микрофон выключены", 14,
                 Color.rgb(102, 77, 128), true);
             status.setPadding(0, dp(5), 0, dp(5)); topPanel.addView(status);
             LinearLayout playerControls = new LinearLayout(this); playerControls.setGravity(Gravity.CENTER_VERTICAL);
@@ -359,9 +367,21 @@ public final class WatchPartyActivity extends Activity {
             LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(-1, -2);
             actionParams.topMargin = dp(8);
             controlPanel.addView(actions, actionParams);
-            Button stop = buttonSafe("Завершить просмотр", Color.rgb(250, 236, 239), Color.rgb(154, 56, 72));
+            Button stop = buttonSafe(host ? "Завершить комнату" : "Отключиться",
+                    Color.rgb(250, 236, 239), Color.rgb(154, 56, 72));
             actions.addView(stop, new LinearLayout.LayoutParams(0, dp(46), host ? 1 : 2));
-            stop.setOnClickListener(v -> { finishRoomSafe(); });
+            stop.setOnClickListener(v -> {
+                if (!host) {
+                    finishRoomSafe();
+                    return;
+                }
+                new AlertDialog.Builder(this)
+                        .setTitle("Завершить комнату для обоих?")
+                        .setMessage("Партнёр отключится, а эта комната перестанет быть активной.")
+                        .setPositiveButton("Завершить комнату", (dialog, which) -> finishRoomSafe())
+                        .setNegativeButton("Остаться", null)
+                        .show();
+            });
             if (host) {
                 Button share = buttonSafe("Пригласить партнёра", Color.rgb(239, 229, 246), Color.rgb(102, 68, 132));
                 LinearLayout.LayoutParams shareParams = new LinearLayout.LayoutParams(0, dp(46), 1);
@@ -401,11 +421,39 @@ public final class WatchPartyActivity extends Activity {
         hint.setGravity(Gravity.CENTER);
         hint.setPadding(0, dp(12), 0, 0);
         content.addView(hint);
+        TextView code = labelSafe("Код приглашения:\n" + WatchRoomQrCode.encode(roomId), 13,
+                Color.rgb(48, 43, 53), true);
+        code.setTextIsSelectable(true);
+        code.setGravity(Gravity.CENTER);
+        code.setPadding(0, dp(10), 0, 0);
+        content.addView(code);
         new AlertDialog.Builder(this)
                 .setTitle("Пригласить партнёра")
                 .setView(content)
-                .setPositiveButton("Готово", null)
+                .setPositiveButton("Поделиться", (dialog, which) -> shareRoomInviteSafe())
+                .setNeutralButton("Скопировать код", (dialog, which) -> copyRoomInviteCodeSafe())
+                .setNegativeButton("Готово", null)
                 .show();
+    }
+
+    private void shareRoomInviteSafe() {
+        Intent share = new Intent(Intent.ACTION_SEND);
+        share.setType("text/plain");
+        share.putExtra(Intent.EXTRA_SUBJECT, "Приглашение в комнату просмотра");
+        share.putExtra(Intent.EXTRA_TEXT, WatchRoomQrCode.shareText(roomId));
+        startActivity(Intent.createChooser(share, "Отправить приглашение"));
+    }
+
+    private void copyRoomInviteCodeSafe() {
+        android.content.ClipboardManager clipboard =
+                (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (clipboard == null) {
+            showErrorSafe("Не удалось скопировать код. Отсканируйте QR-код или нажмите «Поделиться».");
+            return;
+        }
+        clipboard.setPrimaryClip(android.content.ClipData.newPlainText(
+                "Приглашение в комнату", WatchRoomQrCode.encode(roomId)));
+        status.setText("Код скопирован · отправьте его партнёру");
     }
 
     private Button buttonSafe(String text, int background, int foreground) {
@@ -714,7 +762,9 @@ public final class WatchPartyActivity extends Activity {
                         localCameraView.init(egl.getEglBaseContext(), null);
                         rtcReady = true;
                         offerReady = true;
-                        status.setText("Комната готова · плеер и текстовый чат доступны");
+                        status.setText(host
+                                ? "Вы ведущий · ждём подключения партнёра. Плеер и чат доступны."
+                                : "Вы участник · ждём ответа ведущего. Плеер и чат доступны.");
                         updateMediaControlsSafe();
                     } catch (Exception e) {
                         showErrorSafe("Не удалось подготовить видео: " + e.getMessage());
@@ -749,6 +799,10 @@ public final class WatchPartyActivity extends Activity {
                             status.setText("Не удалось установить прямую связь · проверьте сеть и TURN-настройки");
                         } else if (state == PeerConnection.IceConnectionState.DISCONNECTED) {
                             status.setText("Связь с партнёром потеряна · пытаемся восстановить");
+                        } else if (state == PeerConnection.IceConnectionState.NEW
+                                || state == PeerConnection.IceConnectionState.CHECKING) {
+                            status.setText(host ? "Ждём подключения партнёра…"
+                                    : "Подключаемся к ведущему…");
                         } else {
                             status.setText("Связь: " + state.name());
                         }
@@ -860,7 +914,7 @@ public final class WatchPartyActivity extends Activity {
             }
             @Override public void onSetSuccess() { }
             @Override public void onCreateFailure(String error) {
-                showErrorSafe("Не удалось создать трансляцию: " + error);
+                showErrorSafe("Не удалось подготовить соединение с партнёром: " + error);
                 completeOfferSafe();
             }
             @Override public void onSetFailure(String error) {
@@ -1297,13 +1351,13 @@ public final class WatchPartyActivity extends Activity {
 
     private void finishRoomSafe() {
         if (closed) return;
-        new Thread(() -> {
-            try { sync.sendWatchSignal(roomId, "close", new JSONObject()); }
-            catch (Exception ignored) {}
-            if (host) {
+        if (host) {
+            new Thread(() -> {
+                try { sync.sendWatchSignal(roomId, "close", new JSONObject()); }
+                catch (Exception ignored) {}
                 try { sync.closeWatchRoom(roomId); } catch (Exception ignored) { }
-            }
-        }).start();
+            }).start();
+        }
         finish();
     }
 

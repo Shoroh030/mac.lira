@@ -82,7 +82,9 @@ public class MainActivity extends Activity {
     private boolean pendingWatchRoomScan;
     private JSONArray activeWatchRoomsSnapshot = new JSONArray();
     private boolean activeWatchRoomsFetchInFlight, activeWatchRoomsUnavailable;
+    private boolean watchRoomListInFlight, watchRoomCreationInFlight;
     private String activeWatchRoomsFailureLabel = "";
+    private String pendingWatchRoomInviteId = "";
     private long lastActiveWatchRoomsFetchAt;
     private boolean coupleRestorePending, coupleRestoreFailed;
     private String pendingPhotoKey = "", pendingPhotoItemId = "";
@@ -134,8 +136,9 @@ public class MainActivity extends Activity {
         showApp();
         boolean incomingShare = Intent.ACTION_SEND.equals(getIntent().getAction())
                 || Intent.ACTION_SEND_MULTIPLE.equals(getIntent().getAction());
+        boolean incomingWatchRoomInvite = watchRoomInviteFromIntent(getIntent()) != null;
         boolean firstRunWelcome = FirstRunOnboarding.shouldShow(sync.signedIn(),
-                prefs.getBoolean("first_run_auth_prompt_shown", false), incomingShare);
+                prefs.getBoolean("first_run_auth_prompt_shown", false), incomingShare || incomingWatchRoomInvite);
         if (firstRunWelcome) {
             deferGameNotificationPermission = true;
             showFirstRunWelcome();
@@ -211,9 +214,24 @@ public class MainActivity extends Activity {
     }
 
     private void handleIncomingShare(Intent intent) {
-        if (intent == null || (!Intent.ACTION_SEND.equals(intent.getAction())
-                && !Intent.ACTION_SEND_MULTIPLE.equals(intent.getAction()))) return;
+        if (intent == null) return;
+        if (Intent.ACTION_VIEW.equals(intent.getAction())) {
+            String roomId = watchRoomInviteFromIntent(intent);
+            clearExternalIntent();
+            if (roomId == null) toast("Ссылка на комнату недействительна");
+            else handleWatchRoomInvite(roomId);
+            return;
+        }
+        if (!Intent.ACTION_SEND.equals(intent.getAction())
+                && !Intent.ACTION_SEND_MULTIPLE.equals(intent.getAction())) return;
         CharSequence sharedText = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+        String inviteId = WatchRoomQrCode.decodeInvitation(
+                sharedText == null ? "" : sharedText.toString());
+        if (inviteId != null) {
+            clearExternalIntent();
+            handleWatchRoomInvite(inviteId);
+            return;
+        }
         pendingSharedText = sharedText == null ? "" : sharedText.toString().trim();
         Uri sharedUri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
         if (sharedUri == null && Intent.ACTION_SEND_MULTIPLE.equals(intent.getAction())) {
@@ -231,6 +249,7 @@ public class MainActivity extends Activity {
                         pendingSharedUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
             } catch (Exception ignored) { }
         }
+        clearExternalIntent();
         tab = "Чат";
         feature = null;
         chatAutoScroll = true;
@@ -238,6 +257,64 @@ public class MainActivity extends Activity {
         toast(sync.ready()
                 ? "Материал готов к отправке партнёру в чате"
                 : "Материал добавлен в черновик чата. Подключите пару перед отправкой");
+    }
+
+    private String watchRoomInviteFromIntent(Intent intent) {
+        if (intent == null) return null;
+        if (Intent.ACTION_VIEW.equals(intent.getAction()))
+            return WatchRoomQrCode.decodeInvitation(intent.getDataString());
+        if (Intent.ACTION_SEND.equals(intent.getAction())) {
+            CharSequence text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+            return WatchRoomQrCode.decodeInvitation(text == null ? "" : text.toString());
+        }
+        return null;
+    }
+
+    private void clearExternalIntent() {
+        setIntent(new Intent(this, MainActivity.class));
+    }
+
+    private void handleWatchRoomInvite(String roomId) {
+        pendingWatchRoomInviteId = roomId;
+        if (!sync.configured()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Настройте подключение")
+                    .setMessage("Чтобы открыть приглашение, сначала подключите Supabase в разделе «Пригласить партнёра».")
+                    .setPositiveButton("Открыть настройку", (dialog, which) -> configureServer())
+                    .setNegativeButton("Позже", null)
+                    .show();
+            return;
+        }
+        if (!sync.signedIn()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Войдите, чтобы подключиться")
+                    .setMessage("Приглашение получено. Войдите в свой аккаунт, затем подключитесь к той же паре, что и ведущий.")
+                    .setPositiveButton("Войти", (dialog, which) -> accountDialog())
+                    .setNegativeButton("Позже", null)
+                    .show();
+            return;
+        }
+        if (sync.coupleId().isEmpty()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Подключите свою пару")
+                    .setMessage("В разделе «Пригласить партнёра» подключитесь к существующей паре ведущего. Не создавайте новую пару для этого приглашения.")
+                    .setPositiveButton("Открыть раздел", (dialog, which) -> {
+                        tab = "Пригласить";
+                        feature = null;
+                        render();
+                    })
+                    .setNegativeButton("Позже", null)
+                    .show();
+            return;
+        }
+        resumePendingWatchRoomInvite();
+    }
+
+    private void resumePendingWatchRoomInvite() {
+        if (pendingWatchRoomInviteId.isEmpty() || !sync.ready()) return;
+        String roomId = pendingWatchRoomInviteId;
+        pendingWatchRoomInviteId = "";
+        openJoinableWatchRoom(roomId);
     }
 
     private void requestGameNotificationPermission() {
@@ -1312,7 +1389,7 @@ public class MainActivity extends Activity {
     }
     private void flushPendingSync(){if(!sync.ready())return;JSONArray pending;try{pending=new JSONArray(prefs.getString("pending_shared_sync","[]"));}catch(Exception e){pending=new JSONArray();}if(pending.length()==0)return;final JSONArray batch=pending;network.execute(()->{for(int i=0;i<batch.length();i++){JSONObject entry=batch.optJSONObject(i);if(entry==null)continue;try{String k=entry.optString("key","");JSONObject it=entry.optJSONObject("item");if(k.isEmpty()||it==null)continue;sync.upsert(k,it);String id=it.optString("id");synchronized(MainActivity.this){JSONArray latest;try{latest=new JSONArray(prefs.getString("pending_shared_sync","[]"));}catch(Exception e){latest=new JSONArray();}for(int j=latest.length()-1;j>=0;j--){JSONObject q=latest.optJSONObject(j);if(q!=null){JSONObject itemObj=q.optJSONObject("item");if(itemObj!=null&&id.equals(itemObj.optString("id")))latest.remove(j);}}prefs.edit().putString("pending_shared_sync",latest.toString()).apply();}}catch(Exception ignored){}}});}
 
-    @Override protected void onResume(){super.onResume();activityResumed=true;syncQuietly();refreshActiveWatchRooms(true);refreshProfiles();checkGitHubUpdate(false);if(isChatOpen())startChatRefresh();String pending=prefs.getString("pending_update_url","");if(!pending.isEmpty()&&android.os.Build.VERSION.SDK_INT>=26&&getPackageManager().canRequestPackageInstalls()){String digest=prefs.getString("pending_update_digest","");String version=prefs.getString("pending_update_version","");prefs.edit().remove("pending_update_url").remove("pending_update_digest").remove("pending_update_version").apply();downloadGitHubUpdate(pending,digest,version);}if(sharedSyncPoll==null)sharedSyncPoll=new Runnable(){public void run(){if(!isFinishing()){syncQuietly();refreshActiveWatchRooms(false);refreshProfiles();gameHandler.postDelayed(this,15000);}}};gameHandler.removeCallbacks(sharedSyncPoll);gameHandler.postDelayed(sharedSyncPoll,15000);}
+    @Override protected void onResume(){super.onResume();activityResumed=true;resumePendingWatchRoomInvite();syncQuietly();refreshActiveWatchRooms(true);refreshProfiles();checkGitHubUpdate(false);if(isChatOpen())startChatRefresh();String pending=prefs.getString("pending_update_url","");if(!pending.isEmpty()&&android.os.Build.VERSION.SDK_INT>=26&&getPackageManager().canRequestPackageInstalls()){String digest=prefs.getString("pending_update_digest","");String version=prefs.getString("pending_update_version","");prefs.edit().remove("pending_update_url").remove("pending_update_digest").remove("pending_update_version").apply();downloadGitHubUpdate(pending,digest,version);}if(sharedSyncPoll==null)sharedSyncPoll=new Runnable(){public void run(){if(!isFinishing()){syncQuietly();refreshActiveWatchRooms(false);refreshProfiles();gameHandler.postDelayed(this,15000);}}};gameHandler.removeCallbacks(sharedSyncPoll);gameHandler.postDelayed(sharedSyncPoll,15000);}
     @Override protected void onPause(){activityResumed=false;if(sharedSyncPoll!=null)gameHandler.removeCallbacks(sharedSyncPoll);if(chatRefreshRunnable!=null)gameHandler.removeCallbacks(chatRefreshRunnable);super.onPause();}
 
     @Override protected void onSaveInstanceState(Bundle state) {
@@ -1455,6 +1532,7 @@ public class MainActivity extends Activity {
                 refreshProfiles();
             }
             render();
+            resumePendingWatchRoomInvite();
         }, error -> {
             coupleRestorePending = false;
             coupleRestoreFailed = true;
@@ -1492,6 +1570,7 @@ public class MainActivity extends Activity {
         if (code.isEmpty()) { toast("Код приглашения должен содержать 8 букв или цифр"); return; }
         runNetwork(() -> sync.joinCouple(code), result -> {
             persistCurrentProfile(); render(); refreshProfiles(); toast("Вы теперь в общем пространстве");
+            resumePendingWatchRoomInvite();
         });
     }
 
@@ -1583,26 +1662,55 @@ public class MainActivity extends Activity {
     }
 
     private void addWatchRoomRoleAction() {
-        TextView chooseHost = pill("▶  Пригласить партнёра в комнату", PURPLE);
-        body.addView(chooseHost);
-        chooseHost.setOnClickListener(v -> chooseWatchRoomRole());
-        TextView hint = text("Создайте комнату на одном телефоне — у партнёра появится кнопка подключения.", 12, MUTED, false);
+        heading("Комната просмотра", "Один телефон создаёт комнату и становится ведущим. Второй подключается по приглашению.");
+        TextView create = pill("＋  Создать комнату", PURPLE);
+        body.addView(create);
+        create.setOnClickListener(v -> prepareLiveRoomCreation());
+        TextView join = pill("Подключиться к комнате партнёра", PURPLE);
+        body.addView(join);
+        join.setOnClickListener(v -> showWatchRoomJoinOptions());
+        TextView hint = text("После создания появятся QR-код, ссылка и код для отправки партнёру.", 12, MUTED, false);
         hint.setPadding(dp(4), 0, dp(4), dp(8));
         body.addView(hint);
     }
 
-    private void chooseWatchRoomRole() {
+    private void showWatchRoomJoinOptions() {
+        if (!ensureWatchRoomAccess()) return;
         new AlertDialog.Builder(this)
-                .setTitle("Комната просмотра")
-                .setMessage("Создайте комнату на одном телефоне. Партнёр увидит приглашение и подключится кнопкой; QR-код доступен как запасной способ.")
-                .setItems(new String[]{"Создать комнату и пригласить партнёра",
-                        "Подключиться к активному приглашению", "Сканировать QR-код комнаты"}, (dialog, choice) -> {
-                    if (choice == 0) prepareLiveRoomCreation();
-                    else if (choice == 1) joinLiveRoom();
+                .setTitle("Подключиться к комнате")
+                .setMessage("Выберите активную комнату партнёра или используйте присланные ссылку, код или QR.")
+                .setItems(new String[]{"Выбрать активную комнату", "Ввести код или ссылку", "Сканировать QR-код"}, (dialog, choice) -> {
+                    if (choice == 0) joinLiveRoom();
+                    else if (choice == 1) showWatchRoomCodeEntry();
                     else startWatchRoomScanner();
                 })
                 .setNegativeButton("Отмена", null)
                 .show();
+    }
+
+    private void showWatchRoomCodeEntry() {
+        EditText code = new EditText(this);
+        code.setSingleLine(true);
+        code.setHint("Код VMESTE:ROOM:… или ссылка vmeste://room/…");
+        code.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Ввести приглашение")
+                .setMessage("Вставьте код или ссылку, полученные от ведущего.")
+                .setView(code)
+                .setPositiveButton("Подключиться", null)
+                .setNegativeButton("Отмена", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+            String roomId = WatchRoomQrCode.decodeInvitation(code.getText().toString());
+            if (roomId == null) {
+                code.setError("Проверьте код или ссылку приглашения");
+                return;
+            }
+            dialog.dismiss();
+            handleWatchRoomInvite(roomId);
+        }));
+        dialog.show();
     }
 
     private void renderWatchRoomInvitation() {
@@ -1670,7 +1778,7 @@ public class MainActivity extends Activity {
             final JSONArray result = rooms;
             final boolean failed = failure != null;
             final String failureLabel = failed
-                    ? WatchRoomSignalError.label(failure.getMessage()) : "";
+                    ? WatchRoomError.label(failure.getMessage()) : "";
             runOnUiThread(() -> {
                 activeWatchRoomsFetchInFlight = false;
                 lastActiveWatchRoomsFetchAt = System.currentTimeMillis();
@@ -1692,11 +1800,33 @@ public class MainActivity extends Activity {
         network.execute(()->{try{JSONObject shared=sync.fetchMovieRoom();runOnUiThread(()->{movieRoomFetchInFlight=false;if(shared==null)return;JSONObject local=readMovieRoom();if(shared.optLong("updated",0)> (local==null?0:local.optLong("updated",0))){prefs.edit().putString("movie_room",shared.toString()).apply();if(feature!=null&&feature.contains("просмотра"))render();}});}catch(Exception e){runOnUiThread(()->movieRoomFetchInFlight=false);}});
     }
 
-    private void createLiveRoom() {
-        if (!sync.configured() || !sync.signedIn() || sync.coupleId().isEmpty()) {
-            toast("Чтобы открыть общую комнату просмотра, войдите и подключите пару в Supabase.");
-            return;
+    private boolean ensureWatchRoomAccess() {
+        if (!sync.configured()) {
+            tab = "Пригласить";
+            feature = null;
+            render();
+            toast("Сначала настройте Supabase в разделе «Пригласить партнёра».");
+            return false;
         }
+        if (!sync.signedIn()) {
+            accountDialog();
+            return false;
+        }
+        if (sync.coupleId().isEmpty()) {
+            tab = "Пригласить";
+            feature = null;
+            render();
+            toast(coupleRestorePending
+                    ? "Проверяем существующую пару. Повторите действие через мгновение."
+                    : "Подключитесь к той же паре, что и партнёр, прежде чем открывать комнату.");
+            return false;
+        }
+        return true;
+    }
+
+    private void createLiveRoom() {
+        if (!ensureWatchRoomAccess() || watchRoomCreationInFlight) return;
+        watchRoomCreationInFlight = true;
         JSONObject room = readMovieRoom();
         String roomTitle = room == null ? "Совместный просмотр" : room.optString("title", "Совместный просмотр");
         this.<JSONObject>runNetwork(() -> {
@@ -1713,19 +1843,27 @@ public class MainActivity extends Activity {
             active.put("player_url",playerUrl);
             return active;
         }, active -> {
+            watchRoomCreationInFlight = false;
             boolean host=sync.userId().equals(active.optString("host_id"));
             startActivity(WatchPartyActivity.intent(this,active.optString("id"),host,active.optString("title","Совместный просмотр"))
-                    .putExtra(WatchPartyActivity.EXTRA_PLAYER_URL,active.optString("player_url","")));
+                    .putExtra(WatchPartyActivity.EXTRA_PLAYER_URL,active.optString("player_url",""))
+                    .putExtra(WatchPartyActivity.EXTRA_SHOW_INVITE, host));
             if(active.optBoolean("movie_url_sync_failed"))toast("Комната открыта, но не удалось обновить ссылку на видео");
-        }, error -> new AlertDialog.Builder(this)
-                .setTitle("Не удалось открыть комнату")
-                .setMessage(error.getMessage()==null?"Ошибка без описания":error.getMessage())
-                .setPositiveButton("Понятно",null)
-                .show());
+        }, error -> {
+            watchRoomCreationInFlight = false;
+            new AlertDialog.Builder(this)
+                    .setTitle("Комната не создана")
+                    .setMessage(WatchRoomError.label(error.getMessage()))
+                    .setPositiveButton("Понятно", null)
+                    .show();
+        });
     }
 
     private void prepareLiveRoomCreation() {
+        if (!ensureWatchRoomAccess() || watchRoomListInFlight || watchRoomCreationInFlight) return;
+        watchRoomListInFlight = true;
         this.<JSONArray>runNetwork(sync::activeWatchRooms, rooms -> {
+            watchRoomListInFlight = false;
             if (rooms.length() == 0) {
                 createLiveRoom();
                 return;
@@ -1737,10 +1875,14 @@ public class MainActivity extends Activity {
                     .setNeutralButton("Создать новую и завершить старые", (dialog, which) -> createLiveRoom())
                     .setNegativeButton("Отмена", null)
                     .show();
-        }, this::showWatchRoomError);
+        }, error -> {
+            watchRoomListInFlight = false;
+            showWatchRoomError(error);
+        });
     }
 
     private void joinLiveRoom() {
+        if (!ensureWatchRoomAccess()) return;
         this.<JSONArray>runNetwork(sync::activeWatchRooms, this::showActiveWatchRooms, this::showWatchRoomError);
     }
 
@@ -1828,10 +1970,7 @@ public class MainActivity extends Activity {
     }
 
     private void startWatchRoomScanner() {
-        if (!sync.ready()) {
-            toast("Войдите и подключите пару, чтобы открыть приглашение комнаты");
-            return;
-        }
+        if (!ensureWatchRoomAccess()) return;
         pendingWatchRoomScan = true;
         try {
             new IntentIntegrator(this)
@@ -1893,9 +2032,9 @@ public class MainActivity extends Activity {
     }
 
     private void showWatchRoomError(Exception error) {
-        String message = WatchRoomSignalError.label(error == null ? null : error.getMessage());
+        String message = WatchRoomError.label(error == null ? null : error.getMessage());
         new AlertDialog.Builder(this)
-                .setTitle("Не удалось подключиться к комнате")
+                .setTitle("Не удалось выполнить действие с комнатой")
                 .setMessage(message)
                 .setPositiveButton("Понятно", null)
                 .show();

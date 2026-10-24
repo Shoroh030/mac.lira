@@ -16,7 +16,23 @@ Gift Radar opens public HTTP(S) links in an in-app WebView instead of launching 
 
 ## Watch together
 
+In **Просмотр**, **Создать комнату** makes the current phone the host; if active rooms already exist, the app asks whether to select one or explicitly replace them. The host is then shown a QR code, invitation code and Android share action. The partner can open the shared `vmeste://room/<UUID>` link, scan the QR, enter the code or use **Подключиться к комнате партнёра** and choose the active room. Joining never creates another room automatically.
+
 The room synchronizes YouTube videos and public HTTPS MP4, HLS (`.m3u8`), and WebM links. The host can select a link in the room; the partner receives it and playback/pause/seek state is synchronized through couple-scoped Supabase room signals. Other sites may open in the in-app WebView, but their player controls are not synchronized. Protected-content and embed restrictions are not bypassed. Text chat and playback work without camera or microphone permissions. Both are off when the room opens; each is requested only after its own button is tapped. Camera and microphone tracks are sent to the partner over WebRTC and are not uploaded to Supabase. Screen capture is not supported. Apply `supabase/migrations/20261025000100_watch_player_signals.sql` before using synchronized playback with the remote Supabase project.
+
+## 16 KB memory pages
+
+The Android module packages only `arm64-v8a` and `x86_64`. Check every native library's ELF `PT_LOAD` alignment and the APK's 16 KB ZIP alignment after building:
+
+```powershell
+$buildTools = Get-ChildItem "$env:LOCALAPPDATA\Android\Sdk\build-tools" -Directory |
+  Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+powershell -ExecutionPolicy Bypass -File .\together\scripts\check-16kb-compatibility.ps1 `
+  -ApkPath .\together\build\outputs\apk\debug\together-debug.apk `
+  -ZipAlignPath "$($buildTools.FullName)\zipalign.exe"
+```
+
+Passing this static check verifies the packaged ELF load segments and APK ZIP alignment; it does not replace runtime testing on a 16 KB Android emulator or device. Devices limited to `armeabi-v7a` are not supported by this module's ABI filters.
 
 ## Publish an update
 
