@@ -4,8 +4,8 @@ plugins {
 
 def supabaseUrl = System.getenv('SUPABASE_URL') ?: 'https://vdmcaltwnhlqrvwvchwi.supabase.co'
 def supabasePublishableKey = System.getenv('SUPABASE_PUBLISHABLE_KEY') ?: 'sb_publishable_76yRmXfDmV8TTvsCu9kW6Q_5VfHkay-'
-def appVersionName = System.getenv('APP_VERSION') ?: '1.3.8'
-def appVersionCode = (System.getenv('APP_VERSION_CODE') ?: '21') as Integer
+def appVersionName = System.getenv('APP_VERSION') ?: '1.3.9'
+def appVersionCode = (System.getenv('APP_VERSION_CODE') ?: '22') as Integer
 
 android {
     namespace 'com.lira.vmest'

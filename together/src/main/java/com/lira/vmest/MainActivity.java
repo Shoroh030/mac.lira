@@ -44,6 +44,7 @@ import java.util.Random;
 import java.util.Calendar;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.text.SimpleDateFormat;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
@@ -62,7 +63,7 @@ public class MainActivity extends Activity {
     private int BG = 0xFFFBF8FC;
     private int PAPER = 0xFFFFFFFF;
     private int INK = 0xFF302B35;
-    private int MUTED = 0xFF817988;
+    private int MUTED = 0xFF6E6575;
     private int PURPLE = 0xFF8158A5;
     private int PALE = 0xFFF0E8F6;
     private int LINE = 0xFFE9E1ED;
@@ -108,11 +109,11 @@ public class MainActivity extends Activity {
     private Runnable sharedSyncPoll;
     private long lastProfileRefreshAt;
 
-    private static final String[] MORE = {
-            "💬  Чат для двоих", "📝  Заметки", "📎  Файлы", "💳  Карты лояльности",
-            "🎁  Подарочный радар", "⏳  Капсула времени", "🗳  Голосование",
-            "🎲  Совместные игры", "🎬  Комната просмотра", "🧳  Общие планы",
-            "💌  Пригласить партнёра", "📷  Истории для двоих", "💗  Карта партнёра"
+    private static final String[][] MORE_GROUPS = {
+            {"Общение", "💬  Чат для двоих", "📷  Истории для двоих", "💌  Пригласить партнёра"},
+            {"Планы и заметки", "🧳  Общие планы", "📝  Заметки", "⏳  Капсула времени", "📎  Файлы"},
+            {"Совместное время", "🎲  Совместные игры", "🎬  Комната просмотра", "🗳  Голосование", "🎁  Подарочный радар"},
+            {"Полезное", "💳  Карты лояльности", "💗  Карта партнёра"}
     };
     private static final String[] TUNES={"Ода к радости","Вальс цветов","Маленькая ночная серенада","Щелкунчик: Танец феи Драже"};
     private static final int MAX_CHAT_ATTACHMENT_BYTES=12*1024*1024;
@@ -417,7 +418,7 @@ public class MainActivity extends Activity {
     }
     private void applyPalette() {
         if (softDark) { BG=0xFF211D25; PAPER=0xFF302A35; INK=0xFFF2EDF5; MUTED=0xFFB8ACBF; PURPLE=0xFFD0B3E9; PALE=0xFF403648; LINE=0xFF504657; getWindow().setStatusBarColor(BG); getWindow().setNavigationBarColor(BG); getWindow().getDecorView().setSystemUiVisibility(0); }
-        else { BG=0xFFFBF8FC; PAPER=0xFFFFFFFF; INK=0xFF302B35; MUTED=0xFF817988; PURPLE=0xFF8158A5; PALE=0xFFF0E8F6; LINE=0xFFE9E1ED; getWindow().setStatusBarColor(BG); getWindow().setNavigationBarColor(BG); getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR); }
+        else { BG=0xFFFBF8FC; PAPER=0xFFFFFFFF; INK=0xFF302B35; MUTED=0xFF6E6575; PURPLE=0xFF8158A5; PALE=0xFFF0E8F6; LINE=0xFFE9E1ED; getWindow().setStatusBarColor(BG); getWindow().setNavigationBarColor(BG); int visibility=View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR; if(android.os.Build.VERSION.SDK_INT>=26)visibility|=View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR; getWindow().getDecorView().setSystemUiVisibility(visibility); }
     }
     private int themedFill(int c) { if(!softDark)return c; if(c==0xFFFBF8FC||c==0xFFFBF9FC||c==0xFFFFFFFF)return PAPER; if(c==0xFFF0E8F6||c==0xFFEFE5F6||c==0xFFEDE4F1||c==0xFFE7D9F0)return PALE; if(c==0xFFF3F4F6||c==0xFFE9E1ED)return 0xFF39333E; return c; }
     private GradientDrawable shape(int fill, int radius) {
@@ -445,8 +446,17 @@ public class MainActivity extends Activity {
         ImageView avatarImg = new ImageView(this); avatarImg.setScaleType(ImageView.ScaleType.CENTER_CROP); avatarImg.setBackgroundColor(0xFFE8E0EC); avatarImg.setClipToOutline(true);
         boolean hasProfilePhoto=setAvatarPicture(avatarImg,avatarUri,24);
         LinearLayout.LayoutParams imgParams = new LinearLayout.LayoutParams(dp(24), dp(24)); imgParams.rightMargin=dp(6); avatars.addView(avatarImg, imgParams);
-        TextView avatarText = text(hasProfilePhoto ? (profileName.isEmpty()?"Профиль":profileName) : profileName.isEmpty() ? avatarEmoji + "  Профиль" : avatarEmoji + "  " + profileName, 13, PURPLE, true); avatarText.setGravity(Gravity.CENTER); avatars.addView(avatarText);
-        avatars.setBackground(shape(PALE, 22)); header.addView(avatars, new LinearLayout.LayoutParams(dp(120), dp(40)));
+        String visibleProfileName = hasProfilePhoto
+                ? (profileName.isEmpty() ? "Профиль" : profileName)
+                : profileName.isEmpty() ? avatarEmoji + "  Профиль" : avatarEmoji + "  " + profileName;
+        TextView avatarText = text(visibleProfileName, 13, PURPLE, true);
+        avatarText.setGravity(Gravity.CENTER);
+        avatarText.setMaxLines(1);
+        avatarText.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        avatars.addView(avatarText);
+        avatars.setBackground(shape(PALE, 22));
+        avatars.setContentDescription("Открыть профиль" + (profileName.isEmpty() ? "" : ": " + profileName));
+        header.addView(avatars, new LinearLayout.LayoutParams(dp(120), dp(48)));
         avatars.setOnClickListener(v -> profileDialog());
         root.addView(header);
 
@@ -483,12 +493,14 @@ public class MainActivity extends Activity {
         else if (tab.equals("Карты")) renderLoyaltyCardsTab();
         else if (tab.equals("Голосование")) renderVotingTab();
         else if (tab.equals("Файлы")) renderFilesTab();
-        for (String item : navigationTabs()) { if(!isNavigationTabVisible(item)||nav.getChildCount()>=5) continue;
+        for (String item : NavigationModel.bottomTabs(navigationTabs(), hiddenNavigationTabs())) {
             final String dest = item;
             boolean selected = item.equals(tab) && feature == null;
             TextView b = text(iconFor(item) + "\n" + item, 10, selected ? (softDark ? 0xFFF2E8FA : PURPLE) : (softDark ? 0xFFB8AFBF : MUTED), selected);
             b.setGravity(Gravity.CENTER); b.setPadding(dp(2), dp(3), dp(2), dp(3));
-            b.setMinHeight(dp(50));
+            b.setMinHeight(dp(48));
+            b.setContentDescription(item);
+            b.setSelected(selected);
             b.setBackground(navigationItem(selected));
             LinearLayout.LayoutParams itemParams = new LinearLayout.LayoutParams(0, -1, 1);
             itemParams.setMargins(dp(2), 0, dp(2), 0);
@@ -502,25 +514,41 @@ public class MainActivity extends Activity {
         }
     }
     private ArrayList<String> navigationTabs(){
-        String[] defaults=new String[]{"Главная", "Дела", "Чат", "Календарь", "Хотим", "Ещё", "Игры", "Просмотр", "Пригласить", "Подарочный радар", "Истории", "Капсула", "Карты", "Голосование", "Файлы"};
-        ArrayList<String> order=new ArrayList<>();try{JSONArray saved=new JSONArray(prefs.getString("navigation_tab_order","[]"));for(int i=0;i<saved.length();i++){String item=saved.optString(i);boolean found=false;for(String known:defaults)if(known.equals(item)&&!order.contains(item)){order.add(item);found=true;break;}if(!found&&!order.contains(item))order.add(item);}}catch(Exception ignored){}for(String item:defaults)if(!order.contains(item))order.add(item);return order;
+        List<String> defaults = NavigationModel.defaultOrder();
+        ArrayList<String> order = new ArrayList<>();
+        try {
+            JSONArray saved = new JSONArray(prefs.getString("navigation_tab_order", "[]"));
+            for (int i = 0; i < saved.length(); i++) {
+                String item = saved.optString(i);
+                if (defaults.contains(item) && !order.contains(item)) order.add(item);
+            }
+        } catch (Exception ignored) { }
+        for (String item : defaults) if (!order.contains(item)) order.add(item);
+        order.remove(NavigationModel.MORE_TAB);
+        order.add(NavigationModel.MORE_TAB);
+        return order;
     }
     private HashSet<String> hiddenNavigationTabs(){
-        HashSet<String> hidden=new HashSet<>();
-        if(!prefs.contains("navigation_tab_hidden")){
-            String[] secondary={"Хотим","Игры","Просмотр","Пригласить","Подарочный радар","Истории","Капсула","Карты","Голосование","Файлы"};
-            java.util.Collections.addAll(hidden,secondary);
-            return hidden;
+        HashSet<String> hidden = new HashSet<>();
+        if (!prefs.contains("navigation_tab_hidden")) hidden.addAll(NavigationModel.defaultHidden());
+        else {
+            try {
+                JSONArray saved = new JSONArray(prefs.getString("navigation_tab_hidden", "[]"));
+                List<String> knownTabs = NavigationModel.defaultOrder();
+                for (int i = 0; i < saved.length(); i++) {
+                    String item = saved.optString(i);
+                    if (knownTabs.contains(item)) hidden.add(item);
+                }
+            } catch (Exception ignored) { }
         }
-        try{JSONArray saved=new JSONArray(prefs.getString("navigation_tab_hidden","[]"));for(int i=0;i<saved.length();i++)hidden.add(saved.optString(i));}catch(Exception ignored){}
+        hidden.remove(NavigationModel.MORE_TAB);
         return hidden;
     }
-    private boolean isNavigationTabVisible(String item){return !hiddenNavigationTabs().contains(item);}
     private void navigationSettings(){
         try{
         ArrayList<String> order=navigationTabs();HashSet<String> hidden=hiddenNavigationTabs();LinearLayout list=column();ScrollView scroll=new ScrollView(this);scroll.setFillViewport(false);scroll.addView(list);scroll.setBackgroundColor(PAPER);
         AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Настроить нижнюю панель").setView(scroll).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",null).create();
-        Runnable[] draw={null};draw[0]=()->{list.removeAllViews();for(int i=0;i<order.size();i++){final int at=i;String item=order.get(i);LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);row.setPadding(dp(8),dp(4),dp(8),dp(4));row.setBackground(shape(softDark?0xFF39333E:0xFFFBF9FC,14));LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,dp(54));rp.bottomMargin=dp(6);list.addView(row,rp);android.widget.CheckBox visible=new android.widget.CheckBox(this);visible.setText(item);visible.setTextColor(INK);visible.setChecked(!hidden.contains(item));visible.setButtonTintList(android.content.res.ColorStateList.valueOf(PURPLE));row.addView(visible,new LinearLayout.LayoutParams(0,-1,1));visible.setOnCheckedChangeListener((button,checked)->{int shown=order.size()-hidden.size();if(checked){if(shown>=5){button.setChecked(false);toast("На нижней панели можно оставить не больше пяти вкладок");}else hidden.remove(item);}else if(shown>3)hidden.add(item);else{button.setChecked(true);toast("Оставьте на панели хотя бы три вкладки");}});TextView up=text("↑",20,PURPLE,true);up.setGravity(Gravity.CENTER);row.addView(up,new LinearLayout.LayoutParams(dp(42),-1));up.setEnabled(at>0);up.setOnClickListener(v->{java.util.Collections.swap(order,at,at-1);draw[0].run();});TextView down=text("↓",20,PURPLE,true);down.setGravity(Gravity.CENTER);row.addView(down,new LinearLayout.LayoutParams(dp(42),-1));down.setEnabled(at<order.size()-1);down.setOnClickListener(v->{java.util.Collections.swap(order,at,at+1);draw[0].run();});}};draw[0].run();
+        Runnable[] draw={null};draw[0]=()->{list.removeAllViews();for(int i=0;i<order.size();i++){final int at=i;String item=order.get(i);boolean pinned=NavigationModel.MORE_TAB.equals(item);LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);row.setPadding(dp(8),dp(4),dp(8),dp(4));row.setBackground(shape(softDark?0xFF39333E:0xFFFBF9FC,14));LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,dp(54));rp.bottomMargin=dp(6);list.addView(row,rp);android.widget.CheckBox visible=new android.widget.CheckBox(this);visible.setText(pinned?"Ещё · все разделы":item);visible.setTextColor(INK);visible.setChecked(pinned||!hidden.contains(item));visible.setEnabled(!pinned);visible.setButtonTintList(android.content.res.ColorStateList.valueOf(PURPLE));row.addView(visible,new LinearLayout.LayoutParams(0,-1,1));visible.setOnCheckedChangeListener((button,checked)->{int shown=order.size()-hidden.size();if(checked){if(shown>=5){button.setChecked(false);toast("На нижней панели можно оставить не больше пяти вкладок");}else hidden.remove(item);}else if(shown>3)hidden.add(item);else{button.setChecked(true);toast("Оставьте на панели хотя бы три вкладки");}});TextView up=text("↑",20,PURPLE,true);up.setGravity(Gravity.CENTER);up.setContentDescription("Переместить "+item+" выше");up.setMinWidth(dp(48));row.addView(up,new LinearLayout.LayoutParams(dp(48),-1));up.setEnabled(at>0&&!pinned);up.setOnClickListener(v->{java.util.Collections.swap(order,at,at-1);draw[0].run();});TextView down=text("↓",20,PURPLE,true);down.setGravity(Gravity.CENTER);down.setContentDescription("Переместить "+item+" ниже");down.setMinWidth(dp(48));row.addView(down,new LinearLayout.LayoutParams(dp(48),-1));down.setEnabled(at<order.size()-1&&!pinned);down.setOnClickListener(v->{java.util.Collections.swap(order,at,at+1);draw[0].run();});}};draw[0].run();
         dialog.setOnShowListener(v->{dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(x->{JSONArray sorted=new JSONArray(),hiddenRows=new JSONArray();for(String item:order)sorted.put(item);for(String item:order)if(hidden.contains(item))hiddenRows.put(item);prefs.edit().putString("navigation_tab_order",sorted.toString()).putString("navigation_tab_hidden",hiddenRows.toString()).apply();boolean selectedVisible=false;for(String item:order)if(item.equals(tab)&&!hidden.contains(item))selectedVisible=true;if(!selectedVisible)for(String item:order)if(!hidden.contains(item)){tab=item;break;}dialog.dismiss();render();});});dialog.show();
         }catch(Exception e){toast("Не удалось открыть настройки вкладок: "+e.getMessage());}
     }
@@ -544,12 +572,11 @@ public class MainActivity extends Activity {
         return item;
     }
     private String iconFor(String s) {
-        switch(s) { case "Главная": return "⌂"; case "Дела": return "✓"; case "Чат": return "💬"; case "Календарь": return "▦"; case "Хотим": return "♡"; case "Ещё": return "•••"; case "Игры": return "🎮"; case "Просмотр": return "🎬"; case "Пригласить": return "🤝"; case "Подарочный радар": return "🎁"; case "Истории": return "📖"; case "Капсула": return "⏳"; case "Карты": return "💳"; case "Голосование": return "🗳"; case "Файлы": return "📎"; default: return "•••"; }
+        switch(s) { case "Главная": return "⌂"; case "Дела": return "✓"; case "Чат": return "✉"; case "Календарь": return "▦"; case "Хотим": return "♡"; case "Ещё": return "⋯"; case "Игры": return "🎮"; case "Просмотр": return "🎬"; case "Пригласить": return "🤝"; case "Подарочный радар": return "🎁"; case "Истории": return "📖"; case "Капсула": return "⏳"; case "Карты": return "💳"; case "Голосование": return "🗳"; case "Файлы": return "📎"; default: return "•••"; }
     }
 
     private void renderHome() {
         LinearLayout welcome = card(); welcome.setBackground(shape(PALE, 24));
-        welcome.addView(text("ВАШ ОБЩИЙ ДЕНЬ", 10, PURPLE, true));
         String ownName = prefs.getString("profile_name", "").trim();
         String partnerName = prefs.getString("partner_name", "").trim();
         String greeting = !ownName.isEmpty() && !partnerName.isEmpty()
@@ -570,7 +597,13 @@ public class MainActivity extends Activity {
             JSONObject item = tasks.optJSONObject(i);
             if (item != null && !item.optBoolean("done")) { addTask(taskCard, tasks, i); shown++; }
         }
-        if (shown == 0) simpleCard("✓", "Все общие дела закрыты", "Добавьте новое дело во вкладке «Дела»", null);
+        if (shown == 0) {
+            taskCard.addView(text("Все общие дела закрыты", 15, INK, true));
+            TextView emptyHint = text("Добавьте новое дело во вкладке «Дела»", 13, MUTED, false);
+            LinearLayout.LayoutParams emptyHintParams = new LinearLayout.LayoutParams(-1, -2);
+            emptyHintParams.topMargin = dp(4);
+            taskCard.addView(emptyHint, emptyHintParams);
+        }
         TextView link = text("Все дела  →", 13, PURPLE, true); link.setPadding(0, dp(8), 0, 0);
         taskCard.addView(link); link.setOnClickListener(v -> { tab = "Дела"; render(); });
 
@@ -581,11 +614,14 @@ public class MainActivity extends Activity {
         if (nextEvent == null) simpleCard("🗓", "Ближайших событий нет", "Добавьте дату в календаре", () -> { tab = "Календарь"; render(); });
         else simpleCard("🗓", nextEvent.optString("title"), new SimpleDateFormat("d MMMM · HH:mm",new Locale("ru")).format(new java.util.Date(best)), () -> { tab = "Календарь"; render(); });
 
-        heading("Проведите время вместе", "Выбирайте настроение");
+        heading("Выберите занятие", "Общайтесь, играйте или смотрите вместе");
         LinearLayout watchRoomCard = card();
         watchRoomCard.addView(text("🎬  Комната просмотра", 16, INK, true));
+        boolean canUseWatchRoom = sync.ready();
         TextView watchRoomDescription = text(
-                "Создайте комнату и отправьте партнёру QR-код, ссылку или код подключения.",
+                canUseWatchRoom
+                        ? "Создайте комнату и отправьте партнёру QR-код, ссылку или код подключения."
+                        : "Сначала войдите и подключите пару. После этого можно будет создать комнату или присоединиться к партнёру.",
                 13, MUTED, false);
         LinearLayout.LayoutParams watchRoomDescriptionParams =
                 new LinearLayout.LayoutParams(-1, -2);
@@ -595,13 +631,21 @@ public class MainActivity extends Activity {
         TextView createWatchRoom = pill("Создать комнату", PURPLE);
         createWatchRoom.setMinHeight(dp(48));
         createWatchRoom.setLayoutParams(new LinearLayout.LayoutParams(-1, -2));
+        createWatchRoom.setEnabled(canUseWatchRoom);
+        createWatchRoom.setAlpha(canUseWatchRoom ? 1f : 0.55f);
+        createWatchRoom.setContentDescription("Создать новую комнату просмотра");
         watchRoomCard.addView(createWatchRoom);
         createWatchRoom.setOnClickListener(v -> prepareLiveRoomCreation());
         TextView joinWatchRoom = pill("Подключиться к комнате партнёра", PURPLE);
         joinWatchRoom.setMinHeight(dp(48));
         joinWatchRoom.setLayoutParams(new LinearLayout.LayoutParams(-1, -2));
+        joinWatchRoom.setEnabled(canUseWatchRoom);
+        joinWatchRoom.setAlpha(canUseWatchRoom ? 1f : 0.55f);
+        joinWatchRoom.setContentDescription("Подключиться к комнате партнёра");
         watchRoomCard.addView(joinWatchRoom);
         joinWatchRoom.setOnClickListener(v -> showWatchRoomJoinOptions());
+        simpleCard("🎲", "Игры для двоих", "Вопросы и онлайн-игры с партнёром",
+                () -> { tab = "Игры"; feature = null; render(); });
         simpleCard("🗳", "Выбрать, чем заняться", "Отдельное голосование за совместные занятия", () -> open("🗳 Голосование: чем заняться"));
         simpleCard("🎁", "Подарочный радар", "Сохраняйте идеи подарков", () -> open("🎁  Подарочный радар"));
     }
@@ -712,12 +756,12 @@ public class MainActivity extends Activity {
         LinearLayout monthCard = card();
         LinearLayout monthBar = new LinearLayout(this); monthBar.setGravity(Gravity.CENTER_VERTICAL);
         TextView prev = text("‹", 28, PURPLE, true); prev.setGravity(Gravity.CENTER);
-        monthBar.addView(prev, new LinearLayout.LayoutParams(dp(42), dp(42)));
+        monthBar.addView(prev, new LinearLayout.LayoutParams(dp(48), dp(48)));
         String monthName = new SimpleDateFormat("LLLL yyyy", new Locale("ru")).format(visibleMonth.getTime());
         TextView month = text(monthName.substring(0,1).toUpperCase(new Locale("ru")) + monthName.substring(1), 17, INK, true);
         month.setGravity(Gravity.CENTER); monthBar.addView(month, new LinearLayout.LayoutParams(0, -2, 1));
         TextView next = text("›", 28, PURPLE, true); next.setGravity(Gravity.CENTER);
-        monthBar.addView(next, new LinearLayout.LayoutParams(dp(42), dp(42))); monthCard.addView(monthBar);
+        monthBar.addView(next, new LinearLayout.LayoutParams(dp(48), dp(48))); monthCard.addView(monthBar);
         prev.setOnClickListener(v -> moveMonth(-1));
         next.setOnClickListener(v -> moveMonth(1));
 
@@ -808,12 +852,19 @@ public class MainActivity extends Activity {
     }
 
     private void renderMore() {
-        heading("Всё для вас двоих", "Ваши общие уголки");
-        for (String item : MORE) {
-            String icon = item.substring(0, 2);
-            String title=item.contains("Карта партнёра")?"Карта "+prefs.getString("partner_name","партнёра"):item.substring(4);
-            simpleCard(icon, title, description(item), () -> open(item));
+        heading("Все разделы", "Общение, планы и занятия для вас двоих");
+        for (String[] group : MORE_GROUPS) {
+            heading(group[0], null);
+            for (int i = 1; i < group.length; i++) {
+                String item = group[i];
+                String icon = item.substring(0, 2);
+                String title = item.contains("Карта партнёра")
+                        ? "Карта " + prefs.getString("partner_name", "партнёра")
+                        : item.substring(4);
+                simpleCard(icon, title, description(item), () -> open(item));
+            }
         }
+        heading("Инструменты", null);
         simpleCard("⏱", "Общий таймер", "Запустите отсчёт и следите за ним вместе", () -> open("shared_timer"));
         simpleCard("🔔", "Напомнить партнёру", "Общая дата и уведомление на телефонах пары", () -> open("shared_reminder"));
     }
@@ -1215,7 +1266,7 @@ public class MainActivity extends Activity {
             panel.addView(brightness);
             TextView lightButton = text("☀  Максимальная яркость", 13, PURPLE, true);
             lightButton.setGravity(Gravity.CENTER);
-            lightButton.setMinHeight(dp(44));
+            lightButton.setMinHeight(dp(48));
             panel.addView(lightButton);
 
             Runnable updateCode = () -> {
@@ -3079,10 +3130,10 @@ public class MainActivity extends Activity {
 
     private View createChatComposer(){
         LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);row.setPadding(dp(8),dp(5),dp(8),dp(5));row.setBackgroundColor(PAPER);
-        TextView attach=text("＋",24,PURPLE,true);attach.setGravity(Gravity.CENTER);row.addView(attach,new LinearLayout.LayoutParams(dp(42),dp(48)));
+        TextView attach=text("＋",24,PURPLE,true);attach.setGravity(Gravity.CENTER);row.addView(attach,new LinearLayout.LayoutParams(dp(48),dp(48)));
         attach.setContentDescription("Добавить фото, файл, GIF или видеокружок");
         attach.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Вложение").setItems(new String[]{"Фото, видео или аудио из телефона","GIF из телефона","Записать видеокружок (до минуты)"},(d,which)->{try{if(which==0){Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);pick.setType("*/*");pick.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(pick,404);}else if(which==1){Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);pick.setType("image/gif");pick.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(pick,408);}else startCameraCapture(405);}catch(Exception e){toast("Не удалось открыть камеру или галерею: "+e.getMessage());}}).show());
-        TextView emoji=text("☺",20,PURPLE,true);emoji.setGravity(Gravity.CENTER);emoji.setContentDescription("Выбрать эмодзи");row.addView(emoji,new LinearLayout.LayoutParams(dp(40),dp(48)));
+        TextView emoji=text("☺",20,PURPLE,true);emoji.setGravity(Gravity.CENTER);emoji.setContentDescription("Выбрать эмодзи");row.addView(emoji,new LinearLayout.LayoutParams(dp(48),dp(48)));
         EditText input=new EditText(this);input.setSingleLine(true);input.setHint("Сообщение партнёру…");row.addView(input,new LinearLayout.LayoutParams(0,dp(48),1));
         emoji.setOnClickListener(v->showChatEmojiPicker(input));
         input.setText(pendingSharedText);
@@ -3091,9 +3142,9 @@ public class MainActivity extends Activity {
             sharedPhoto.setContentDescription("Фото из другого приложения готово к отправке");
             row.addView(sharedPhoto,new LinearLayout.LayoutParams(dp(34),dp(48)));
         }
-        TextView voice=text(chatRecorder==null?"🎙":"■",22,PURPLE,true);voice.setGravity(Gravity.CENTER);row.addView(voice,new LinearLayout.LayoutParams(dp(44),dp(48)));
+        TextView voice=text(chatRecorder==null?"🎙":"■",22,PURPLE,true);voice.setGravity(Gravity.CENTER);voice.setContentDescription(chatRecorder==null?"Записать голосовое сообщение":"Остановить запись голосового сообщения");row.addView(voice,new LinearLayout.LayoutParams(dp(48),dp(48)));
         voice.setOnClickListener(v->{if(chatRecorder==null)startChatVoiceRecording(voice);else stopChatVoiceRecording(voice);});
-        TextView send=text("➤",23,PURPLE,true);send.setGravity(Gravity.CENTER);row.addView(send,new LinearLayout.LayoutParams(dp(44),dp(48)));
+        TextView send=text("➤",23,PURPLE,true);send.setGravity(Gravity.CENTER);send.setContentDescription("Отправить сообщение");row.addView(send,new LinearLayout.LayoutParams(dp(48),dp(48)));
         send.setOnClickListener(v->{
             String value=input.getText().toString().trim();
             if(pendingSharedUri!=null){
@@ -3220,11 +3271,11 @@ public class MainActivity extends Activity {
     }
     private void startChatVoiceRecording(TextView button){
         if(checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)!=android.content.pm.PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO},904);toast("Разрешите микрофон, затем нажмите 🎙 ещё раз");return;}
-        try{chatRecording=new java.io.File(getCacheDir(),"voice-"+System.currentTimeMillis()+".3gp");chatRecorder=new android.media.MediaRecorder();chatRecorder.setAudioSource(android.media.MediaRecorder.AudioSource.MIC);chatRecorder.setOutputFormat(android.media.MediaRecorder.OutputFormat.THREE_GPP);chatRecorder.setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AMR_NB);chatRecorder.setOutputFile(chatRecording.getAbsolutePath());chatRecorder.prepare();chatRecorder.start();button.setText("■");toast("Запись началась · после остановки проверьте размер и подтвердите отправку");}catch(Exception e){if(chatRecorder!=null){chatRecorder.release();chatRecorder=null;}toast("Не удалось записать голосовое: "+e.getMessage());}
+        try{chatRecording=new java.io.File(getCacheDir(),"voice-"+System.currentTimeMillis()+".3gp");chatRecorder=new android.media.MediaRecorder();chatRecorder.setAudioSource(android.media.MediaRecorder.AudioSource.MIC);chatRecorder.setOutputFormat(android.media.MediaRecorder.OutputFormat.THREE_GPP);chatRecorder.setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AMR_NB);chatRecorder.setOutputFile(chatRecording.getAbsolutePath());chatRecorder.prepare();chatRecorder.start();button.setText("■");button.setContentDescription("Остановить запись голосового сообщения");toast("Запись началась · после остановки проверьте размер и подтвердите отправку");}catch(Exception e){if(chatRecorder!=null){chatRecorder.release();chatRecorder=null;}button.setContentDescription("Записать голосовое сообщение");toast("Не удалось записать голосовое: "+e.getMessage());}
     }
     private void stopChatVoiceRecording(TextView button){
         try{
-            chatRecorder.stop();chatRecorder.release();chatRecorder=null;button.setText("🎙");
+            chatRecorder.stop();chatRecorder.release();chatRecorder=null;button.setText("🎙");button.setContentDescription("Записать голосовое сообщение");
             if(chatRecording!=null){
                 File recording=chatRecording;
                 confirmChatAttachment(Uri.fromFile(recording),"Голосовое","audio/3gpp",()->{});
@@ -3233,7 +3284,7 @@ public class MainActivity extends Activity {
         }catch(Exception e){
             toast("Запись слишком короткая, повторите ещё раз");
             if(chatRecorder!=null){chatRecorder.release();chatRecorder=null;}
-            button.setText("🎙");
+            button.setText("🎙");button.setContentDescription("Записать голосовое сообщение");
         }
     }
     private void uploadChatAttachment(Uri uri,String type){uploadChatAttachment(uri,type,getContentResolver().getType(uri));}
@@ -3305,8 +3356,8 @@ public class MainActivity extends Activity {
         AlertDialog dialog=new AlertDialog.Builder(this).setTitle("GIF")
                 .setView(content).setPositiveButton("Закрыть",null).create();
         android.graphics.drawable.AnimatedImageDrawable playback=animated;
-        dialog.setOnShowListener(v->{if(playback!=null)playback.start();});
-        dialog.setOnDismissListener(v->{if(playback!=null)playback.stop();});
+        dialog.setOnShowListener(v->{if(android.os.Build.VERSION.SDK_INT>=28&&playback!=null)playback.start();});
+        dialog.setOnDismissListener(v->{if(android.os.Build.VERSION.SDK_INT>=28&&playback!=null)playback.stop();});
         dialog.show();
     }
 
@@ -3428,7 +3479,13 @@ public class MainActivity extends Activity {
         LinearLayout c=card(); c.setOrientation(LinearLayout.HORIZONTAL); c.setGravity(Gravity.CENTER_VERTICAL);
         TextView badge=text(icon,20,PURPLE,true); badge.setGravity(Gravity.CENTER); badge.setBackground(shape(PALE,15)); c.addView(badge,new LinearLayout.LayoutParams(dp(44),dp(44)));
         LinearLayout copy=column(); copy.setPadding(dp(12),0,0,0); copy.addView(text(title,15,INK,true)); if(sub!=null&&!sub.isEmpty()){TextView desc=text(sub,12,MUTED,false); LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.topMargin=dp(3);copy.addView(desc,p);}
-        c.addView(copy,new LinearLayout.LayoutParams(0,-2,1)); if(click!=null)c.setOnClickListener(v->click.run());
+        c.addView(copy,new LinearLayout.LayoutParams(0,-2,1));
+        if(click!=null) {
+            c.setContentDescription(title + (sub == null || sub.isEmpty() ? "" : ". " + sub) + ". Открыть");
+            c.setFocusable(true);
+            c.setClickable(true);
+            c.setOnClickListener(v->click.run());
+        }
     }
     private LinearLayout card() {
         LinearLayout c=column(); c.setPadding(dp(17),dp(16),dp(17),dp(16)); c.setBackground(shape(PAPER,22)); c.setElevation(dp(1));
@@ -3438,7 +3495,7 @@ public class MainActivity extends Activity {
         TextView h=text(title,19,INK,true); LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.topMargin=dp(13);p.bottomMargin=dp(3);body.addView(h,p);
         if(sub!=null){TextView s=text(sub,12,MUTED,false);LinearLayout.LayoutParams q=new LinearLayout.LayoutParams(-1,-2);q.bottomMargin=dp(11);body.addView(s,q);}
     }
-    private TextView pill(String value,int color) { TextView b=text(value,13,color,true);b.setGravity(Gravity.CENTER);b.setMinHeight(dp(46));b.setPadding(dp(16),dp(11),dp(16),dp(11));b.setBackground(shape(PALE,22));LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-2,-2);p.bottomMargin=dp(10);b.setLayoutParams(p);return b; }
+    private TextView pill(String value,int color) { TextView b=text(value,13,color,true);b.setGravity(Gravity.CENTER);b.setMinHeight(dp(48));b.setPadding(dp(16),dp(11),dp(16),dp(11));b.setBackground(shape(PALE,22));LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-2,-2);p.bottomMargin=dp(10);b.setLayoutParams(p);return b; }
     private void addGap(LinearLayout parent,int h) { View gap=new View(this);parent.addView(gap,new LinearLayout.LayoutParams(1,dp(h))); }
 
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent data) {

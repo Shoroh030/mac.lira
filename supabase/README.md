@@ -4,7 +4,7 @@ The Android and PC clients are configured for the shared Supabase project using 
 
 ## Apply the database schema
 
-The clients currently receive missing-table errors until the migrations have run. Confirm that the Supabase project's URL ends in `vdmcaltwnhlqrvwvchwi.supabase.co`, then apply these files in order:
+For a new Supabase project, confirm its URL ends in `vdmcaltwnhlqrvwvchwi.supabase.co`, inspect its migration history, then apply these files in order:
 
 1. `migrations/20261020000100_shared_couple_space.sql`
 2. `migrations/20261020000200_watch_party.sql`
@@ -16,7 +16,9 @@ The clients currently receive missing-table errors until the migrations have run
 8. `migrations/20261026000100_watch_camera_renegotiation.sql` (legacy compatibility only)
 9. `migrations/20261027000100_couple_games_supported_types.sql`
 
-The game-types migration reasserts the supported game constraint, including Connect Four, Checkers, and Dots and Boxes, without rewriting an earlier migration. The camera-renegotiation migration is committed on the feature branch, but this work did not apply it to Supabase. The remote migration history was not verified, so treat its remote state as unknown and do not apply any migration without explicit approval. Camera renegotiation migration is required only for clients that send signal kind `renegotiate`. The current Android client sends an `offer` signal with a renegotiation request payload, which is already allowed by the base watch-party schema.
+The game-types migration reasserts the supported game constraint, including Connect Four, Checkers, and Dots and Boxes, without rewriting an earlier migration. The camera-renegotiation migration is required only for clients that send signal kind `renegotiate`; the current Android client instead sends an `offer` signal with a renegotiation-request payload, which is allowed by the base schema.
+
+Remote state last checked on 2026-10-24: the linked project's migration history contains versions through `20261023000100`; pending versions are `20261023000200`, `20261025000100`, `20261026000100`, and `20261027000100`. The remote game-type constraint already contains all eight supported values despite the unrecorded migration, while the remote signaling constraint still lists only the base signal kinds. A read-only policy query could not connect because the CLI's temporary database role failed password authentication. No remote migrations were applied; verify the actual schema and policies after configuring `SUPABASE_DB_PASSWORD` locally, then review the dry run before applying. Never put the database password in source control or chat.
 
 To deploy with the Supabase CLI, authenticate and link this repository, then inspect the remote migration history before applying anything:
 

@@ -22,6 +22,12 @@ If a room signal is rejected with HTTP 403/SQLSTATE `42501`, the client explains
 
 The room synchronizes YouTube videos and public HTTPS MP4, HLS (`.m3u8`), and WebM links. The host can select a link in the room; the partner receives it and playback/pause/seek state is synchronized through couple-scoped Supabase room signals. Other sites may open in the in-app WebView, but their player controls are not synchronized. Protected-content and embed restrictions are not bypassed. Text chat and playback work without camera or microphone permissions. Both are off when the room opens; each is requested only after its own button is tapped. Camera and microphone tracks are sent to the partner over WebRTC and are not uploaded to Supabase. Screen capture is not supported. Apply `supabase/migrations/20261025000100_watch_player_signals.sql` before using synchronized playback with the remote Supabase project.
 
+## Navigation
+
+The bottom bar keeps **Главная**, **Чат**, **Дела**, **Календарь**, and **Ещё** reachable on first launch. **Ещё** is pinned so optional or less-frequent sections remain discoverable even when the other destinations are customized. It groups the remaining sections by communication, plans, shared activities, and tools. The profile shortcut remains in the top bar.
+
+When no couple connection is ready, the home screen keeps the watch-room actions visible but disabled and explains that sign-in and pairing are required first. Once connected, creating a room and joining a partner's room remain separate actions. Navigation labels are announced to TalkBack, and touch actions use at least 48 dp targets.
+
 ## 16 KB memory pages
 
 The Android module packages only `arm64-v8a` and `x86_64`. Check every native library's ELF `PT_LOAD` alignment and the APK's 16 KB ZIP alignment after building:
