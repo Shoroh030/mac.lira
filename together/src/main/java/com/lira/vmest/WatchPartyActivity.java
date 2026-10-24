@@ -844,12 +844,7 @@ public final class WatchPartyActivity extends Activity {
                     }
                     for (int phase = 0; phase < 3 && !closed; phase++) {
                         for (JSONObject item : incoming) {
-                            String kind = item.optString("kind");
-                            boolean negotiation = "offer".equals(kind) || "answer".equals(kind);
-                            boolean ice = "ice".equals(kind);
-                            if ((phase == 0 && negotiation)
-                                    || (phase == 1 && ice)
-                                    || (phase == 2 && !negotiation && !ice)) {
+                            if (WatchSignalOrder.phase(item.optString("kind")) == phase) {
                                 processSignalSafe(item);
                             }
                         }
