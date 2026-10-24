@@ -26,8 +26,11 @@ public final class WatchRoomSafetyTest {
     public void reportOnlySanitizedActiveRoomSummary() throws Exception {
         SupabaseSync sync = new SupabaseSync(
                 InstrumentationRegistry.getInstrumentation().getTargetContext());
+        boolean signedIn = sync.signedIn();
+        boolean pairLinked = !sync.coupleId().isEmpty();
+        Log.i(TAG, "local-account-session=" + signedIn + ", pair-linked=" + pairLinked);
         assumeTrue("Pair session unavailable",
-                sync.configured() && sync.signedIn() && !sync.coupleId().isEmpty());
+                sync.configured() && signedIn && pairLinked);
         Method request = SupabaseSync.class.getDeclaredMethod(
                 "requestValue", String.class, String.class, JSONObject.class, boolean.class);
         request.setAccessible(true);

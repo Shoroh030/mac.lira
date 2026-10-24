@@ -477,6 +477,8 @@ public class MainActivity extends Activity {
         TextView question = pill("Вопрос дня  ·  Ответить друг другу", PURPLE);
         welcome.addView(question); question.setOnClickListener(v -> open("💭  Вопрос дня для двоих"));
 
+        renderHomePairingShortcut();
+
         heading("На сегодня", "Ваши общие дела");
         LinearLayout taskCard = card();
         JSONArray tasks = read("tasks");
@@ -500,6 +502,49 @@ public class MainActivity extends Activity {
         simpleCard("🎬", "Кино-комната", "Соберитесь на совместный просмотр", () -> open("🎬  Комната просмотра"));
         simpleCard("🗳", "Выбрать, чем заняться", "Отдельное голосование за совместные занятия", () -> open("🗳 Голосование: чем заняться"));
         simpleCard("🎁", "Подарочный радар", "Сохраняйте идеи подарков", () -> open("🎁  Подарочный радар"));
+    }
+
+    private void renderHomePairingShortcut() {
+        if (!sync.coupleId().isEmpty()) return;
+
+        heading("Подключить партнёра", "Пара открывает общие функции и синхронизацию");
+        if (!sync.configured()) {
+            simpleCard("☁", "Настроить связь пары", "Сначала подключите Supabase.", this::configureServer);
+            return;
+        }
+        if (!sync.signedIn()) {
+            simpleCard("🤝", "Войти и подключить партнёра",
+                    "После входа выберите сканирование QR-кода или ручной ввод приглашения.",
+                    () -> { tab = "Пригласить"; render(); });
+            return;
+        }
+        if (coupleRestorePending) {
+            simpleCard("🤝", "Проверяем существующую пару",
+                    "Подождите, пока проверка аккаунта завершится.", null);
+            return;
+        }
+        if (coupleRestoreFailed) {
+            simpleCard("!", "Не удалось проверить пару",
+                    "Повторите проверку, прежде чем создавать новое приглашение.",
+                    this::restoreCoupleBinding);
+            return;
+        }
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setGravity(Gravity.CENTER);
+        TextView scan = pill("⌗  Сканировать QR", PURPLE);
+        TextView manual = pill("Ввести код", PURPLE);
+        LinearLayout.LayoutParams scanParams = new LinearLayout.LayoutParams(0, -2, 1);
+        scanParams.setMargins(0, 0, dp(6), 0);
+        LinearLayout.LayoutParams manualParams = new LinearLayout.LayoutParams(0, -2, 1);
+        manualParams.setMargins(dp(6), 0, 0, 0);
+        scan.setLayoutParams(scanParams);
+        manual.setLayoutParams(manualParams);
+        actions.addView(scan);
+        actions.addView(manual);
+        body.addView(actions);
+        scan.setOnClickListener(v -> startInviteScanner());
+        manual.setOnClickListener(v -> joinCoupleDialog());
     }
 
     private void renderTasks() {
@@ -1413,15 +1458,25 @@ public class MainActivity extends Activity {
 
     private void createCoupleDialog() {
         EditText name = new EditText(this); name.setSingleLine(true); name.setHint("Название пары, например: Мы");
-        new AlertDialog.Builder(this).setTitle("Создать пространство").setView(name).setNegativeButton("Отмена", null)
+        new AlertDialog.Builder(this).setTitle("Создать приглашение")
+                .setMessage("Создайте пространство, затем покажите QR-код партнёру. У каждого должен быть свой аккаунт.")
+                .setView(name).setNegativeButton("Отмена", null)
                 .setPositiveButton("Создать", (d, w) -> runNetwork(() -> sync.createCouple(name.getText().toString()), result -> {
                     persistCurrentProfile(); render(); showInviteCodeDialog();
                 })).show();
     }
 
     private void joinCoupleDialog() {
-        EditText code = new EditText(this); code.setSingleLine(true); code.setHint("Код приглашения");
-        new AlertDialog.Builder(this).setTitle("Присоединиться к партнёру").setView(code).setNegativeButton("Отмена", null)
+        EditText code = new EditText(this);
+        code.setSingleLine(true);
+        code.setHint("8 символов или VMESTE:XXXXXXXX");
+        code.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
+                | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        code.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(15)});
+        new AlertDialog.Builder(this).setTitle("Ввести код приглашения")
+                .setMessage("Или отсканируйте QR-код на главном экране или во вкладке «Пригласить».")
+                .setView(code).setNegativeButton("Отмена", null)
                 .setPositiveButton("Присоединиться", (d, w) -> joinCoupleWithCode(code.getText().toString())).show();
     }
 
@@ -1437,20 +1492,28 @@ public class MainActivity extends Activity {
         if(!sync.ready())return;
         try{
             JSONObject profile=new JSONObject();
-            String photo=prefs.getString("profile_avatar_data","");
             profile.put("display_name",prefs.getString("profile_name",""));
-            profile.put("avatar",photo.isEmpty()?prefs.getString("profile_avatar","♡"):photo);
+            profile.put("avatar",prefs.getString("profile_avatar","♡"));
+            profile.put("avatar_local_uri",localAvatarUri());
             profile.put("bio",prefs.getString("profile_bio",""));
-            network.execute(()->{try{sync.saveProfile(profile);}catch(Exception e){android.util.Log.w("VmesteProfile","Could not sync profile after pairing",e);runOnUiThread(()->toast("Пару подключили, но профиль не синхронизировался"));}});
+            persistProfile(profile);
         }catch(Exception e){android.util.Log.w("VmesteProfile","Could not prepare profile after pairing",e);toast("Не удалось подготовить профиль для синхронизации");}
     }
 
     private void startInviteScanner() {
         if (!sync.configured()) { toast("Сначала настройте подключение к общему пространству"); return; }
         if (!sync.signedIn()) { accountDialog(); return; }
-        new IntentIntegrator(this).setDesiredBarcodeFormats(java.util.Collections.singletonList(BarcodeFormat.QR_CODE.toString()))
-                .setPrompt("Наведите камеру на QR-код приглашения")
-                .setBeepEnabled(false).setOrientationLocked(false).initiateScan();
+        try {
+            new IntentIntegrator(this)
+                    .setDesiredBarcodeFormats(java.util.Collections.singletonList(BarcodeFormat.QR_CODE.toString()))
+                    .setPrompt("Наведите камеру на QR-код приглашения Вместе")
+                    .setBeepEnabled(false)
+                    .setOrientationLocked(false)
+                    .initiateScan();
+        } catch (RuntimeException e) {
+            android.util.Log.w("VmesteInvite", "Could not launch the QR scanner", e);
+            toast("Не удалось открыть сканер. Введите код приглашения вручную.");
+        }
     }
 
     private void showInviteCodeDialog() {
@@ -1563,7 +1626,12 @@ public class MainActivity extends Activity {
                 .setPositiveButton("Подключиться", (d,w) -> {
                     String roomId = code.getText().toString().trim();
                     this.<JSONObject>runNetwork(() -> { JSONObject found=sync.getWatchRoom(roomId);if(found!=null){JSONObject movie=sync.fetchMovieRoom();if(movie!=null)found.put("player_url",movie.optString("url",""));}return found; }, room -> {
-                        if (room == null || !"active".equals(room.optString("state"))) { toast("Активная комната с таким кодом не найдена"); return; }
+                        String joinError = WatchRoomJoinPolicy.error(
+                                room == null ? "" : room.optString("state", ""),
+                                room == null ? "" : room.optString("couple_id", ""),
+                                room == null ? "" : room.optString("host_id", ""),
+                                sync.coupleId(), sync.userId());
+                        if (joinError != null) { toast(joinError); return; }
                         startActivity(WatchPartyActivity.intent(this, roomId, false, room.optString("title", "Совместный просмотр")).putExtra(WatchPartyActivity.EXTRA_PLAYER_URL, room.optString("player_url", "")));
                     });
                 }).show();

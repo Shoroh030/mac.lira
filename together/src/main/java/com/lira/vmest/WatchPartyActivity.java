@@ -97,9 +97,12 @@ public final class WatchPartyActivity extends Activity {
     private boolean playerReady;
     private JSONObject pendingPlaybackState;
     private LinearLayout root;
+    private LinearLayout topPanel;
+    private ScrollView controlsScroll;
     private TextView status, roomCode;
     private WebView playerView;
     private FrameLayout playerContainer;
+    private Button fullscreenButton;
     private PlayerView directPlayerView;
     private EditText playerAddress;
     private LinearLayout videoRow;
@@ -177,20 +180,25 @@ public final class WatchPartyActivity extends Activity {
     private void buildUiSafe() {
         try {
             root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL);
-            root.setPadding(dp(16), dp(12), dp(16), dp(10));
+            root.setPadding(dp(12), dp(8), dp(12), dp(8));
             root.setBackgroundColor(Color.rgb(250, 247, 252)); setContentView(root);
-            TextView heading = labelSafe("🎬  " + title, 21, Color.rgb(48, 43, 53), true); root.addView(heading);
-            roomCode = labelSafe("Код комнаты: " + roomId, 12, Color.GRAY, false); roomCode.setPadding(0, dp(4), 0, dp(4)); root.addView(roomCode);
+            topPanel = new LinearLayout(this); topPanel.setOrientation(LinearLayout.VERTICAL);
+            root.addView(topPanel, new LinearLayout.LayoutParams(-1, -2));
+            TextView heading = labelSafe("🎬  " + title, 20, Color.rgb(48, 43, 53), true);
+            topPanel.addView(heading);
+            roomCode = labelSafe("Код комнаты: " + roomId, 12, Color.GRAY, false);
+            roomCode.setPadding(0, dp(3), 0, dp(2)); topPanel.addView(roomCode);
             status = labelSafe("Плеер и чат доступны · камера и микрофон выключены", 14,
                 Color.rgb(102, 77, 128), true);
-            status.setPadding(0, dp(8), 0, dp(8)); root.addView(status);
+            status.setPadding(0, dp(5), 0, dp(5)); topPanel.addView(status);
             LinearLayout playerControls = new LinearLayout(this); playerControls.setGravity(Gravity.CENTER_VERTICAL);
-            playerControls.setPadding(0, dp(4), 0, dp(4));
+            playerControls.setPadding(0, dp(2), 0, dp(6));
             playerAddress = new EditText(this); playerAddress.setSingleLine(true);
             playerAddress.setHint("YouTube или HTTPS-ссылка на MP4/HLS");
             if (playerUrl != null) playerAddress.setText(playerUrl);
             playerControls.addView(playerAddress, new LinearLayout.LayoutParams(0, dp(48), 1));
-            Button play = new Button(this); play.setText("Открыть"); playerControls.addView(play); root.addView(playerControls);
+            Button play = buttonSafe("Открыть", Color.rgb(129, 88, 165), Color.WHITE);
+            playerControls.addView(play); topPanel.addView(playerControls);
             playerView = new WebView(this); playerView.setBackgroundColor(Color.BLACK);
             WebSettings webSettings = playerView.getSettings();
             webSettings.setJavaScriptEnabled(true);
@@ -220,12 +228,35 @@ public final class WatchPartyActivity extends Activity {
             playerContainer.addView(directPlayerView, new FrameLayout.LayoutParams(-1, -1));
             playerView.setVisibility(View.GONE);
             directPlayerView.setVisibility(View.GONE);
-            root.addView(playerContainer, new LinearLayout.LayoutParams(-1, dp(220)));
+            fullscreenButton = buttonSafe("⛶", Color.rgb(48, 43, 53), Color.WHITE);
+            fullscreenButton.setMinWidth(dp(48));
+            fullscreenButton.setContentDescription("На весь экран");
+            fullscreenButton.setEnabled(false);
+            FrameLayout.LayoutParams fullscreenParams = new FrameLayout.LayoutParams(
+                    dp(48), dp(44), Gravity.END | Gravity.TOP);
+            fullscreenParams.setMargins(0, dp(8), dp(8), 0);
+            playerContainer.addView(fullscreenButton, fullscreenParams);
+            fullscreenButton.setOnClickListener(v -> toggleFullscreenSafe());
+            LinearLayout.LayoutParams playerParams = new LinearLayout.LayoutParams(-1, 0, 3f);
+            playerParams.topMargin = dp(4);
+            playerParams.bottomMargin = dp(8);
+            root.addView(playerContainer, playerParams);
             play.setOnClickListener(v -> {
                 String link = playerAddress.getText().toString().trim();
                 openPlayerSafe(link, true);
             });
             if (playerUrl != null && !playerUrl.trim().isEmpty()) openPlayerSafe(playerUrl, host);
+
+            controlsScroll = new ScrollView(this);
+            controlsScroll.setFillViewport(false);
+            LinearLayout controlPanel = new LinearLayout(this);
+            controlPanel.setOrientation(LinearLayout.VERTICAL);
+            controlsScroll.addView(controlPanel, new ScrollView.LayoutParams(-1, -2));
+            root.addView(controlsScroll, new LinearLayout.LayoutParams(-1, 0, 2f));
+
+            TextView callHeading = labelSafe("Камера и голос", 15, Color.rgb(48, 43, 53), true);
+            callHeading.setPadding(0, dp(2), 0, dp(5));
+            controlPanel.addView(callHeading);
             videoRow = new LinearLayout(this);
             videoRow.setGravity(Gravity.CENTER);
             LinearLayout remoteTile = new LinearLayout(this);
@@ -245,52 +276,70 @@ public final class WatchPartyActivity extends Activity {
             videoRow.addView(remoteTile, new LinearLayout.LayoutParams(0, dp(118), 1));
             videoRow.addView(localTile, new LinearLayout.LayoutParams(0, dp(118), 1));
             videoRow.setVisibility(View.GONE);
-            root.addView(videoRow);
+            controlPanel.addView(videoRow);
             LinearLayout mediaControls = new LinearLayout(this);
             mediaControls.setGravity(Gravity.CENTER);
-            cameraButton = new Button(this);
-            cameraButton.setText("📷 Камера выключена");
+            cameraButton = buttonSafe("📷 Камера выключена", Color.rgb(239, 229, 246), Color.rgb(102, 68, 132));
             cameraButton.setEnabled(false);
-            mediaControls.addView(cameraButton, new LinearLayout.LayoutParams(0, dp(48), 1));
-            micButton = new Button(this);
-            micButton.setText("🔇 Микрофон выключен");
+            LinearLayout.LayoutParams mediaButtonParams = new LinearLayout.LayoutParams(0, dp(46), 1);
+            mediaButtonParams.setMargins(0, 0, dp(6), 0);
+            mediaControls.addView(cameraButton, mediaButtonParams);
+            micButton = buttonSafe("🔇 Микрофон выключен", Color.rgb(239, 229, 246), Color.rgb(102, 68, 132));
             micButton.setEnabled(false);
-            mediaControls.addView(micButton, new LinearLayout.LayoutParams(0, dp(48), 1));
-            root.addView(mediaControls);
+            LinearLayout.LayoutParams micButtonParams = new LinearLayout.LayoutParams(0, dp(46), 1);
+            micButtonParams.setMargins(dp(6), 0, 0, 0);
+            mediaControls.addView(micButton, micButtonParams);
+            controlPanel.addView(mediaControls);
             privacyStatus = labelSafe("Видео и звук никому не передаются", 12,
                 Color.GRAY, false);
-            privacyStatus.setPadding(0, 0, 0, dp(4));
-            root.addView(privacyStatus);
+            privacyStatus.setPadding(0, dp(3), 0, dp(8));
+            controlPanel.addView(privacyStatus);
             cameraButton.setOnClickListener(v -> toggleCameraSafe());
             micButton.setOnClickListener(v -> toggleMicrophoneSafe());
+
+            LinearLayout chatHeading = new LinearLayout(this);
+            chatHeading.setGravity(Gravity.CENTER_VERTICAL);
+            TextView chatLabel = labelSafe("Текстовый чат", 15, Color.rgb(48, 43, 53), true);
+            chatHeading.addView(chatLabel, new LinearLayout.LayoutParams(0, -2, 1));
+            Button chatToggle = buttonSafe("Свернуть", Color.rgb(239, 229, 246), Color.rgb(102, 68, 132));
+            chatHeading.addView(chatToggle);
+            controlPanel.addView(chatHeading);
             chatScroll = new ScrollView(this); chatScroll.setFillViewport(false);
             chatLines = new LinearLayout(this); chatLines.setOrientation(LinearLayout.VERTICAL); chatScroll.addView(chatLines);
-            LinearLayout.LayoutParams chatParams = new LinearLayout.LayoutParams(-1, dp(126)); chatParams.topMargin = dp(8);
-            root.addView(chatScroll, chatParams);
-            LinearLayout composer = new LinearLayout(this); composer.setGravity(Gravity.CENTER_VERTICAL); root.addView(composer);
+            LinearLayout.LayoutParams chatParams = new LinearLayout.LayoutParams(-1, dp(112));
+            chatParams.topMargin = dp(4);
+            controlPanel.addView(chatScroll, chatParams);
+            LinearLayout composer = new LinearLayout(this); composer.setGravity(Gravity.CENTER_VERTICAL);
             EditText message = new EditText(this); message.setSingleLine(true);
             message.setHint("Сообщение партнёру…");
-            composer.addView(message, new LinearLayout.LayoutParams(0, dp(52), 1));
-            Button send = new Button(this); send.setText("Отправить"); composer.addView(send);
+            composer.addView(message, new LinearLayout.LayoutParams(0, dp(48), 1));
+            Button send = buttonSafe("Отправить", Color.rgb(129, 88, 165), Color.WHITE);
+            composer.addView(send);
+            controlPanel.addView(composer);
             send.setOnClickListener(v -> {
                 String value = message.getText().toString().trim();
                 if (!value.isEmpty()) { sendChatSafe(value); message.setText(""); }
             });
-            LinearLayout actions = new LinearLayout(this); actions.setGravity(Gravity.CENTER); root.addView(actions);
-            Button textMode = new Button(this); textMode.setText("Текст ✓"); actions.addView(textMode);
-            textMode.setOnClickListener(v -> {
+            chatToggle.setOnClickListener(v -> {
                 boolean visible = chatScroll.getVisibility() != View.VISIBLE;
                 chatScroll.setVisibility(visible ? View.VISIBLE : View.GONE);
                 composer.setVisibility(visible ? View.VISIBLE : View.GONE);
-                textMode.setText(visible ? "Текст ✓" : "Текст");
+                chatToggle.setText(visible ? "Свернуть" : "Показать");
             });
-            Button stop = new Button(this); stop.setText("Завершить"); actions.addView(stop);
+
+            LinearLayout actions = new LinearLayout(this);
+            actions.setGravity(Gravity.CENTER);
+            LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(-1, -2);
+            actionParams.topMargin = dp(8);
+            controlPanel.addView(actions, actionParams);
+            Button stop = buttonSafe("Завершить просмотр", Color.rgb(250, 236, 239), Color.rgb(154, 56, 72));
+            actions.addView(stop, new LinearLayout.LayoutParams(0, dp(46), host ? 1 : 2));
             stop.setOnClickListener(v -> { finishRoomSafe(); });
-            Button fullscreenBtn = new Button(this); fullscreenBtn.setText("На весь экран"); actions.addView(fullscreenBtn);
-            fullscreenBtn.setOnClickListener(v -> { toggleFullscreenSafe();
-                fullscreenBtn.setText(fullscreen ? "Выйти из полного экрана" : "На весь экран"); });
             if (host) {
-                Button share = new Button(this); share.setText("Поделиться кодом"); actions.addView(share);
+                Button share = buttonSafe("Поделиться кодом", Color.rgb(239, 229, 246), Color.rgb(102, 68, 132));
+                LinearLayout.LayoutParams shareParams = new LinearLayout.LayoutParams(0, dp(46), 1);
+                shareParams.setMargins(dp(6), 0, 0, 0);
+                actions.addView(share, shareParams);
                 share.setOnClickListener(v -> {
                     Intent i = new Intent(Intent.ACTION_SEND); i.setType("text/plain");
                     i.putExtra(Intent.EXTRA_TEXT, "Подключайся к парному просмотру в «Вместе». Код комнаты: " + roomId);
@@ -301,6 +350,20 @@ public final class WatchPartyActivity extends Activity {
         } catch (Exception e) {
             showErrorSafe("Ошибка интерфейса: " + e.getMessage());
         }
+    }
+
+    private Button buttonSafe(String text, int background, int foreground) {
+        Button button = new Button(this);
+        button.setText(text);
+        button.setAllCaps(false);
+        button.setTextSize(14);
+        button.setTextColor(foreground);
+        button.setMinHeight(dp(44));
+        button.setMinimumHeight(dp(44));
+        button.setMinimumWidth(0);
+        button.setPadding(dp(10), 0, dp(10), 0);
+        button.setBackgroundTintList(android.content.res.ColorStateList.valueOf(background));
+        return button;
     }
 
     private boolean isHttpsUrl(String value) {
@@ -329,6 +392,7 @@ public final class WatchPartyActivity extends Activity {
                     "if(window.vmestePlayer)window.vmestePlayer.pauseVideo()", null);
         }
         playerSource = source;
+        if (fullscreenButton != null) fullscreenButton.setEnabled(true);
         playerUrl = source.url;
         playbackRequestSent = false;
         playerReady = false;
@@ -347,6 +411,11 @@ public final class WatchPartyActivity extends Activity {
             directPlayer = new ExoPlayer.Builder(this).build();
             directPlayerView.setPlayer(directPlayer);
             directPlayer.addListener(new Player.Listener() {
+                @Override public void onPlayerError(androidx.media3.common.PlaybackException error) {
+                    if (!closed && status != null)
+                        status.setText("Плеер не загрузил видео · проверьте ссылку и подключение к интернету");
+                }
+
                 @Override public void onEvents(Player player, Player.Events events) {
                     if (closed) return;
                     if (events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED)
@@ -398,7 +467,7 @@ public final class WatchPartyActivity extends Activity {
                 + "document.head.appendChild(tag);"
                 + "function onYouTubeIframeAPIReady(){window.vmestePlayer=new YT.Player('player',{"
                 + "width:'100%',height:'100%',videoId:'" + videoId + "',"
-                + "playerVars:{playsinline:1,controls:1,enablejsapi:1,origin:'https://www.youtube-nocookie.com'}});}"
+                + "playerVars:{playsinline:1,controls:1,fs:0,enablejsapi:1,origin:'https://www.youtube-nocookie.com'}});}"
                 + "</script></body></html>";
     }
 
@@ -588,6 +657,7 @@ public final class WatchPartyActivity extends Activity {
                         remoteView.init(egl.getEglBaseContext(), null);
                         localCameraView.init(egl.getEglBaseContext(), null);
                         rtcReady = true;
+                        offerReady = true;
                         status.setText("Комната готова · плеер и текстовый чат доступны");
                         updateMediaControlsSafe();
                     } catch (Exception e) {
@@ -616,8 +686,16 @@ public final class WatchPartyActivity extends Activity {
                 @Override public void onIceConnectionChange(PeerConnection.IceConnectionState state) {
                     main.post(() -> {
                         if (closed) return;
-                        status.setText(state == PeerConnection.IceConnectionState.CONNECTED
-                            ? "Партнёр подключён · плеер синхронизируется" : "Связь: " + state.name());
+                        if (state == PeerConnection.IceConnectionState.CONNECTED
+                                || state == PeerConnection.IceConnectionState.COMPLETED) {
+                            status.setText("Связь с партнёром установлена · камера и звук доступны при включении");
+                        } else if (state == PeerConnection.IceConnectionState.FAILED) {
+                            status.setText("Не удалось установить прямую связь · проверьте сеть и TURN-настройки");
+                        } else if (state == PeerConnection.IceConnectionState.DISCONNECTED) {
+                            status.setText("Связь с партнёром потеряна · пытаемся восстановить");
+                        } else {
+                            status.setText("Связь: " + state.name());
+                        }
                     });
                 }
                 @Override public void onIceConnectionReceivingChange(boolean receiving) { }
@@ -638,8 +716,19 @@ public final class WatchPartyActivity extends Activity {
                 }
                 @Override public void onDataChannel(org.webrtc.DataChannel channel) { }
                 @Override public void onRenegotiationNeeded() {
-                    if (host) main.post(() -> {
-                        if (offerReady && !closed) createOfferSafe();
+                    main.post(() -> {
+                        if (closed || !rtcReady) return;
+                        if (host) {
+                            if (offerReady) createOfferSafe();
+                        } else {
+                            try {
+                                JSONObject request = new JSONObject();
+                                request.put("renegotiation_request", true);
+                                sendSignalSafe("offer", request);
+                            } catch (Exception e) {
+                                showErrorSafe("Не удалось запросить подключение камеры или микрофона: " + e.getMessage());
+                            }
+                        }
                     });
                 }
                 @Override public void onAddTrack(RtpReceiver receiver, MediaStream[] streams) {
@@ -747,13 +836,30 @@ public final class WatchPartyActivity extends Activity {
                 if (closed) return;
                 try {
                     JSONArray batch = sync.fetchWatchSignals(roomId, lastSignalId);
+                    List<JSONObject> incoming = new ArrayList<>();
                     for (int i = 0; i < batch.length(); i++) {
                         JSONObject item = batch.getJSONObject(i);
                         lastSignalId = Math.max(lastSignalId, item.optLong("id"));
-                        if (!sync.userId().equals(item.optString("sender_id"))) processSignalSafe(item);
+                        if (!sync.userId().equals(item.optString("sender_id"))) incoming.add(item);
+                    }
+                    for (int phase = 0; phase < 3 && !closed; phase++) {
+                        for (JSONObject item : incoming) {
+                            String kind = item.optString("kind");
+                            boolean negotiation = "offer".equals(kind) || "answer".equals(kind);
+                            boolean ice = "ice".equals(kind);
+                            if ((phase == 0 && negotiation)
+                                    || (phase == 1 && ice)
+                                    || (phase == 2 && !negotiation && !ice)) {
+                                processSignalSafe(item);
+                            }
+                        }
                     }
                 } catch (Exception e) {
-                    main.post(() -> status.setText("Ожидание связи… проверьте интернет и доступ к Supabase"));
+                    String reason = signalErrorLabel(e);
+                    main.post(() -> {
+                        if (!closed && status != null)
+                            status.setText("Сигналы комнаты недоступны (" + reason + ") · проверьте доступ Supabase и миграции");
+                    });
                 }
                 if (!closed && !io.isShutdown()) {
                     try { main.postDelayed(() -> io.execute(this), 1300); }
@@ -773,6 +879,18 @@ public final class WatchPartyActivity extends Activity {
         }
         if ("playback_request".equals(kind)) {
             if (host) main.post(this::publishPlaybackSnapshotSafe);
+            return;
+        }
+        if ("renegotiate".equals(kind)) {
+            if (host) main.post(() -> {
+                if (offerReady && !closed) createOfferSafe();
+            });
+            return;
+        }
+        if ("offer".equals(kind) && host && data.optBoolean("renegotiation_request")) {
+            main.post(() -> {
+                if (offerReady && !closed) createOfferSafe();
+            });
             return;
         }
         if ("player_source".equals(kind)) {
@@ -849,8 +967,23 @@ public final class WatchPartyActivity extends Activity {
         if (io.isShutdown()) return;
         try { io.execute(() -> {
             try { sync.sendWatchSignal(roomId, kind, payload); }
-            catch (Exception e) { main.post(() -> status.setText("Не удалось передать сигнал: " + e.getMessage())); }
+            catch (Exception e) {
+                String reason = signalErrorLabel(e);
+                main.post(() -> {
+                    if (!closed && status != null)
+                        status.setText("Не удалось передать сигнал " + kind + " (" + reason + ") · проверьте миграции и доступ Supabase");
+                });
+            }
         }); } catch (Exception ignored) { }
+    }
+
+    private static String signalErrorLabel(Exception error) {
+        String message = error.getMessage();
+        if (message == null || message.isEmpty()) return error.getClass().getSimpleName();
+        int separator = message.indexOf(':');
+        return message.startsWith("HTTP ") && separator > 0
+                ? message.substring(0, separator)
+                : error.getClass().getSimpleName();
     }
 
     private void sendChatSafe(String value) {
@@ -1050,10 +1183,14 @@ public final class WatchPartyActivity extends Activity {
             cameraButton.setText(cameraStarting ? "📷 Камера запускается…"
                 : cameraTrack != null ? "📷 Камера включена" : "📷 Камера выключена");
             cameraButton.setEnabled(rtcReady && !closed && !cameraStarting);
+            cameraButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                    cameraTrack != null ? Color.rgb(225, 241, 229) : Color.rgb(239, 229, 246)));
         }
         if (micButton != null) {
             micButton.setText(audioTrack != null ? "🎙 Микрофон включён" : "🔇 Микрофон выключен");
             micButton.setEnabled(rtcReady && !closed);
+            micButton.setBackgroundTintList(android.content.res.ColorStateList.valueOf(
+                    audioTrack != null ? Color.rgb(225, 241, 229) : Color.rgb(239, 229, 246)));
         }
     }
 
@@ -1073,21 +1210,40 @@ public final class WatchPartyActivity extends Activity {
 
     private void toggleFullscreenSafe() {
         fullscreen = !fullscreen;
+        if (topPanel != null) topPanel.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
+        if (controlsScroll != null) controlsScroll.setVisibility(fullscreen ? View.GONE : View.VISIBLE);
+        if (root != null) root.setPadding(fullscreen ? 0 : dp(12), fullscreen ? 0 : dp(8),
+                fullscreen ? 0 : dp(12), fullscreen ? 0 : dp(8));
+        if (playerContainer != null) {
+            LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) playerContainer.getLayoutParams();
+            params.height = 0;
+            params.weight = fullscreen ? 1f : 3f;
+            playerContainer.setLayoutParams(params);
+        }
+        if (fullscreenButton != null) {
+            fullscreenButton.setText(fullscreen ? "×" : "⛶");
+            fullscreenButton.setContentDescription(fullscreen ? "Выйти из полноэкранного режима" : "На весь экран");
+        }
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 WindowInsetsController controller = getWindow().getInsetsController();
                 if (controller != null) {
                     if (fullscreen) controller.hide(WindowInsets.Type.systemBars());
                     else controller.show(WindowInsets.Type.systemBars());
+                    controller.setSystemBarsBehavior(
+                            WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
                 }
             } else {
                 int flags = getWindow().getDecorView().getSystemUiVisibility();
                 if (fullscreen)
-                    flags |= View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
+                    flags |= View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
                 else
-                    flags &= ~(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION);
+                    flags &= ~(View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
                 getWindow().getDecorView().setSystemUiVisibility(flags);
             }
+            if (root != null) root.requestLayout();
         } catch (Exception ignored) { }
     }
 
@@ -1153,6 +1309,10 @@ public final class WatchPartyActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
+        if (fullscreen) {
+            toggleFullscreenSafe();
+            return;
+        }
         new AlertDialog.Builder(this)
             .setMessage("Завершить комнату просмотра?")
             .setNegativeButton("Остаться", null)
@@ -1176,23 +1336,19 @@ public final class WatchPartyActivity extends Activity {
         if (!uiReady) return;
         try {
             if (isInPictureInPictureMode) {
-                if (playerContainer != null) playerContainer.setVisibility(View.GONE);
-                if (status != null) status.setVisibility(View.GONE);
-                if (roomCode != null) roomCode.setVisibility(View.GONE);
-                if (videoRow != null) videoRow.setVisibility(View.GONE);
-                if (privacyStatus != null) privacyStatus.setVisibility(View.GONE);
-                if (cameraButton != null) cameraButton.setVisibility(View.GONE);
-                if (micButton != null) micButton.setVisibility(View.GONE);
+                if (playerContainer != null) playerContainer.setVisibility(View.VISIBLE);
+                if (topPanel != null) topPanel.setVisibility(View.GONE);
+                if (controlsScroll != null) controlsScroll.setVisibility(View.GONE);
+                if (fullscreenButton != null) fullscreenButton.setVisibility(View.GONE);
                 if (root != null) root.setPadding(dp(4), dp(4), dp(4), dp(4));
             } else {
-                if (playerContainer != null) playerContainer.setVisibility(View.VISIBLE);
-                if (status != null) status.setVisibility(View.VISIBLE);
-                if (roomCode != null) roomCode.setVisibility(View.VISIBLE);
-                if (privacyStatus != null) privacyStatus.setVisibility(View.VISIBLE);
-                if (cameraButton != null) cameraButton.setVisibility(View.VISIBLE);
-                if (micButton != null) micButton.setVisibility(View.VISIBLE);
+                boolean onlyPlayer = fullscreen;
+                if (topPanel != null) topPanel.setVisibility(onlyPlayer ? View.GONE : View.VISIBLE);
+                if (controlsScroll != null) controlsScroll.setVisibility(onlyPlayer ? View.GONE : View.VISIBLE);
+                if (fullscreenButton != null) fullscreenButton.setVisibility(View.VISIBLE);
+                if (root != null) root.setPadding(onlyPlayer ? 0 : dp(12), onlyPlayer ? 0 : dp(8),
+                        onlyPlayer ? 0 : dp(12), onlyPlayer ? 0 : dp(8));
                 updateVideoRowSafe();
-                if (root != null) root.setPadding(dp(16), dp(12), dp(16), dp(10));
             }
         } catch (Exception ignored) { }
     }
