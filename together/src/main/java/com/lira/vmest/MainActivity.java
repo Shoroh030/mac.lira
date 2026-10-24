@@ -1129,7 +1129,7 @@ public class MainActivity extends Activity {
         boolean partnerView=prefs.getBoolean("gift_view_partner",false);String owner=partnerView?prefs.getString("partner_user_id",""):sync.userId();
         TextView toggle=pill(partnerView?"Показать мои идеи":"Посмотреть идеи партнёра",PURPLE);body.addView(toggle);toggle.setOnClickListener(v->{prefs.edit().putBoolean("gift_view_partner",!partnerView).apply();render();});
         TextView add=pill("＋ Добавить подарок",PURPLE);body.addView(add);add.setOnClickListener(v->addDialog("gifts","Идея подарка · название или ссылка"));
-        JSONArray rows=read("gifts");int visible=0;for(int i=0;i<rows.length();i++){JSONObject item=rows.optJSONObject(i);if(item==null)continue;String itemOwner=item.optString("owner_id",item.optString("created_by",sync.userId()));if(!owner.equals(itemOwner))continue;visible++;LinearLayout c=card();String imageUrl=item.optString("preview_image");if(!imageUrl.isEmpty()){ImageView preview=new ImageView(this);preview.setScaleType(ImageView.ScaleType.CENTER_CROP);LinearLayout.LayoutParams ip=new LinearLayout.LayoutParams(-1,dp(150));ip.bottomMargin=dp(8);c.addView(preview,ip);network.execute(()->{try{android.graphics.Bitmap bitmap=loadGiftBitmap(imageUrl);runOnUiThread(()->preview.setImageBitmap(bitmap));}catch(Exception ignored){}});}c.addView(text("🎁  "+item.optString("title"),16,INK,true));String detail=item.optString("detail");if(!detail.isEmpty())c.addView(text(detail,12,MUTED,false));c.setOnClickListener(v->{String link=item.optString("url");if(link.startsWith("https://")||link.startsWith("http://")){try{startActivity(new Intent(Intent.ACTION_VIEW,Uri.parse(link)));}catch(Exception ignored){editItemDialog("gifts",item);}}else editItemDialog("gifts",item);});c.setOnLongClickListener(v->{itemActions("gifts",item);return true;});}
+        JSONArray rows=read("gifts");int visible=0;for(int i=0;i<rows.length();i++){JSONObject item=rows.optJSONObject(i);if(item==null)continue;String itemOwner=item.optString("owner_id",item.optString("created_by",sync.userId()));if(!owner.equals(itemOwner))continue;visible++;LinearLayout c=card();String imageUrl=item.optString("preview_image");if(!GiftPreviewUrl.normalizePublicHttpUrl(imageUrl).isEmpty()){ImageView preview=new ImageView(this);preview.setScaleType(ImageView.ScaleType.CENTER_CROP);LinearLayout.LayoutParams ip=new LinearLayout.LayoutParams(-1,dp(150));ip.bottomMargin=dp(8);c.addView(preview,ip);network.execute(()->{android.graphics.Bitmap bitmap=loadGiftBitmap(imageUrl);if(bitmap!=null)runOnUiThread(()->preview.setImageBitmap(bitmap));});}c.addView(text("🎁  "+item.optString("title"),16,INK,true));String detail=item.optString("detail");if(!detail.isEmpty())c.addView(text(detail,12,MUTED,false));String rawGiftLink=item.optString("url");String giftLink=GiftPreviewUrl.normalizePublicHttpUrl(rawGiftLink);if(!giftLink.isEmpty())c.addView(text("Предпросмотр ссылки  ›",12,PURPLE,true));c.setOnClickListener(v->{if(!giftLink.isEmpty())showGiftPreview(giftLink);else if(!rawGiftLink.trim().isEmpty())toast("Можно просматривать только публичные ссылки http/https");else editItemDialog("gifts",item);});c.setOnLongClickListener(v->{itemActions("gifts",item);return true;});}
         if(visible==0)simpleCard("🎀",partnerView?"Пока нет идей от партнёра":"Сохраните идею подарка","Добавьте название, ссылку на магазин или штрихкод карты лояльности.",null);
     }
     private void renderTimeCapsules(){
@@ -1951,6 +1951,112 @@ public class MainActivity extends Activity {
         web.loadUrl(link);
     }
 
+    private void showGiftPreview(String link) {
+        String safeUrl = GiftPreviewUrl.normalizePublicHttpUrl(link);
+        if (safeUrl.isEmpty()) {
+            toast("Можно просматривать только публичные ссылки http/https");
+            return;
+        }
+
+        LinearLayout content = column();
+        TextView notice = text("Предпросмотр откроется внутри приложения. Некоторые сайты требуют входа или могут ограничивать показ контента; мы не обходим такие ограничения.", 12, MUTED, false);
+        notice.setPadding(dp(16), dp(10), dp(16), dp(10));
+        content.addView(notice);
+        TextView status = text(Uri.parse(safeUrl).getHost(), 12, MUTED, false);
+        status.setPadding(dp(16), 0, dp(16), dp(8));
+        content.addView(status);
+
+        android.webkit.WebView web = new android.webkit.WebView(this);
+        android.webkit.WebSettings settings = web.getSettings();
+        settings.setJavaScriptEnabled(false);
+        settings.setDomStorageEnabled(false);
+        settings.setAllowFileAccess(false);
+        settings.setAllowContentAccess(false);
+        settings.setAllowFileAccessFromFileURLs(false);
+        settings.setAllowUniversalAccessFromFileURLs(false);
+        settings.setJavaScriptCanOpenWindowsAutomatically(false);
+        settings.setSupportMultipleWindows(false);
+        settings.setMixedContentMode(android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        if (android.os.Build.VERSION.SDK_INT >= 26) settings.setSafeBrowsingEnabled(true);
+        int previewHeight = Math.max(dp(200), Math.min(dp(560), getResources().getDisplayMetrics().heightPixels * 2 / 3 - dp(130)));
+        content.addView(web, new LinearLayout.LayoutParams(-1, previewHeight));
+        web.setWebViewClient(new android.webkit.WebViewClient() {
+            private final java.util.concurrent.atomic.AtomicBoolean blockedNoticeShown =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+
+            private boolean isAllowed(String url) {
+                return !GiftPreviewUrl.normalizePublicHttpUrl(url).isEmpty();
+            }
+
+            private void blockUrl(String url) {
+                android.util.Log.i("VmesteGift", "Blocked non-public preview URL: " + Uri.parse(url).getScheme());
+                toast("Эта ссылка не поддерживается в предпросмотре");
+            }
+
+            @Override public boolean shouldOverrideUrlLoading(android.webkit.WebView view, String url) {
+                if (isAllowed(url)) return false;
+                blockUrl(url);
+                return true;
+            }
+
+            @Override public boolean shouldOverrideUrlLoading(android.webkit.WebView view, android.webkit.WebResourceRequest request) {
+                String url = request.getUrl().toString();
+                if (isAllowed(url)) return false;
+                blockUrl(url);
+                return true;
+            }
+
+            @Override public android.webkit.WebResourceResponse shouldInterceptRequest(android.webkit.WebView view, String url) {
+                if (GiftPreviewUrl.resolvesToPublicAddresses(url)) return null;
+                return blockedResponse();
+            }
+
+            @Override public android.webkit.WebResourceResponse shouldInterceptRequest(android.webkit.WebView view, android.webkit.WebResourceRequest request) {
+                if (GiftPreviewUrl.resolvesToPublicAddresses(request.getUrl().toString())) return null;
+                return blockedResponse();
+            }
+
+            @Override public void onPageStarted(android.webkit.WebView view, String url, android.graphics.Bitmap favicon) {
+                String host = Uri.parse(url).getHost();
+                status.setText(host == null ? "Предпросмотр" : host);
+            }
+
+            @Override public void onReceivedError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceError error) {
+                if (request.isForMainFrame()) status.setText("Страница недоступна. Проверьте подключение или откройте другую ссылку.");
+            }
+
+            @Override public void onReceivedHttpError(android.webkit.WebView view, android.webkit.WebResourceRequest request, android.webkit.WebResourceResponse errorResponse) {
+                if (request.isForMainFrame() && errorResponse.getStatusCode() >= 400) {
+                    status.setText("Сайт ограничил доступ или страница недоступна (HTTP "
+                            + errorResponse.getStatusCode() + "). Ограничения не обходятся.");
+                }
+            }
+
+            private android.webkit.WebResourceResponse blockedResponse() {
+                if (blockedNoticeShown.compareAndSet(false, true)) {
+                    runOnUiThread(() -> status.setText("Запрос на локальный или неподдерживаемый адрес заблокирован."));
+                }
+                return new android.webkit.WebResourceResponse("text/plain", "UTF-8",
+                        new java.io.ByteArrayInputStream(new byte[0]));
+            }
+        });
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("Предпросмотр подарка")
+                .setView(content)
+                .setNegativeButton("Закрыть", null)
+                .setNeutralButton("Обновить", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(v -> web.reload()));
+        dialog.setOnDismissListener(ignored -> {
+            web.stopLoading();
+            web.loadUrl("about:blank");
+            web.destroy();
+        });
+        dialog.show();
+        web.loadUrl(safeUrl);
+    }
+
     private void shareText(String value) {
         Intent send = new Intent(Intent.ACTION_SEND); send.setType("text/plain"); send.putExtra(Intent.EXTRA_TEXT, value);
         startActivity(Intent.createChooser(send, "Поделиться"));
@@ -2714,14 +2820,36 @@ public class MainActivity extends Activity {
                 .setPositiveButton("Сохранить", (d,w) -> { String t=name.getText().toString().trim(), extra=detail.getText().toString().trim(); if (!t.isEmpty()) { append(key,t,extra); JSONArray rows=read(key);JSONObject item=rows.optJSONObject(rows.length()-1);if(item!=null)try{if("wishes".equals(key))item.put("category",category.getText().toString().trim());if("gifts".equals(key)){String url=giftUrl(extra,t);if(!url.isEmpty()){item.put("url",url);item.put("detail",url);if(giftUrl("",t).equals(url)){item.put("title_from_url",true);try{item.put("title",new java.net.URL(url).getHost().replaceFirst("^www\\.",""));}catch(Exception ignored){}};}save(key,rows);syncItem(key,item);if(!url.isEmpty())enrichGiftLink(item,url);}else if("wishes".equals(key)){save(key,rows);syncItem(key,item);}}catch(Exception ignored){}render(); } }).show();
     }
     private String giftUrl(String detail,String title){
-        for(String raw:new String[]{detail,title}){if(raw==null)continue;java.util.regex.Matcher m=java.util.regex.Pattern.compile("(?i)(https?://[^\\s]+|www\\.[^\\s]+|(?:[a-z0-9-]+\\.)+[a-z]{2,}(?:/[^\\s]*)?)").matcher(raw.trim());if(!m.find())continue;String candidate=m.group(1).replaceAll("[),.!?;]+$","");if(!candidate.matches("(?i)^https?://.*"))candidate="https://"+candidate;try{java.net.URL parsed=new java.net.URL(candidate);if(("http".equalsIgnoreCase(parsed.getProtocol())||"https".equalsIgnoreCase(parsed.getProtocol()))&&parsed.getHost().contains("."))return parsed.toString();}catch(Exception ignored){}}
+        for(String raw:new String[]{detail,title}){if(raw==null)continue;java.util.regex.Matcher m=java.util.regex.Pattern.compile("(?i)(https?://[^\\s]+|www\\.[^\\s]+|(?:[a-z0-9-]+\\.)+[a-z]{2,}(?:/[^\\s]*)?)").matcher(raw.trim());if(!m.find())continue;String candidate=m.group(1).replaceAll("[),.!?;]+$","");if(!candidate.matches("(?i)^https?://.*"))candidate="https://"+candidate;String safeUrl=GiftPreviewUrl.normalizePublicHttpUrl(candidate);if(!safeUrl.isEmpty())return safeUrl;}
         return "";
     }
     private android.graphics.Bitmap loadGiftBitmap(String imageUrl){
-        java.net.HttpURLConnection connection=null;try{connection=(java.net.HttpURLConnection)new java.net.URL(imageUrl).openConnection();connection.setConnectTimeout(7000);connection.setReadTimeout(9000);connection.setInstanceFollowRedirects(true);connection.setRequestProperty("User-Agent","Mozilla/5.0 VmesteApp");int status=connection.getResponseCode();if(status<200||status>=300)return null;int length=connection.getContentLength();if(length>8*1024*1024)return null;java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream();try(java.io.InputStream input=connection.getInputStream()){byte[] buffer=new byte[8192];int count,total=0;while((count=input.read(buffer))!=-1&&total<8*1024*1024){out.write(buffer,0,count);total+=count;}}byte[] bytes=out.toByteArray();android.graphics.BitmapFactory.Options bounds=new android.graphics.BitmapFactory.Options();bounds.inJustDecodeBounds=true;android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length,bounds);int sample=1;while(bounds.outWidth/sample>1200||bounds.outHeight/sample>1200)sample*=2;android.graphics.BitmapFactory.Options opts=new android.graphics.BitmapFactory.Options();opts.inSampleSize=sample;return android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length,opts);}catch(Exception e){android.util.Log.i("VmesteGift","Could not load gift image",e);return null;}finally{if(connection!=null)connection.disconnect();}
+        java.net.HttpURLConnection connection=null;try{connection=openPublicGiftConnection(imageUrl);int status=connection.getResponseCode();String contentType=connection.getContentType();if(status<200||status>=300||contentType==null||!contentType.toLowerCase(Locale.ROOT).startsWith("image/"))return null;int length=connection.getContentLength();if(length>8*1024*1024)return null;java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream();try(java.io.InputStream input=connection.getInputStream()){byte[] buffer=new byte[8192];int count,total=0;while((count=input.read(buffer))!=-1&&total<8*1024*1024){out.write(buffer,0,count);total+=count;}}byte[] bytes=out.toByteArray();android.graphics.BitmapFactory.Options bounds=new android.graphics.BitmapFactory.Options();bounds.inJustDecodeBounds=true;android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length,bounds);if(bounds.outWidth<=0||bounds.outHeight<=0)return null;int sample=1;while(bounds.outWidth/sample>1200||bounds.outHeight/sample>1200)sample*=2;android.graphics.BitmapFactory.Options opts=new android.graphics.BitmapFactory.Options();opts.inSampleSize=sample;return android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length,opts);}catch(Exception e){android.util.Log.i("VmesteGift","Could not load gift image",e);return null;}finally{if(connection!=null)connection.disconnect();}
     }
     private void enrichGiftLink(JSONObject gift,String url){
-        network.execute(()->{java.net.HttpURLConnection connection=null;try{connection=(java.net.HttpURLConnection)new java.net.URL(url).openConnection();connection.setConnectTimeout(9000);connection.setReadTimeout(11000);connection.setInstanceFollowRedirects(true);connection.setRequestProperty("User-Agent","Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/123 Mobile Safari/537.36");connection.setRequestProperty("Accept","text/html,application/xhtml+xml,*/*;q=0.8");int status=connection.getResponseCode();if(status<200||status>=400)throw new Exception("Сайт вернул HTTP "+status);String contentType=connection.getContentType();String charset="UTF-8";if(contentType!=null){java.util.regex.Matcher cm=java.util.regex.Pattern.compile("(?i)charset=([^; ]+)").matcher(contentType);if(cm.find())charset=cm.group(1).replace("\\\"","");}java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream();try(java.io.InputStream input=connection.getInputStream()){byte[] buffer=new byte[8192];int count,total=0;while((count=input.read(buffer))!=-1&&total<512*1024){out.write(buffer,0,count);total+=count;}}String html=new String(out.toByteArray(),java.nio.charset.Charset.forName(charset));String pageUrl=connection.getURL().toString();String title=meta(html,"og:title");if(title.isEmpty())title=meta(html,"twitter:title");if(title.isEmpty()){java.util.regex.Matcher m=java.util.regex.Pattern.compile("(?is)<title[^>]*>(.*?)</title>").matcher(html);if(m.find())title=m.group(1).replaceAll("(?is)<[^>]+>"," ").replaceAll("\\s+"," ").trim();}title=android.text.Html.fromHtml(title,android.text.Html.FROM_HTML_MODE_LEGACY).toString().trim();String image=meta(html,"og:image:secure_url");if(image.isEmpty())image=meta(html,"og:image");if(image.isEmpty())image=meta(html,"twitter:image");if(!image.isEmpty())image=new java.net.URL(new java.net.URL(pageUrl),android.text.Html.fromHtml(image,android.text.Html.FROM_HTML_MODE_LEGACY).toString().trim()).toString();if(!title.isEmpty()&&gift.optBoolean("title_from_url")){gift.put("title",title);gift.put("title_from_url",false);}if(!image.isEmpty()&&(image.startsWith("https://")||image.startsWith("http://")))gift.put("preview_image",image);replaceItem("gifts",gift);runOnUiThread(()->{if(feature!=null&&feature.contains("Подарочный радар"))render();});}catch(Exception e){android.util.Log.i("VmesteGift","Could not load product preview",e);try{if(gift.optBoolean("title_from_url")){gift.put("title",new java.net.URL(url).getHost().replaceFirst("^www\\.",""));gift.put("title_from_url",false);replaceItem("gifts",gift);runOnUiThread(()->{if(feature!=null)render();});}}catch(Exception ignored){}}finally{if(connection!=null)connection.disconnect();}});
+        network.execute(()->{java.net.HttpURLConnection connection=null;try{connection=openPublicGiftConnection(url);int status=connection.getResponseCode();if(status<200||status>=300)throw new java.io.IOException("Ссылка вернула HTTP "+status);String contentType=connection.getContentType();if(contentType==null||!(contentType.toLowerCase(Locale.ROOT).contains("text/html")||contentType.toLowerCase(Locale.ROOT).contains("application/xhtml+xml")))throw new java.io.IOException("Ссылка не ведёт на HTML-страницу");String charset="UTF-8";java.util.regex.Matcher cm=java.util.regex.Pattern.compile("(?i)charset=([^; ]+)").matcher(contentType);if(cm.find())charset=cm.group(1).replace("\\\"","");java.io.ByteArrayOutputStream out=new java.io.ByteArrayOutputStream();try(java.io.InputStream input=connection.getInputStream()){byte[] buffer=new byte[8192];int count,total=0;while((count=input.read(buffer))!=-1&&total<512*1024){out.write(buffer,0,count);total+=count;}}String html=new String(out.toByteArray(),java.nio.charset.Charset.forName(charset));String pageUrl=connection.getURL().toString();String title=meta(html,"og:title");if(title.isEmpty())title=meta(html,"twitter:title");if(title.isEmpty()){java.util.regex.Matcher m=java.util.regex.Pattern.compile("(?is)<title[^>]*>(.*?)</title>").matcher(html);if(m.find())title=m.group(1).replaceAll("(?is)<[^>]+>"," ").replaceAll("\\s+"," ").trim();}title=android.text.Html.fromHtml(title,android.text.Html.FROM_HTML_MODE_LEGACY).toString().trim();String image=meta(html,"og:image:secure_url");if(image.isEmpty())image=meta(html,"og:image");if(image.isEmpty())image=meta(html,"twitter:image");if(!image.isEmpty()){String imageUrl=new java.net.URL(new java.net.URL(pageUrl),android.text.Html.fromHtml(image,android.text.Html.FROM_HTML_MODE_LEGACY).toString().trim()).toString();image=GiftPreviewUrl.normalizePublicHttpUrl(imageUrl);}if(!title.isEmpty()&&gift.optBoolean("title_from_url")){gift.put("title",title);gift.put("title_from_url",false);}if(!image.isEmpty())gift.put("preview_image",image);replaceItem("gifts",gift);runOnUiThread(()->{if(feature!=null&&feature.contains("Подарочный радар"))render();});}catch(Exception e){android.util.Log.i("VmesteGift","Could not load product preview",e);try{if(gift.optBoolean("title_from_url")){gift.put("title",new java.net.URL(url).getHost().replaceFirst("^www\\.",""));gift.put("title_from_url",false);replaceItem("gifts",gift);runOnUiThread(()->{if(feature!=null)render();});}}catch(Exception ignored){}}finally{if(connection!=null)connection.disconnect();}});
+    }
+    private java.net.HttpURLConnection openPublicGiftConnection(String rawUrl) throws java.io.IOException {
+        String safeUrl=GiftPreviewUrl.normalizePublicHttpUrl(rawUrl);
+        if(safeUrl.isEmpty())throw new java.io.IOException("Можно загружать только публичные ссылки http/https");
+        java.net.URL target=new java.net.URL(safeUrl);
+        for(int redirects=0;redirects<=5;redirects++){
+            if(!GiftPreviewUrl.resolvesToPublicAddresses(target.toString()))throw new java.io.IOException("Адрес не является публичным");
+            java.net.HttpURLConnection connection=(java.net.HttpURLConnection)target.openConnection();
+            connection.setConnectTimeout(9000);connection.setReadTimeout(11000);connection.setInstanceFollowRedirects(false);
+            connection.setRequestProperty("User-Agent","Mozilla/5.0 VmesteApp");
+            int status;
+            try{status=connection.getResponseCode();}catch(java.io.IOException e){connection.disconnect();throw e;}
+            if(status==301||status==302||status==303||status==307||status==308){
+                String location=connection.getHeaderField("Location");connection.disconnect();
+                if(location==null||redirects==5)throw new java.io.IOException("Слишком много перенаправлений");
+                String redirected=GiftPreviewUrl.normalizePublicHttpUrl(new java.net.URL(target,location).toString());
+                if(redirected.isEmpty())throw new java.io.IOException("Сайт перенаправил на непубличный адрес");
+                target=new java.net.URL(redirected);continue;
+            }
+            return connection;
+        }
+        throw new java.io.IOException("Слишком много перенаправлений");
     }
     private String meta(String html,String property){java.util.regex.Matcher tags=java.util.regex.Pattern.compile("(?is)<meta\\b[^>]*>").matcher(html);while(tags.find()){String tag=tags.group();String key=attribute(tag,"property");if(key.isEmpty())key=attribute(tag,"name");if(property.equalsIgnoreCase(key))return attribute(tag,"content");}return "";}
     private String attribute(String tag,String name){java.util.regex.Matcher m=java.util.regex.Pattern.compile("(?is)(?:^|\\s)"+java.util.regex.Pattern.quote(name)+"\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s>]+))").matcher(tag);if(!m.find())return "";for(int i=1;i<=3;i++)if(m.group(i)!=null)return m.group(i).trim();return "";}

@@ -6,6 +6,10 @@ The app checks the public GitHub repository's latest stable release and offers t
 
 On a fresh install, a skippable animated welcome screen appears before the sign-in/registration dialog. Existing signed-in users and incoming share links bypass it. After signing in, create a couple to display its invite QR code or scan the other phone's code from **Пригласить**; entering the eight-character code manually remains available. Stories can contain text or a photo and expire after 24 hours. Android's share sheet can send text links or photos to the app; they appear as a chat draft for review before sending, and web links in chat open in the in-app viewer.
 
+## Gift links
+
+Gift Radar opens public HTTP(S) links in an in-app WebView instead of launching another app. Local/private hosts and non-web schemes are blocked, as are file/content access and JavaScript; no JavaScript bridge is registered. Some shops require scripts, sign-in, or protected playback and may show a limited or unavailable page; the app does not bypass those restrictions.
+
 ## Watch together
 
 The room synchronizes YouTube videos and public HTTPS MP4, HLS (`.m3u8`), and WebM links. The host can select a link in the room; the partner receives it and playback/pause/seek state is synchronized through couple-scoped Supabase room signals. Other sites may open in the in-app WebView, but their player controls are not synchronized. Protected-content and embed restrictions are not bypassed. Text chat and playback work without camera or microphone permissions. Both are off when the room opens; each is requested only after its own button is tapped. Camera and microphone tracks are sent to the partner over WebRTC and are not uploaded to Supabase. Screen capture is not supported. Apply `supabase/migrations/20261025000100_watch_player_signals.sql` before using synchronized playback with the remote Supabase project.
