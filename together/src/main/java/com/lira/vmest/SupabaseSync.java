@@ -277,6 +277,12 @@ final class SupabaseSync {
         return rows.length()==0?null:rows.getJSONObject(0);
     }
 
+    JSONArray activeWatchRooms()throws Exception{
+        String couple=coupleId();
+        if(couple.isEmpty())throw new Exception("Сначала подключите пару");
+        return (JSONArray)requestValue("GET","/rest/v1/watch_rooms?select=id,couple_id,host_id,title,state,created_at&couple_id=eq."+couple+"&state=eq.active&order=created_at.desc&limit=10",null,true);
+    }
+
     void closeWatchRoom(String roomId)throws Exception{
         JSONObject args=new JSONObject();args.put("target_room_id",roomId);
         try { requestValue("POST","/rest/v1/rpc/close_watch_room",args,true); }

@@ -79,6 +79,11 @@ public class MainActivity extends Activity {
     private java.io.File chatRecording;
     private boolean movieRoomFetchInFlight;
     private boolean pendingLoyaltyScan;
+    private boolean pendingWatchRoomScan;
+    private JSONArray activeWatchRoomsSnapshot = new JSONArray();
+    private boolean activeWatchRoomsFetchInFlight, activeWatchRoomsUnavailable;
+    private String activeWatchRoomsFailureLabel = "";
+    private long lastActiveWatchRoomsFetchAt;
     private boolean coupleRestorePending, coupleRestoreFailed;
     private String pendingPhotoKey = "", pendingPhotoItemId = "";
     private String pendingStoryCaption = "";
@@ -117,6 +122,7 @@ public class MainActivity extends Activity {
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         pendingLoyaltyScan = state != null && state.getBoolean("pending_loyalty_scan", false);
+        pendingWatchRoomScan = state != null && state.getBoolean("pending_watch_room_scan", false);
         getWindow().setStatusBarColor(BG);
         getWindow().setNavigationBarColor(BG);
         getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
@@ -382,6 +388,7 @@ public class MainActivity extends Activity {
         if (chatComposer != null && chatComposer.getParent() == root) root.removeView(chatComposer);
         chatComposer = null;
         body.removeAllViews(); nav.removeAllViews();
+        renderWatchRoomInvitation();
         if (feature != null && feature.startsWith("list:")) renderSharedList();
         else if (feature != null) renderFeature();
         else if (tab.equals("Главная")) renderHome();
@@ -478,7 +485,6 @@ public class MainActivity extends Activity {
         welcome.addView(question); question.setOnClickListener(v -> open("💭  Вопрос дня для двоих"));
 
         renderHomePairingShortcut();
-
         heading("На сегодня", "Ваши общие дела");
         LinearLayout taskCard = card();
         JSONArray tasks = read("tasks");
@@ -1306,11 +1312,12 @@ public class MainActivity extends Activity {
     }
     private void flushPendingSync(){if(!sync.ready())return;JSONArray pending;try{pending=new JSONArray(prefs.getString("pending_shared_sync","[]"));}catch(Exception e){pending=new JSONArray();}if(pending.length()==0)return;final JSONArray batch=pending;network.execute(()->{for(int i=0;i<batch.length();i++){JSONObject entry=batch.optJSONObject(i);if(entry==null)continue;try{String k=entry.optString("key","");JSONObject it=entry.optJSONObject("item");if(k.isEmpty()||it==null)continue;sync.upsert(k,it);String id=it.optString("id");synchronized(MainActivity.this){JSONArray latest;try{latest=new JSONArray(prefs.getString("pending_shared_sync","[]"));}catch(Exception e){latest=new JSONArray();}for(int j=latest.length()-1;j>=0;j--){JSONObject q=latest.optJSONObject(j);if(q!=null){JSONObject itemObj=q.optJSONObject("item");if(itemObj!=null&&id.equals(itemObj.optString("id")))latest.remove(j);}}prefs.edit().putString("pending_shared_sync",latest.toString()).apply();}}catch(Exception ignored){}}});}
 
-    @Override protected void onResume(){super.onResume();activityResumed=true;syncQuietly();refreshProfiles();checkGitHubUpdate(false);if(isChatOpen())startChatRefresh();String pending=prefs.getString("pending_update_url","");if(!pending.isEmpty()&&android.os.Build.VERSION.SDK_INT>=26&&getPackageManager().canRequestPackageInstalls()){String digest=prefs.getString("pending_update_digest","");String version=prefs.getString("pending_update_version","");prefs.edit().remove("pending_update_url").remove("pending_update_digest").remove("pending_update_version").apply();downloadGitHubUpdate(pending,digest,version);}if(sharedSyncPoll==null)sharedSyncPoll=new Runnable(){public void run(){if(!isFinishing()){syncQuietly();refreshProfiles();gameHandler.postDelayed(this,15000);}}};gameHandler.removeCallbacks(sharedSyncPoll);gameHandler.postDelayed(sharedSyncPoll,15000);}
+    @Override protected void onResume(){super.onResume();activityResumed=true;syncQuietly();refreshActiveWatchRooms(true);refreshProfiles();checkGitHubUpdate(false);if(isChatOpen())startChatRefresh();String pending=prefs.getString("pending_update_url","");if(!pending.isEmpty()&&android.os.Build.VERSION.SDK_INT>=26&&getPackageManager().canRequestPackageInstalls()){String digest=prefs.getString("pending_update_digest","");String version=prefs.getString("pending_update_version","");prefs.edit().remove("pending_update_url").remove("pending_update_digest").remove("pending_update_version").apply();downloadGitHubUpdate(pending,digest,version);}if(sharedSyncPoll==null)sharedSyncPoll=new Runnable(){public void run(){if(!isFinishing()){syncQuietly();refreshActiveWatchRooms(false);refreshProfiles();gameHandler.postDelayed(this,15000);}}};gameHandler.removeCallbacks(sharedSyncPoll);gameHandler.postDelayed(sharedSyncPoll,15000);}
     @Override protected void onPause(){activityResumed=false;if(sharedSyncPoll!=null)gameHandler.removeCallbacks(sharedSyncPoll);if(chatRefreshRunnable!=null)gameHandler.removeCallbacks(chatRefreshRunnable);super.onPause();}
 
     @Override protected void onSaveInstanceState(Bundle state) {
         state.putBoolean("pending_loyalty_scan", pendingLoyaltyScan);
+        state.putBoolean("pending_watch_room_scan", pendingWatchRoomScan);
         super.onSaveInstanceState(state);
     }
 
@@ -1551,10 +1558,7 @@ public class MainActivity extends Activity {
             youtube.setOnClickListener(v -> openUrl("https://www.youtube.com"));
             TextView syncRoom = pill("Обновить комнату партнёра", PURPLE); body.addView(syncRoom);
             syncRoom.setOnClickListener(v -> fetchMovieRoom());
-            TextView broadcast = pill("▶  Открыть общий просмотр", PURPLE); body.addView(broadcast);
-            broadcast.setOnClickListener(v -> createLiveRoom());
-            TextView join = pill("Подключиться к комнате партнёра", PURPLE); body.addView(join);
-            join.setOnClickListener(v -> joinLiveRoom());
+            addWatchRoomRoleAction();
             return;
         }
         String title = room.optString("title", "Вечер кино"), url = room.optString("url", "");
@@ -1575,10 +1579,111 @@ public class MainActivity extends Activity {
         change.setOnClickListener(v -> editMovieRoom(room));
         TextView refresh = pill("Обновить с телефона партнёра", PURPLE); body.addView(refresh);
         refresh.setOnClickListener(v -> fetchMovieRoom());
-        TextView broadcast = pill("▶  Открыть общий просмотр", PURPLE); body.addView(broadcast);
-        broadcast.setOnClickListener(v -> createLiveRoom());
-        TextView join = pill("Подключиться к комнате партнёра", PURPLE); body.addView(join);
-        join.setOnClickListener(v -> joinLiveRoom());
+        addWatchRoomRoleAction();
+    }
+
+    private void addWatchRoomRoleAction() {
+        TextView chooseHost = pill("▶  Пригласить партнёра в комнату", PURPLE);
+        body.addView(chooseHost);
+        chooseHost.setOnClickListener(v -> chooseWatchRoomRole());
+        TextView hint = text("Создайте комнату на одном телефоне — у партнёра появится кнопка подключения.", 12, MUTED, false);
+        hint.setPadding(dp(4), 0, dp(4), dp(8));
+        body.addView(hint);
+    }
+
+    private void chooseWatchRoomRole() {
+        new AlertDialog.Builder(this)
+                .setTitle("Комната просмотра")
+                .setMessage("Создайте комнату на одном телефоне. Партнёр увидит приглашение и подключится кнопкой; QR-код доступен как запасной способ.")
+                .setItems(new String[]{"Создать комнату и пригласить партнёра",
+                        "Подключиться к активному приглашению", "Сканировать QR-код комнаты"}, (dialog, choice) -> {
+                    if (choice == 0) prepareLiveRoomCreation();
+                    else if (choice == 1) joinLiveRoom();
+                    else startWatchRoomScanner();
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
+    private void renderWatchRoomInvitation() {
+        if (!sync.ready()) return;
+        refreshActiveWatchRooms(false);
+        JSONArray partnerRooms = new JSONArray();
+        JSONObject ownRoom = null;
+        String userId = sync.userId();
+        for (int i = 0; i < activeWatchRoomsSnapshot.length(); i++) {
+            JSONObject room = activeWatchRoomsSnapshot.optJSONObject(i);
+            if (room == null || !"active".equals(room.optString("state"))) continue;
+            if (userId.equals(room.optString("host_id"))) {
+                if (ownRoom == null) ownRoom = room;
+            } else {
+                partnerRooms.put(room);
+            }
+        }
+        if (partnerRooms.length() > 0) {
+            heading("Партнёр приглашает вас в комнату",
+                    "Подключайтесь, если партнёр сейчас находится в комнате");
+            TextView connect = pill("Подключиться", PURPLE);
+            body.addView(connect);
+            JSONArray invitations = partnerRooms;
+            connect.setOnClickListener(v -> {
+                if (invitations.length() == 1) confirmJoinWatchRoom(invitations.optJSONObject(0));
+                else showActiveWatchRooms(invitations);
+            });
+        } else if (ownRoom != null) {
+            heading("Ваша комната просмотра активна", "После сбоя сохранённая запись может быть устаревшей");
+            String roomId = ownRoom.optString("id", "");
+            TextView reopen = pill("Продолжить или заменить комнату", PURPLE);
+            body.addView(reopen);
+            reopen.setOnClickListener(v -> confirmOpenHostedWatchRoom(roomId));
+        } else if (activeWatchRoomsUnavailable) {
+            simpleCard("!", "Не удалось проверить приглашение",
+                    activeWatchRoomsFailureLabel + " Нажмите, чтобы повторить проверку.",
+                    () -> refreshActiveWatchRooms(true));
+        }
+    }
+
+    private boolean isWatchRoomDiscoveryVisible() {
+        return activityResumed && !isFinishing();
+    }
+
+    private void refreshActiveWatchRooms(boolean force) {
+        if (!isWatchRoomDiscoveryVisible()) return;
+        if (!sync.ready()) {
+            activeWatchRoomsSnapshot = new JSONArray();
+            activeWatchRoomsUnavailable = false;
+            activeWatchRoomsFailureLabel = "";
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (activeWatchRoomsFetchInFlight
+                || (!force && now - lastActiveWatchRoomsFetchAt < 15_000)) return;
+        activeWatchRoomsFetchInFlight = true;
+        network.execute(() -> {
+            JSONArray rooms = null;
+            Exception failure = null;
+            try {
+                rooms = sync.activeWatchRooms();
+            } catch (Exception e) {
+                failure = e;
+            }
+            final JSONArray result = rooms;
+            final boolean failed = failure != null;
+            final String failureLabel = failed
+                    ? WatchRoomSignalError.label(failure.getMessage()) : "";
+            runOnUiThread(() -> {
+                activeWatchRoomsFetchInFlight = false;
+                lastActiveWatchRoomsFetchAt = System.currentTimeMillis();
+                String previous = activeWatchRoomsSnapshot.toString();
+                boolean previousUnavailable = activeWatchRoomsUnavailable;
+                activeWatchRoomsSnapshot = failed || result == null ? new JSONArray() : result;
+                activeWatchRoomsUnavailable = failed;
+                activeWatchRoomsFailureLabel = failureLabel;
+                boolean changed = !previous.equals(activeWatchRoomsSnapshot.toString())
+                        || previousUnavailable != activeWatchRoomsUnavailable;
+                if (changed && !isFinishing() && isWatchRoomDiscoveryVisible()) render();
+            });
+        });
     }
 
     private void syncMovieRoomMetadata(){
@@ -1619,22 +1724,181 @@ public class MainActivity extends Activity {
                 .show());
     }
 
+    private void prepareLiveRoomCreation() {
+        this.<JSONArray>runNetwork(sync::activeWatchRooms, rooms -> {
+            if (rooms.length() == 0) {
+                createLiveRoom();
+                return;
+            }
+            new AlertDialog.Builder(this)
+                    .setTitle("Уже есть активная комната")
+                    .setMessage("Сначала выберите комнату, где партнёр уже ждёт. Создание новой комнаты завершит все предыдущие активные комнаты.")
+                    .setPositiveButton("Выбрать активную", (dialog, which) -> showActiveWatchRooms(rooms))
+                    .setNeutralButton("Создать новую и завершить старые", (dialog, which) -> createLiveRoom())
+                    .setNegativeButton("Отмена", null)
+                    .show();
+        }, this::showWatchRoomError);
+    }
+
     private void joinLiveRoom() {
-        if (!sync.configured() || !sync.signedIn() || sync.coupleId().isEmpty()) { toast("Сначала подключите общее пространство с партнёром"); return; }
-        EditText code = new EditText(this); code.setSingleLine(true); code.setHint("Код комнаты от партнёра");
-        new AlertDialog.Builder(this).setTitle("Войти в комнату просмотра").setView(code).setNegativeButton("Отмена", null)
-                .setPositiveButton("Подключиться", (d,w) -> {
-                    String roomId = code.getText().toString().trim();
-                    this.<JSONObject>runNetwork(() -> { JSONObject found=sync.getWatchRoom(roomId);if(found!=null){JSONObject movie=sync.fetchMovieRoom();if(movie!=null)found.put("player_url",movie.optString("url",""));}return found; }, room -> {
-                        String joinError = WatchRoomJoinPolicy.error(
-                                room == null ? "" : room.optString("state", ""),
-                                room == null ? "" : room.optString("couple_id", ""),
-                                room == null ? "" : room.optString("host_id", ""),
-                                sync.coupleId(), sync.userId());
-                        if (joinError != null) { toast(joinError); return; }
-                        startActivity(WatchPartyActivity.intent(this, roomId, false, room.optString("title", "Совместный просмотр")).putExtra(WatchPartyActivity.EXTRA_PLAYER_URL, room.optString("player_url", "")));
-                    });
-                }).show();
+        this.<JSONArray>runNetwork(sync::activeWatchRooms, this::showActiveWatchRooms, this::showWatchRoomError);
+    }
+
+    private void showActiveWatchRooms(JSONArray rooms) {
+        if (rooms.length() == 0) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Активных комнат нет")
+                    .setMessage("Попросите партнёра создать комнату и пригласить вас, затем обновите список. Новая комната не будет создана автоматически.")
+                    .setPositiveButton("Обновить", (dialog, which) -> joinLiveRoom())
+                    .setNeutralButton("Сканировать QR-код", (dialog, which) -> startWatchRoomScanner())
+                    .setNegativeButton("Отмена", null)
+                    .show();
+            return;
+        }
+        String[] labels = new String[rooms.length()];
+        for (int i = 0; i < rooms.length(); i++) {
+            JSONObject room = rooms.optJSONObject(i);
+            String hostLabel = room != null && sync.userId().equals(room.optString("host_id"))
+                    ? "этот аккаунт" : "партнёр";
+            String createdAt = room == null ? "" : room.optString("created_at", "");
+            String timestamp = createdAt.length() >= 16
+                    ? " · " + createdAt.substring(0, 16).replace('T', ' ')
+                            + (createdAt.endsWith("Z") || createdAt.endsWith("+00:00") ? " UTC" : "")
+                    : "";
+            labels[i] = "Комната " + (i + 1) + " · ведущий: " + hostLabel + timestamp;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Выберите ведущего")
+                .setMessage("Комнаты отсортированы от новых к старым. После аварийного закрытия запись может быть устаревшей — выбирайте только комнату, где ведущий сейчас ждёт.")
+                .setItems(labels, (dialog, which) -> openSelectedWatchRoom(rooms.optJSONObject(which)))
+                .setNeutralButton("Сканировать QR-код", (dialog, which) -> startWatchRoomScanner())
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
+    private void openSelectedWatchRoom(JSONObject selected) {
+        if (selected == null) {
+            showWatchRoomError(new Exception("Не удалось прочитать выбранную комнату"));
+            return;
+        }
+        String roomId = selected.optString("id", "");
+        if (sync.userId().equals(selected.optString("host_id"))) confirmOpenHostedWatchRoom(roomId);
+        else confirmJoinWatchRoom(selected);
+    }
+
+    private void confirmOpenHostedWatchRoom(String roomId) {
+        new AlertDialog.Builder(this)
+                .setTitle("Комната отмечена как активная")
+                .setMessage("После аварийного завершения SDP/ICE могли устареть. Открывайте эту комнату только если хотите продолжить её; создание новой завершит старые активные комнаты.")
+                .setPositiveButton("Продолжить эту", (dialog, which) -> openHostedWatchRoom(roomId))
+                .setNeutralButton("Создать новую", (dialog, which) -> confirmCreateFreshWatchRoom())
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
+    private void confirmCreateFreshWatchRoom() {
+        new AlertDialog.Builder(this)
+                .setTitle("Создать новую комнату?")
+                .setMessage("Все старые активные комнаты этой пары будут завершены. Продолжить?")
+                .setPositiveButton("Создать новую", (dialog, which) -> createLiveRoom())
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
+    private void openHostedWatchRoom(String roomId) {
+        if (roomId.isEmpty()) {
+            showWatchRoomError(new Exception("У выбранной комнаты отсутствует код"));
+            return;
+        }
+        this.<JSONObject>runNetwork(() -> {
+            JSONObject room = sync.getWatchRoom(roomId);
+            String hostError = WatchRoomJoinPolicy.error(
+                    room == null ? "" : room.optString("state", ""),
+                    room == null ? "" : room.optString("couple_id", ""),
+                    room == null ? "" : room.optString("host_id", ""),
+                    sync.coupleId(), sync.userId(), true);
+            if (hostError != null) throw new Exception(hostError);
+            JSONObject movie = sync.fetchMovieRoom();
+            if (movie != null) room.put("player_url", movie.optString("url", ""));
+            return room;
+        }, room -> startActivity(WatchPartyActivity.intent(this, roomId, true,
+                room.optString("title", "Совместный просмотр"))
+                .putExtra(WatchPartyActivity.EXTRA_PLAYER_URL, room.optString("player_url", ""))),
+                this::showWatchRoomError);
+    }
+
+    private void startWatchRoomScanner() {
+        if (!sync.ready()) {
+            toast("Войдите и подключите пару, чтобы открыть приглашение комнаты");
+            return;
+        }
+        pendingWatchRoomScan = true;
+        try {
+            new IntentIntegrator(this)
+                    .setDesiredBarcodeFormats(java.util.Collections.singletonList(BarcodeFormat.QR_CODE.toString()))
+                    .setPrompt("Наведите камеру на QR-код комнаты «Вместе»")
+                    .setBeepEnabled(false)
+                    .setOrientationLocked(false)
+                    .initiateScan();
+        } catch (RuntimeException e) {
+            pendingWatchRoomScan = false;
+            android.util.Log.w("VmesteWatch", "Could not launch the room QR scanner", e);
+            toast("Не удалось открыть сканер QR-кода");
+        }
+    }
+
+    private void openSelectedWatchRoomFromQr(String payload) {
+        String roomId = WatchRoomQrCode.decode(payload);
+        if (roomId == null) {
+            toast("Это не QR-приглашение в комнату просмотра");
+            return;
+        }
+        openJoinableWatchRoom(roomId);
+    }
+
+    private void confirmJoinWatchRoom(JSONObject selected) {
+        if (selected == null) {
+            showWatchRoomError(new Exception("Не удалось прочитать выбранную комнату"));
+            return;
+        }
+        String roomId = selected.optString("id", "");
+        if (roomId.isEmpty()) {
+            showWatchRoomError(new Exception("У выбранной комнаты отсутствует код"));
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Подключиться к комнате?")
+                .setMessage("Запись комнаты отмечена как активная, но это не подтверждает, что ведущий сейчас в сети. Если ведущий закрыл приложение аварийно, попросите его создать новую комнату.")
+                .setPositiveButton("Подключиться", (dialog, which) -> openJoinableWatchRoom(roomId))
+                .setNegativeButton("Отмена", null)
+                .show();
+    }
+
+    private void openJoinableWatchRoom(String roomId) {
+        this.<JSONObject>runNetwork(() -> {
+            JSONObject room = sync.getWatchRoom(roomId);
+            String joinError = WatchRoomJoinPolicy.error(
+                    room == null ? "" : room.optString("state", ""),
+                    room == null ? "" : room.optString("couple_id", ""),
+                    room == null ? "" : room.optString("host_id", ""),
+                    sync.coupleId(), sync.userId());
+            if (joinError != null) throw new Exception(joinError);
+            JSONObject movie = sync.fetchMovieRoom();
+            if (movie != null) room.put("player_url", movie.optString("url", ""));
+            return room;
+        }, room -> startActivity(WatchPartyActivity.intent(this, roomId, false,
+                room.optString("title", "Совместный просмотр"))
+                .putExtra(WatchPartyActivity.EXTRA_PLAYER_URL, room.optString("player_url", ""))),
+                this::showWatchRoomError);
+    }
+
+    private void showWatchRoomError(Exception error) {
+        String message = WatchRoomSignalError.label(error == null ? null : error.getMessage());
+        new AlertDialog.Builder(this)
+                .setTitle("Не удалось подключиться к комнате")
+                .setMessage(message)
+                .setPositiveButton("Понятно", null)
+                .show();
     }
 
     private void profileDialog() {
@@ -3022,6 +3286,14 @@ public class MainActivity extends Activity {
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent data) {
         super.onActivityResult(requestCode,resultCode,data);
         if(requestCode==IntentIntegrator.REQUEST_CODE){
+            if(pendingWatchRoomScan) {
+                pendingWatchRoomScan=false;
+                IntentResult roomResult=IntentIntegrator.parseActivityResult(requestCode,resultCode,data);
+                if(resultCode==RESULT_OK&&roomResult!=null&&roomResult.getContents()!=null)
+                    openSelectedWatchRoomFromQr(roomResult.getContents());
+                else toast("Сканирование QR-кода комнаты отменено");
+                return;
+            }
             if(pendingLoyaltyScan) {
                 if(resultCode==RESULT_OK&&data!=null) onLoyaltyScanResult(data);
                 else {

@@ -7,6 +7,7 @@ import android.app.PictureInPictureParams;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.media.AudioManager;
 import android.net.Uri;
@@ -28,6 +29,7 @@ import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -41,6 +43,10 @@ import androidx.media3.ui.PlayerView;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.json.JSONTokener;
+import com.google.zxing.BarcodeFormat;
+import com.google.zxing.WriterException;
+import com.google.zxing.common.BitMatrix;
+import com.google.zxing.qrcode.QRCodeWriter;
 import org.webrtc.AudioSource;
 import org.webrtc.AudioTrack;
 import org.webrtc.Camera1Enumerator;
@@ -171,10 +177,31 @@ public final class WatchPartyActivity extends Activity {
                 showErrorSafe("Сначала подключите Supabase, войдите и создайте общее пространство в разделе «Пригласить партнёра».");
                 return;
             }
-            startRtcSafe();
+            validateRoomBeforeStartSafe();
         } catch (Exception e) {
             showErrorSafe("Не удалось открыть комнату: " + e.getMessage());
         }
+    }
+
+    private void validateRoomBeforeStartSafe() {
+        io.execute(() -> {
+            try {
+                JSONObject room = sync.getWatchRoom(roomId);
+                String error = WatchRoomJoinPolicy.error(
+                        room == null ? "" : room.optString("state", ""),
+                        room == null ? "" : room.optString("couple_id", ""),
+                        room == null ? "" : room.optString("host_id", ""),
+                        sync.coupleId(), sync.userId(), host);
+                if (error != null) {
+                    main.post(() -> showErrorSafe(error));
+                    return;
+                }
+                startRtcSafe();
+            } catch (Exception e) {
+                String message = WatchRoomSignalError.label(e.getMessage());
+                main.post(() -> showErrorSafe("Не удалось проверить комнату: " + message));
+            }
+        });
     }
 
     private void buildUiSafe() {
@@ -336,20 +363,49 @@ public final class WatchPartyActivity extends Activity {
             actions.addView(stop, new LinearLayout.LayoutParams(0, dp(46), host ? 1 : 2));
             stop.setOnClickListener(v -> { finishRoomSafe(); });
             if (host) {
-                Button share = buttonSafe("Поделиться кодом", Color.rgb(239, 229, 246), Color.rgb(102, 68, 132));
+                Button share = buttonSafe("Пригласить партнёра", Color.rgb(239, 229, 246), Color.rgb(102, 68, 132));
                 LinearLayout.LayoutParams shareParams = new LinearLayout.LayoutParams(0, dp(46), 1);
                 shareParams.setMargins(dp(6), 0, 0, 0);
                 actions.addView(share, shareParams);
-                share.setOnClickListener(v -> {
-                    Intent i = new Intent(Intent.ACTION_SEND); i.setType("text/plain");
-                    i.putExtra(Intent.EXTRA_TEXT, "Подключайся к парному просмотру в «Вместе». Код комнаты: " + roomId);
-                    startActivity(Intent.createChooser(i, "Пригласить партнёра"));
-                });
+                share.setOnClickListener(v -> showRoomInviteSafe());
             }
             uiReady = true;
         } catch (Exception e) {
             showErrorSafe("Ошибка интерфейса: " + e.getMessage());
         }
+    }
+
+    private void showRoomInviteSafe() {
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setGravity(Gravity.CENTER);
+        content.setPadding(dp(20), dp(8), dp(20), dp(8));
+        ImageView qr = new ImageView(this);
+        qr.setContentDescription("QR-приглашение в комнату просмотра");
+        try {
+            BitMatrix matrix = new QRCodeWriter().encode(
+                    WatchRoomQrCode.encode(roomId), BarcodeFormat.QR_CODE, dp(232), dp(232));
+            Bitmap bitmap = Bitmap.createBitmap(matrix.getWidth(), matrix.getHeight(), Bitmap.Config.ARGB_8888);
+            for (int y = 0; y < matrix.getHeight(); y++) {
+                for (int x = 0; x < matrix.getWidth(); x++)
+                    bitmap.setPixel(x, y, matrix.get(x, y) ? Color.BLACK : Color.WHITE);
+            }
+            qr.setImageBitmap(bitmap);
+            content.addView(qr, new LinearLayout.LayoutParams(dp(232), dp(232)));
+        } catch (WriterException | IllegalArgumentException e) {
+            showErrorSafe("Не удалось создать QR-приглашение");
+            return;
+        }
+        TextView hint = labelSafe("В разделе «Просмотр» партнёру появится кнопка «Подключиться». QR-код — запасной способ.", 14,
+                Color.rgb(89, 82, 96), false);
+        hint.setGravity(Gravity.CENTER);
+        hint.setPadding(0, dp(12), 0, 0);
+        content.addView(hint);
+        new AlertDialog.Builder(this)
+                .setTitle("Пригласить партнёра")
+                .setView(content)
+                .setPositiveButton("Готово", null)
+                .show();
     }
 
     private Button buttonSafe(String text, int background, int foreground) {
@@ -973,12 +1029,9 @@ public final class WatchPartyActivity extends Activity {
     }
 
     private static String signalErrorLabel(Exception error) {
-        String message = error.getMessage();
-        if (message == null || message.isEmpty()) return error.getClass().getSimpleName();
-        int separator = message.indexOf(':');
-        return message.startsWith("HTTP ") && separator > 0
-                ? message.substring(0, separator)
-                : error.getClass().getSimpleName();
+        return WatchRoomSignalError.label(
+                error == null ? null : error.getMessage() == null
+                        ? error.getClass().getSimpleName() : error.getMessage());
     }
 
     private void sendChatSafe(String value) {
