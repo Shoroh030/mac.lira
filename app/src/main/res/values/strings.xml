@@ -1,0 +1,4 @@
+<resources>
+    <string name="screen_reader_service_label">Чтение экрана L.I.R.A.</string>
+    <string name="screen_reader_service_description">По запросу читает вслух текст текущего экрана. Текст обрабатывается только на устройстве и не сохраняется.</string>
+</resources>

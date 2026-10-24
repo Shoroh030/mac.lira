@@ -10,6 +10,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.URLEncoder;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
@@ -91,6 +92,35 @@ final class SupabaseSync {
         return "OK";
     }
 
+    boolean restoreCoupleMembership()throws Exception{
+        String user=userId();
+        if(!signedIn()||user.isEmpty())throw new IllegalStateException("Войдите в аккаунт, чтобы восстановить пару");
+        String encodedUser=URLEncoder.encode(user,StandardCharsets.UTF_8.name());
+        Object membersResult=requestValue("GET",
+                "/rest/v1/couple_members?select=couple_id&user_id=eq."+encodedUser,null,true);
+        if(!(membersResult instanceof JSONArray))throw new Exception("Не удалось проверить существующую пару");
+        JSONArray members=(JSONArray)membersResult;
+        if(members.length()==0){
+            prefs.edit().remove("sb_couple").remove("sb_invite").apply();
+            return false;
+        }
+        if(members.length()!=1)throw new Exception("У аккаунта найдено несколько пар; требуется поддержка");
+        String coupleId=members.getJSONObject(0).optString("couple_id","");
+        try{UUID.fromString(coupleId);}catch(IllegalArgumentException e){throw new Exception("Некорректная связь пары в профиле",e);}
+        String encodedCouple=URLEncoder.encode(coupleId,StandardCharsets.UTF_8.name());
+        Object coupleResult=requestValue("GET",
+                "/rest/v1/couples?select=id,invite_code&id=eq."+encodedCouple,null,true);
+        if(!(coupleResult instanceof JSONArray))throw new Exception("Не удалось загрузить приглашение пары");
+        JSONArray couples=(JSONArray)coupleResult;
+        if(couples.length()!=1)throw new Exception("Приглашение пары не найдено");
+        JSONObject couple=couples.getJSONObject(0);
+        String invite=InviteCode.normalize(couple.optString("invite_code",""));
+        if(!coupleId.equals(couple.optString("id",""))||invite.isEmpty())
+            throw new Exception("Данные приглашения пары некорректны");
+        prefs.edit().putString("sb_couple",coupleId).putString("sb_invite",invite).apply();
+        return true;
+    }
+
     JSONObject createCouple(String name)throws Exception{
         JSONObject args=new JSONObject();args.put("couple_name",name);
         Object response=requestValue("POST","/rest/v1/rpc/create_couple",args,true);
@@ -136,12 +166,22 @@ final class SupabaseSync {
     void deleteAttachment(String path)throws Exception{String safe=path.replace("%","%25").replace(" ","%20");requestValue("DELETE","/storage/v1/object/couple-files/"+safe,null,true);}
 
     String uploadAttachment(android.net.Uri uri,String itemId,Context context)throws Exception{
+        return uploadAttachment(uri,itemId,context,null);
+    }
+
+    String uploadAttachment(android.net.Uri uri,String itemId,Context context,String contentType)throws Exception{
         String couple=coupleId();if(couple.isEmpty())throw new Exception("Сначала подключите пару");
-        String type=context.getContentResolver().getType(uri);if(type==null)type="image/jpeg";
+        String type=contentType;
+        if(type==null||type.isEmpty())type=context.getContentResolver().getType(uri);
+        if(type==null||type.isEmpty()){
+            String extension=android.webkit.MimeTypeMap.getFileExtensionFromUrl(uri.getLastPathSegment());
+            type=android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension);
+        }
+        if(type==null||type.isEmpty())type="application/octet-stream";
         byte[] data;
         try(InputStream in=context.getContentResolver().openInputStream(uri);ByteArrayOutputStream out=new ByteArrayOutputStream()){
             if(in==null)throw new Exception("Не удалось открыть выбранное фото");
-            byte[] buf=new byte[8192];int n;while((n=in.read(buf))!=-1){out.write(buf,0,n);if(out.size()>12*1024*1024)throw new Exception("Фото больше 12 МБ");}
+            byte[] buf=new byte[8192];int n;while((n=in.read(buf))!=-1){out.write(buf,0,n);if(out.size()>12*1024*1024)throw new Exception("Файл больше 12 МиБ");}
             data=out.toByteArray();
         }
         String ext="jpg";int dot=type.lastIndexOf('/');if(dot>=0&&dot+1<type.length())ext=type.substring(dot+1).replaceAll("[^A-Za-z0-9]","");
@@ -160,7 +200,7 @@ final class SupabaseSync {
         HttpURLConnection c=(HttpURLConnection)new URL(url()+"/storage/v1/object/authenticated/couple-files/"+safe).openConnection();
         c.setRequestMethod("GET");c.setConnectTimeout(10000);c.setReadTimeout(16000);c.setRequestProperty("apikey",key());c.setRequestProperty("Authorization","Bearer "+prefs.getString("sb_access",""));
         int status=c.getResponseCode();InputStream stream=status>=400?c.getErrorStream():c.getInputStream();ByteArrayOutputStream out=new ByteArrayOutputStream();
-        if(stream!=null){byte[] buffer=new byte[8192];int n;while((n=stream.read(buffer))!=-1)out.write(buffer,0,n);stream.close();}
+        if(stream!=null){byte[] buffer=new byte[8192];int n;while((n=stream.read(buffer))!=-1){out.write(buffer,0,n);if(out.size()>12*1024*1024){stream.close();c.disconnect();throw new Exception("Файл больше 12 МиБ");}}stream.close();}
         c.disconnect();if(status<200||status>=300)throw new Exception("Не удалось открыть фото (HTTP "+status+")");return out.toByteArray();
     }
 
@@ -174,6 +214,15 @@ final class SupabaseSync {
         for(int i=0;i<a.length();i++)merged.put(a.getJSONObject(i));
         for(int i=0;i<b.length();i++)merged.put(b.getJSONObject(i));
         return merged;
+    }
+
+    void updateMessage(String messageId,String body)throws Exception{
+        if(messageId==null||messageId.isEmpty())throw new Exception("Не найдено сообщение для изменения");
+        if(body==null||body.trim().isEmpty()||body.length()>4000)throw new Exception("Сообщение должно содержать от 1 до 4000 символов");
+        java.text.SimpleDateFormat timestamp=new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",java.util.Locale.US);
+        timestamp.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+        JSONObject patch=new JSONObject();patch.put("body",body.trim());patch.put("edited_at",timestamp.format(new java.util.Date()));
+        request("PATCH","/rest/v1/couple_messages?id=eq."+messageId+"&couple_id=eq."+coupleId()+"&sender_id=eq."+userId(),patch,true);
     }
 
     void upsertMovieRoom(JSONObject room)throws Exception{
@@ -228,6 +277,12 @@ final class SupabaseSync {
         return rows.length()==0?null:rows.getJSONObject(0);
     }
 
+    JSONArray activeWatchRooms()throws Exception{
+        String couple=coupleId();
+        if(couple.isEmpty())throw new Exception("Сначала подключите пару");
+        return (JSONArray)requestValue("GET","/rest/v1/watch_rooms?select=id,couple_id,host_id,title,state,created_at&couple_id=eq."+couple+"&state=eq.active&order=created_at.desc&limit=10",null,true);
+    }
+
     void closeWatchRoom(String roomId)throws Exception{
         JSONObject args=new JSONObject();args.put("target_room_id",roomId);
         try { requestValue("POST","/rest/v1/rpc/close_watch_room",args,true); }
@@ -268,7 +323,24 @@ final class SupabaseSync {
     void storeRemote(JSONObject row,SharedPreferences target)throws Exception{
         if(row.has("body")){
             JSONObject entry=new JSONObject();entry.put("id",row.optString("id"));entry.put("title",row.optString("body"));
-            entry.put("detail","Сообщение пары");entry.put("done",false);entry.put("sender_id",row.optString("sender_id"));merge(target,"messages",entry);return;
+            entry.put("detail","Сообщение пары");entry.put("done",false);entry.put("sender_id",row.optString("sender_id"));
+            if(row.has("edited_at")&&!row.isNull("edited_at"))entry.put("edited_at",row.optString("edited_at"));
+            JSONArray old=new JSONArray(target.getString("messages","[]"));
+            for(int i=0;i<old.length();i++){
+                JSONObject previous=old.optJSONObject(i);
+                if(previous==null||!entry.optString("id").equals(previous.optString("id")))continue;
+                try{
+                    JSONObject remoteMedia=new JSONObject(entry.optString("title",""));
+                    JSONObject localMedia=new JSONObject(previous.optString("title",""));
+                    if(remoteMedia.optBoolean("vmeste_media")&&localMedia.optBoolean("vmeste_media")
+                            &&!localMedia.optString("local_path").isEmpty())
+                        remoteMedia.put("local_path",localMedia.optString("local_path"));
+                    entry.put("title",remoteMedia.toString());
+                }catch(org.json.JSONException ignored){ }
+                if(previous.has("ts"))entry.put("ts",previous.optLong("ts"));
+                break;
+            }
+            merge(target,"messages",entry);return;
         }
         JSONObject payload=row.optJSONObject("payload");if(payload==null)return;
         String key=payload.optString("app_key","");if(key.isEmpty())key=keyFor(row.optString("kind"),payload.optString("date"));if(key==null||"notes".equals(key))return;

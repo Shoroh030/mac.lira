@@ -2,7 +2,7 @@
 <ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#121212"
+    android:background="@color/lira_background"
     android:fillViewport="true">
 
     <LinearLayout
@@ -16,7 +16,7 @@
             android:layout_height="wrap_content"
             android:layout_marginBottom="18dp"
             android:text="⚙️ Настройки L.I.R.A."
-            android:textColor="#00E676"
+            android:textColor="@color/lira_accent"
             android:textSize="22sp"
             android:textStyle="bold" />
 
@@ -32,7 +32,7 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="🌙 Темная тема\nГлубокое темное оформление"
-                android:textColor="#FFFFFF"
+                android:textColor="@color/lira_text"
                 android:textSize="15sp" />
 
             <Switch
@@ -53,7 +53,7 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="🔊 Озвучивать ответы\nL.I.R.A. будет говорить о выполнении команд"
-                android:textColor="#FFFFFF"
+                android:textColor="@color/lira_text"
                 android:textSize="15sp" />
 
             <Switch
@@ -74,7 +74,7 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="👩 Женский голос\nВыбери тембр синтезированной речи"
-                android:textColor="#FFFFFF"
+                android:textColor="@color/lira_text"
                 android:textSize="15sp" />
 
             <Switch
@@ -95,7 +95,7 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="🎙 Фоновое распознавание\nСкажи «Лира» и команду; в фоне нужен постоянный микрофон и уведомление"
-                android:textColor="#FFFFFF"
+                android:textColor="@color/lira_text"
                 android:textSize="15sp" />
 
             <Switch
@@ -115,8 +115,8 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="🔘 Плавающая кнопка\nБыстрый запуск голосового ввода поверх приложений"
-                android:textColor="#FFFFFF"
+                android:text="🔘 Плавающая кнопка\nСлушает и выполняет команду без открытия L.I.R.A."
+                android:textColor="@color/lira_text"
                 android:textSize="15sp" />
 
             <Switch
@@ -137,7 +137,7 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
                 android:text="🔕 Тихий режим\nНе озвучивать ответы голосом"
-                android:textColor="#FFFFFF"
+                android:textColor="@color/lira_text"
                 android:textSize="15sp" />
 
             <Switch
@@ -147,6 +147,32 @@
         </LinearLayout>
 
         <TextView
+            android:id="@+id/screenReaderStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="6dp"
+            android:text="Чтение экрана выключено"
+            android:textColor="@color/lira_muted"
+            android:textSize="13sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="8dp"
+            android:text="Для чтения текста из других приложений Android требует отдельно включить службу доступности. Содержимое экрана остаётся на устройстве."
+            android:textColor="@color/lira_text"
+            android:textSize="14sp" />
+
+        <Button
+            android:id="@+id/screenReaderSettingsButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:backgroundTint="@color/lira_accent"
+            android:text="Настроить чтение экрана"
+            android:textColor="@color/lira_accent_text" />
+
+        <TextView
             android:id="@+id/privacyPolicyLink"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
@@ -154,7 +180,7 @@
             android:clickable="true"
             android:focusable="true"
             android:text="📄 Политика конфиденциальности"
-            android:textColor="#00E676"
+            android:textColor="@color/lira_accent"
             android:textSize="14sp" />
 
         <TextView
@@ -162,7 +188,7 @@
             android:layout_height="wrap_content"
             android:layout_marginBottom="8dp"
             android:text="Синхронизация работает только в одной локальной Wi-Fi сети. Используй доверенную сеть."
-            android:textColor="#8A9BA8"
+            android:textColor="@color/lira_muted"
             android:textSize="13sp" />
 
         <Button
@@ -170,17 +196,26 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginBottom="12dp"
-            android:backgroundTint="#5288C1"
+            android:backgroundTint="@color/lira_accent"
             android:text="Синхронизировать с ПК по Wi-Fi"
-            android:textColor="#FFFFFF" />
+            android:textColor="@color/lira_accent_text" />
+
+        <Button
+            android:id="@+id/scanPcPairingQrButton"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="12dp"
+            android:backgroundTint="@color/lira_green"
+            android:text="📷 Сканировать QR-код с ПК"
+            android:textColor="@color/lira_button_text" />
 
         <Button
             android:id="@+id/backButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:backgroundTint="#00E676"
+            android:backgroundTint="@color/lira_green"
             android:text="Сохранить и назад"
-            android:textColor="#121212"
+            android:textColor="@color/lira_button_text"
             android:textSize="16sp"
             android:textStyle="bold" />
     </LinearLayout>

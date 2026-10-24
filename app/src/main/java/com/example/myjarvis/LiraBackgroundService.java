@@ -7,6 +7,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Intent;
+import android.content.ActivityNotFoundException;
 import android.content.pm.ResolveInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ServiceInfo;
@@ -32,12 +33,9 @@ import org.vosk.android.StorageService;
 
 import java.io.IOException;
 import java.text.SimpleDateFormat;
-import java.text.Normalizer;
 import java.util.Date;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -45,6 +43,8 @@ public class LiraBackgroundService extends Service {
 
     public static final String ACTION_ENABLE = "com.example.myjarvis.action.ENABLE_VOICE";
     public static final String ACTION_DISABLE = "com.example.myjarvis.action.DISABLE_VOICE";
+    public static final String ACTION_WIDGET_LISTEN =
+            "com.example.myjarvis.action.WIDGET_LISTEN";
     public static final String ACTION_COMMAND = "com.example.myjarvis.action.VOICE_COMMAND";
     public static final String EXTRA_VOICE_COMMAND = "voice_command";
     public static final String EXTRA_START_VOICE = "start_voice_recognition";
@@ -66,6 +66,9 @@ public class LiraBackgroundService extends Service {
     private ExecutorService commandExecutor;
     private Model model;
     private long wakeWordExpiry;
+    private boolean widgetOneShot;
+    private boolean widgetCommandPending;
+    private OfflineVoiceRecognizer widgetRecognizer;
 
     @Override
     public void onCreate() {
@@ -82,25 +85,67 @@ public class LiraBackgroundService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        if (!getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+        boolean widgetRequest = intent != null
+                && ACTION_WIDGET_LISTEN.equals(intent.getAction());
+        if (widgetRequest && listening) {
+            notifyCommand("Фоновый микрофон уже слушает. Скажи «Лира» и команду.",
+                    null);
+            return START_STICKY;
+        }
+        widgetOneShot = widgetRequest;
+        if (widgetOneShot && !getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+                .getBoolean("floating_widget_enabled", false)) {
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+        if (!widgetOneShot && !getSharedPreferences(PREFERENCES, MODE_PRIVATE)
                 .getBoolean("background_voice_enabled", false)) {
             stopSelf();
             return START_NOT_STICKY;
         }
 
-        startForegroundServiceNotification();
+        startForegroundServiceNotification(widgetOneShot);
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED) {
-            reportFailure("Нет разрешения на микрофон. Включи его в настройках приложения.");
-            getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit()
-                    .putBoolean("background_voice_enabled", false).apply();
+            reportFailure("Нет разрешения на микрофон. Открой L.I.R.A. и разреши доступ "
+                    + "к микрофону для плавающей кнопки.");
+            if (!widgetOneShot) {
+                getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit()
+                        .putBoolean("background_voice_enabled", false).apply();
+            }
             stopSelf();
+            return START_NOT_STICKY;
+        }
+        if (widgetOneShot) {
+            startWidgetRecognition();
             return START_NOT_STICKY;
         }
         if (!listening) {
             initializeOfflineModel();
         }
         return START_STICKY;
+    }
+
+    private void startWidgetRecognition() {
+        widgetRecognizer = new OfflineVoiceRecognizer(this,
+                new OfflineVoiceRecognizer.Listener() {
+                    @Override
+                    public void onResult(String text) {
+                        widgetRecognizer = null;
+                        executeOrNotify(text);
+                        if (!widgetCommandPending) {
+                            stopSelf();
+                        }
+                    }
+
+                    @Override
+                    public void onError(String message) {
+                        widgetRecognizer = null;
+                        notifyCommand(message, null);
+                        stopSelf();
+                    }
+                });
+        widgetRecognizer.start();
     }
 
     private void initializeOfflineModel() {
@@ -127,10 +172,13 @@ public class LiraBackgroundService extends Service {
         }
     }
 
-    private void startForegroundServiceNotification() {
-        Intent openIntent = new Intent(this, MainActivity.class);
-        PendingIntent contentIntent = PendingIntent.getActivity(this, 0, openIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+    private void startForegroundServiceNotification(boolean widgetMode) {
+        PendingIntent contentIntent = null;
+        if (!widgetMode) {
+            Intent openIntent = new Intent(this, MainActivity.class);
+            contentIntent = PendingIntent.getActivity(this, 0, openIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        }
         Intent stopIntent = new Intent(this, LiraBackgroundService.class);
         stopIntent.setAction(ACTION_DISABLE);
         PendingIntent stopPendingIntent = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
@@ -138,14 +186,17 @@ public class LiraBackgroundService extends Service {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE)
                 : PendingIntent.getService(this, 1, stopIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
+        NotificationCompat.Builder builder = new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("L.I.R.A. слушает «Лира»")
-                .setContentText("Офлайн-микрофон активен. Коснись, чтобы выключить.")
+                .setContentText(widgetMode ? "Слушаю команду через плавающую кнопку."
+                        : "Офлайн-микрофон активен. Коснись, чтобы выключить.")
                 .setSmallIcon(R.drawable.ic_lira_logo)
                 .setContentIntent(contentIntent)
-                .setOngoing(true)
-                .addAction(android.R.drawable.ic_media_pause, "Выключить", stopPendingIntent)
-                .build();
+                .setOngoing(true);
+        if (!widgetMode) {
+            builder.addAction(android.R.drawable.ic_media_pause, "Выключить", stopPendingIntent);
+        }
+        Notification notification = builder.build();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notification,
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
@@ -203,6 +254,7 @@ public class LiraBackgroundService extends Service {
             return;
         }
         try (Recognizer recognizer = new Recognizer(voiceModel, SAMPLE_RATE)) {
+            recognizer.setMaxAlternatives(4);
             byte[] buffer = new byte[4096];
             while (listening && !destroyed) {
                 int bytesRead = recorder.read(buffer, 0, buffer.length);
@@ -213,8 +265,8 @@ public class LiraBackgroundService extends Service {
                     break;
                 }
                 if (bytesRead > 0 && recognizer.acceptWaveForm(buffer, bytesRead)) {
-                    processRecognizedText(new JSONObject(recognizer.getResult())
-                            .optString("text", "").trim());
+                    processRecognizedText(SpeechTextSelector.select(
+                            new JSONObject(recognizer.getResult())));
                 }
             }
         } catch (JSONException | IOException | RuntimeException exception) {
@@ -278,12 +330,17 @@ public class LiraBackgroundService extends Service {
             if (pcCommand.query.isEmpty()) {
                 notifyCommand(pcCommand.action.equals("search")
                         ? "Скажи, что найти в браузере на ПК."
+                        : pcCommand.action.equals("timer")
+                        ? "Назови длительность таймера на ПК."
+                        : pcCommand.action.equals("alarm")
+                        ? "Назови время будильника на ПК."
                         : "Назови программу, документ или папку на ПК.", null);
                 return;
             }
             if (commandExecutor == null || commandExecutor.isShutdown()) {
                 commandExecutor = Executors.newSingleThreadExecutor();
             }
+            widgetCommandPending = widgetOneShot;
             commandExecutor.execute(() -> {
                 String result;
                 try {
@@ -294,8 +351,52 @@ public class LiraBackgroundService extends Service {
                 }
                 if (!destroyed) {
                     notifyCommand(result, null);
+                    if (widgetOneShot) {
+                        stopSelf();
+                    }
                 }
             });
+            return;
+        }
+        if (ScreenReadCommand.matches(command)) {
+            boolean started = LiraScreenReaderService.speakLastExternalScreen();
+            notifyCommand(started
+                    ? "Читаю текст последнего открытого экрана."
+                    : "Не удалось прочитать экран. Включи службу чтения экрана в настройках "
+                            + "L.I.R.A. и открой нужный экран перед командой.", null);
+            if (widgetOneShot) {
+                stopSelf();
+            }
+            return;
+        }
+        AndroidClockCommands.Result clockCommand = AndroidClockCommands.parse(command);
+        if (clockCommand != null) {
+            if (clockCommand.intent == null) {
+                notifyCommand(clockCommand.message, null);
+                return;
+            }
+            clockCommand.intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            launchFromBackgroundOrNotify(clockCommand.intent,
+                    "Android не разрешил открыть приложение «Часы». "
+                            + "Нажми уведомление, чтобы продолжить.");
+            return;
+        }
+        TelegramDraftCommand.Draft telegramDraft = TelegramDraftCommand.parse(command);
+        if (telegramDraft != null) {
+            openTelegramDraftFromBackground(telegramDraft);
+            return;
+        }
+        String mediaResponse = MediaCommands.handle(this, command);
+        if (mediaResponse != null) {
+            notifyCommand(mediaResponse, null);
+            if (widgetOneShot) {
+                stopSelf();
+            }
+            return;
+        }
+        String callTarget = PhoneCallCommands.targetFrom(command);
+        if (callTarget != null) {
+            dialFromBackground(callTarget);
             return;
         }
         List<FinanceVoiceParser.Entry> entries = FinanceVoiceParser.parse(command);
@@ -361,9 +462,12 @@ public class LiraBackgroundService extends Service {
             return;
         }
 
-        if (startsWithCommand(lower, "открой", "открыть", "запусти", "запустить", "open")) {
+        if (startsWithCommand(lower, "открой", "открыть", "запусти", "запустить",
+                "откройте", "запустите", "open", "launch", "start", "run")) {
             String appName = removeCommandPrefix(command,
-                    "открой", "открыть", "запусти", "запустить", "open");
+                    "открой", "открыть", "запусти", "запустить", "откройте", "запустите",
+                    "open", "launch", "start", "run")
+                    .replaceFirst("(?iu)^(?:(?:мне|пожалуйста|приложение|app|the)\\s+)+", "");
             Intent launchIntent = findAppLaunchIntent(appName);
             if (launchIntent == null) {
                 notifyCommand(appName.isEmpty() ? "Назови приложение, которое нужно открыть."
@@ -376,6 +480,59 @@ public class LiraBackgroundService extends Service {
             return;
         }
         notifyCommand("Пока не умею выполнить эту команду в фоне: " + command, null);
+    }
+
+    private void openTelegramDraftFromBackground(TelegramDraftCommand.Draft draft) {
+        for (String packageName : new String[]{
+                "org.telegram.messenger", "org.thunderdog.challegram"}) {
+            try {
+                getPackageManager().getPackageInfo(packageName, 0);
+                Intent intent = TelegramDraftCommand.openTelegramDraft(draft, packageName);
+                launchFromBackgroundOrNotify(intent,
+                        "Нажми уведомление, чтобы открыть Telegram с черновиком сообщения.");
+                return;
+            } catch (PackageManager.NameNotFoundException exception) {
+                continue;
+            } catch (ActivityNotFoundException exception) {
+                notifyCommand("Не удалось открыть Telegram с черновиком.", null);
+                return;
+            }
+        }
+        notifyCommand("Telegram не найден на устройстве.", null);
+    }
+
+    private void dialFromBackground(String target) {
+        if (target.isEmpty()) {
+            notifyCommand("Скажи имя контакта или номер телефона.", null);
+            return;
+        }
+        String number = target;
+        if (!PhoneCallCommands.isPhoneNumber(target)) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                notifyCommand("Чтобы искать контакт, открой L.I.R.A. и разреши доступ "
+                        + "к контактам.", null);
+                return;
+            }
+            try {
+                List<PhoneCallCommands.Contact> contacts =
+                        PhoneCallCommands.findContacts(this, target);
+                if (contacts.size() != 1) {
+                    notifyCommand(contacts.isEmpty()
+                                    ? "Контакт не найден. Скажи номер или проверь имя."
+                                    : "Нашла несколько контактов. Открой L.I.R.A. и выбери нужный.",
+                            null);
+                    return;
+                }
+                number = contacts.get(0).number;
+            } catch (SecurityException exception) {
+                notifyCommand("Нет разрешения на чтение контактов. Скажи номер телефона.", null);
+                return;
+            }
+        }
+        Intent dial = new Intent(Intent.ACTION_DIAL, Uri.fromParts("tel", number, null));
+        launchFromBackgroundOrNotify(dial,
+                "Нажми уведомление, чтобы открыть набор номера и подтвердить звонок.");
     }
 
     private boolean startsWithCommand(String text, String... commands) {
@@ -404,30 +561,7 @@ public class LiraBackgroundService extends Service {
             return null;
         }
         PackageManager packageManager = getPackageManager();
-        String query = normalizeAppName(name);
-        String transliterated = normalizeAppName(transliterateAppName(name));
-        Intent exactPackage = packageManager.getLaunchIntentForPackage(query);
-        if (exactPackage != null) {
-            exactPackage.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            return exactPackage;
-        }
-
-        Intent launcher = new Intent(Intent.ACTION_MAIN);
-        launcher.addCategory(Intent.CATEGORY_LAUNCHER);
-        List<ResolveInfo> apps = packageManager.queryIntentActivities(launcher, 0);
-        ResolveInfo bestMatch = null;
-        int bestScore = 0;
-        for (ResolveInfo app : apps) {
-            String label = normalizeAppName(app.loadLabel(packageManager).toString());
-            String packageName = normalizeAppName(
-                    app.activityInfo.packageName.replace('.', ' '));
-            int score = Math.max(appMatchScore(label, query, packageName),
-                    appMatchScore(label, transliterated, packageName));
-            if (score > bestScore) {
-                bestScore = score;
-                bestMatch = app;
-            }
-        }
+        ResolveInfo bestMatch = AppNameMatcher.findLauncher(packageManager, name);
         if (bestMatch == null) {
             return null;
         }
@@ -439,76 +573,12 @@ public class LiraBackgroundService extends Service {
         return launchIntent;
     }
 
-    private String normalizeAppName(String value) {
-        String normalized = Normalizer.normalize(value.toLowerCase(Locale.ROOT).trim(),
-                        Normalizer.Form.NFD)
-                .replaceAll("\\p{M}+", "")
-                .replaceAll("[^\\p{L}\\p{N}.]+", " ")
-                .trim();
-        Map<String, String> aliases = new HashMap<>();
-        aliases.put("яндекс музыка", "yandex music");
-        aliases.put("яндекс музыку", "yandex music");
-        aliases.put("музыка яндекс", "yandex music");
-        aliases.put("телеграм", "telegram");
-        aliases.put("телеграмм", "telegram");
-        aliases.put("телега", "telegram");
-        aliases.put("ватсап", "whatsapp");
-        aliases.put("вотсап", "whatsapp");
-        aliases.put("вацап", "whatsapp");
-        aliases.put("гугл хром", "chrome");
-        aliases.put("хром", "chrome");
-        aliases.put("яндекс браузер", "yandex browser");
-        aliases.put("яндекс", "yandex");
-        aliases.put("вконтакте", "vk");
-        aliases.put("вк", "vk");
-        aliases.put("ютуб", "youtube");
-        aliases.put("ю туб", "youtube");
-        aliases.put("инстаграм", "instagram");
-        aliases.put("фейсбук", "facebook");
-        aliases.put("тикток", "tiktok");
-        aliases.put("почта", "mail");
-        aliases.put("карты", "maps");
-        aliases.put("галерея", "gallery");
-        aliases.put("музыка", "music");
-        aliases.put("сбербанк", "sberbank");
-        aliases.put("альфа банк", "alpha bank");
-        aliases.put("яндекс карты", "yandex maps");
-        aliases.put("яндекс навигатор", "yandex navigator");
-        return aliases.getOrDefault(normalized, normalized);
-    }
-
-    private int appMatchScore(String label, String query, String packageName) {
-        if (query.isEmpty()) {
-            return 0;
-        }
-        if (label.equals(query) || packageName.equals(query)) {
-            return 3;
-        }
-        if (label.startsWith(query) || packageName.startsWith(query)) {
-            return 2;
-        }
-        return label.contains(query) || packageName.contains(query) ? 1 : 0;
-    }
-
-    private String transliterateAppName(String value) {
-        String alphabet = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя";
-        String[] replacements = {"a", "b", "v", "g", "d", "e", "yo", "zh", "z", "i",
-                "y", "k", "l", "m", "n", "o", "p", "r", "s", "t", "u", "f", "kh",
-                "ts", "ch", "sh", "shch", "", "y", "", "e", "yu", "ya"};
-        StringBuilder result = new StringBuilder(value.length() * 2);
-        for (int index = 0; index < value.length(); index++) {
-            char character = Character.toLowerCase(value.charAt(index));
-            int letterIndex = alphabet.indexOf(character);
-            result.append(letterIndex < 0 ? character : replacements[letterIndex]);
-        }
-        return result.toString();
-    }
-
     private void launchFromBackgroundOrNotify(Intent intent, String fallbackMessage) {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         try {
             startActivity(intent);
-        } catch (android.content.ActivityNotFoundException | SecurityException exception) {
+        } catch (android.content.ActivityNotFoundException | SecurityException
+                 | IllegalArgumentException exception) {
             Log.w(TAG, "Android blocked a background activity launch", exception);
             notifyCommand(fallbackMessage, null, intent);
         }
@@ -558,6 +628,10 @@ public class LiraBackgroundService extends Service {
     public void onDestroy() {
         destroyed = true;
         listening = false;
+        if (widgetRecognizer != null) {
+            widgetRecognizer.stop();
+            widgetRecognizer = null;
+        }
         AudioRecord recorder = audioRecord;
         if (recorder != null) {
             try {
@@ -585,8 +659,10 @@ public class LiraBackgroundService extends Service {
             commandExecutor = null;
         }
         audioRecord = null;
-        getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit()
-                .putBoolean("background_voice_enabled", false).apply();
+        if (!widgetOneShot) {
+            getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit()
+                    .putBoolean("background_voice_enabled", false).apply();
+        }
         stopForeground(true);
         super.onDestroy();
     }

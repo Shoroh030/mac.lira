@@ -38,10 +38,17 @@ final class PairGameSync {
     }
 
     JSONArray history() throws Exception {
-        String path="/rest/v1/couple_games?select=id,game_type,status,state,updated_at&couple_id=eq."+coupleId()+
-                "&status=eq.finished&order=updated_at.desc&limit=300";
-        Object resp=request("GET",path,null);
-        return resp instanceof JSONArray?(JSONArray)resp:new JSONArray();
+        final int pageSize=300;
+        JSONArray all=new JSONArray();
+        for(int offset=0;;offset+=pageSize){
+            String path="/rest/v1/couple_games?select=id,game_type,status,state,updated_at&couple_id=eq."+coupleId()+
+                    "&status=eq.finished&order=updated_at.desc,id.asc&limit="+pageSize+"&offset="+offset;
+            Object resp=request("GET",path,null);
+            JSONArray page=resp instanceof JSONArray?(JSONArray)resp:new JSONArray();
+            for(int i=0;i<page.length();i++)all.put(page.getJSONObject(i));
+            if(page.length()<pageSize)break;
+        }
+        return all;
     }
 
     void create(String id,String type,JSONObject state) throws Exception {

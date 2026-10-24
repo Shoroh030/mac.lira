@@ -18,17 +18,34 @@ The desktop app works offline for chat history, finances, budgets, goals,
 progress, daily planning, tasks, and notes. Russian voice recognition uses the
 bundled Vosk model; first use extracts it to `~/.lira/model-ru`. A microphone
 and roughly 100 MB of additional disk space are needed. Voice replies use the
-operating system's built-in speech tools. Browser search requires internet.
+operating system's built-in speech tools and do not bundle a voice model.
+On Windows, L.I.R.A. selects an installed Russian female SAPI voice when
+available, otherwise another installed Russian voice, then the system default.
+For offline speech, install Russian text-to-speech voice data in Windows
+Language settings. Browser search requires internet.
+Playback commands such as `пауза`, `продолжи музыку`, `следующий трек`, and
+`предыдущий трек` send media-key commands to the active player. A universal
+like/favorite action is not provided because media players do not share one.
 
 When the Wi-Fi sync server is enabled on the PC and the Android phone has been
 paired in Settings, commands in the phone chat or background voice mode can
 target the PC: `запусти на ПК <приложение>`, `открой на ПК <приложение, документ или папка>`,
-and `найди на ПК <запрос>` (opens a browser search on the PC). File search is
-name-based across local drives, skips Windows system/application folders, and
-opens only folders or common document/media formats; executable and script
-files are not opened. To keep local-disk searches bounded, each request scans
-at most 100,000 entries or 20 seconds. Keep the pairing code private and enable
-Wi-Fi sync only on a trusted local network: the protocol uses unencrypted HTTP.
+`найди на ПК <запрос>`, `поставь таймер на ПК на <длительность>`, and
+`поставь будильник на ПК на <HH:MM>`. File and folder searches check the
+Desktop (including the OneDrive Desktop path) before scanning local drives,
+skip Windows system/application folders, and open only folders or common
+document/media formats; executable and script files are not opened. The
+Recycle Bin is opened through the operating system directly. Disk searches
+remain limited to 100,000 entries or 20 seconds. PC timers and alarms are
+in-memory and only fire while L.I.R.A. is running. Keep the pairing code private
+and enable Wi-Fi sync only on a trusted local network: the protocol uses
+unencrypted HTTP.
+
+When Wi-Fi sync starts, desktop Settings shows a pairing QR code. Scan it from
+Android Settings to transfer the PC address and token, then complete the sync.
+Commands can open allow-listed system folders such as `Windows`, `System32`,
+`Program Files`, `ProgramData`, `AppData`, and `drivers`; sensitive system
+stores and executable files are not opened by search.
 
 To create a Windows GUI app image without a console, run the build above on
 Windows with JDK 17 and then use `jpackage` with the JavaFX Windows jars:
@@ -36,12 +53,12 @@ Windows with JDK 17 and then use `jpackage` with the JavaFX Windows jars:
 ```powershell
 $packageInput = "build\windows-input"
 New-Item -ItemType Directory -Force $packageInput | Out-Null
-Copy-Item "build\libs\lira-desktop-1.0.0-all.jar" $packageInput
+Copy-Item "build\libs\lira-desktop-2.32-all.jar" $packageInput
 $fx = "build\install\lira-desktop\lib"
 $modules = "$env:JAVA_HOME\jmods;$fx\javafx-base-21.0.2-win.jar;$fx\javafx-graphics-21.0.2-win.jar;$fx\javafx-controls-21.0.2-win.jar"
 $runtimeModules = "javafx.controls,jdk.httpserver,java.sql,jdk.unsupported,java.logging,java.naming,java.management"
-jpackage --type app-image --name LIRA --app-version 1.0.0 `
- --input $packageInput --main-jar lira-desktop-1.0.0-all.jar `
+jpackage --type app-image --name LIRA --app-version 2.32 `
+ --input $packageInput --main-jar lira-desktop-2.32-all.jar `
   --main-class com.example.lira.desktop.LiraDesktopApp `
  --module-path $modules --add-modules $runtimeModules `
  --java-options "--add-modules=$runtimeModules" `
@@ -104,7 +121,8 @@ Keep the certificate and passwords in GitHub Secrets; never commit them or
 send them in chat. Notarization requires an active Apple Developer Program
 membership and a Developer ID Application certificate.
 
-For local Wi-Fi sync, enable the sync server in desktop Settings and enter its
-displayed IP address and pairing code in Android Settings. The service listens
-on port `48522`; allow it through the PC firewall on a trusted private network.
-Sync uses HTTP on the local network and is not encrypted.
+For local Wi-Fi sync, enable the sync server in desktop Settings and scan its
+displayed pairing QR code from Android Settings. Manual IP and pairing-code
+entry remains available. The service listens on port `48522`; allow it through
+the PC firewall on a trusted private network. Sync uses HTTP on the local
+network and is not encrypted.

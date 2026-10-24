@@ -21,7 +21,7 @@
             android:id="@+id/tvMessage"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:textColor="#FFFFFF"
+            android:textColor="@color/lira_text"
             android:textSize="15sp"
             android:autoLink="web" />
 
@@ -31,7 +31,7 @@
             android:layout_height="wrap_content"
             android:layout_gravity="end"
             android:layout_marginTop="2dp"
-            android:textColor="#8A9BA8"
+            android:textColor="@color/lira_assistant_time"
             android:textSize="11sp" />
     </LinearLayout>
 
