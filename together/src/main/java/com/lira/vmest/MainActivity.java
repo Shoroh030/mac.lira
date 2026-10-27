@@ -60,6 +60,8 @@ import java.security.MessageDigest;
 
 /** A standalone, offline-first shared-life companion prototype. */
 public class MainActivity extends Activity {
+    private static final String LATEST_APK_URL =
+            "https://github.com/Shoroh030/mac.lira/releases/latest/download/together-latest.apk";
     private int BG = 0xFFFBF8FC;
     private int PAPER = 0xFFFFFFFF;
     private int INK = 0xFF302B35;
@@ -76,6 +78,10 @@ public class MainActivity extends Activity {
     private ScrollView contentScroll;
     private String tab = "Главная";
     private String feature = null;
+    private TextView gameScoreView;
+    private boolean gameScoreSyncInFlight;
+    private int gameScoreSyncFailures;
+    private Runnable gameScoreRetry;
     private View chatComposer;
     private android.media.MediaRecorder chatRecorder;
     private java.io.File chatRecording;
@@ -451,8 +457,13 @@ public class MainActivity extends Activity {
         return "data:image/jpeg;base64,"+android.util.Base64.encodeToString(out.toByteArray(),android.util.Base64.NO_WRAP);
     }
     private void applyPalette() {
-        if (softDark) { BG=0xFF211D25; PAPER=0xFF302A35; INK=0xFFF2EDF5; MUTED=0xFFB8ACBF; PURPLE=0xFFD0B3E9; PALE=0xFF403648; LINE=0xFF504657; getWindow().setStatusBarColor(BG); getWindow().setNavigationBarColor(BG); getWindow().getDecorView().setSystemUiVisibility(0); }
-        else { BG=0xFFFBF8FC; PAPER=0xFFFFFFFF; INK=0xFF302B35; MUTED=0xFF6E6575; PURPLE=0xFF8158A5; PALE=0xFFF0E8F6; LINE=0xFFE9E1ED; getWindow().setStatusBarColor(BG); getWindow().setNavigationBarColor(BG); int visibility=View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR; if(android.os.Build.VERSION.SDK_INT>=26)visibility|=View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR; getWindow().getDecorView().setSystemUiVisibility(visibility); }
+        ThemePalette palette=ThemePalette.forMode(softDark);
+        BG=palette.background;PAPER=palette.paper;INK=palette.ink;MUTED=palette.muted;
+        PURPLE=palette.purple;PALE=palette.pale;LINE=palette.line;
+        getWindow().setStatusBarColor(BG);getWindow().setNavigationBarColor(BG);
+        int visibility=softDark?0:View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+        if(!softDark&&android.os.Build.VERSION.SDK_INT>=26)visibility|=View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+        getWindow().getDecorView().setSystemUiVisibility(visibility);
     }
     private int themedFill(int c) { if(!softDark)return c; if(c==0xFFFBF8FC||c==0xFFFBF9FC||c==0xFFFFFFFF)return PAPER; if(c==0xFFF0E8F6||c==0xFFEFE5F6||c==0xFFEDE4F1||c==0xFFE7D9F0)return PALE; if(c==0xFFF3F4F6||c==0xFFE9E1ED)return 0xFF39333E; return c; }
     private GradientDrawable shape(int fill, int radius) {
@@ -486,7 +497,7 @@ public class MainActivity extends Activity {
         String avatarEmoji = prefs.getString("profile_avatar", "♡");
         String avatarUri = localAvatarUri();
         LinearLayout avatars = new LinearLayout(this); avatars.setOrientation(LinearLayout.HORIZONTAL); avatars.setGravity(Gravity.CENTER); avatars.setPadding(dp(4),0,dp(4),0);
-        ImageView avatarImg = new ImageView(this); avatarImg.setScaleType(ImageView.ScaleType.CENTER_CROP); avatarImg.setBackgroundColor(0xFFE8E0EC); avatarImg.setClipToOutline(true);
+        ImageView avatarImg = new ImageView(this); avatarImg.setScaleType(ImageView.ScaleType.CENTER_CROP); avatarImg.setBackgroundColor(PALE); avatarImg.setClipToOutline(true);
         boolean hasProfilePhoto=setAvatarPicture(avatarImg,avatarUri,24);
         LinearLayout.LayoutParams imgParams = new LinearLayout.LayoutParams(dp(24), dp(24)); imgParams.rightMargin=dp(6); avatars.addView(avatarImg, imgParams);
         String visibleProfileName = hasProfilePhoto
@@ -516,6 +527,7 @@ public class MainActivity extends Activity {
     private void render() {
         boolean restoreChatFocus=chatInput!=null&&chatInput.hasFocus();
         if (root != null) root.setBackgroundColor(BG);
+        if (nav != null) nav.setBackground(navigationSurface());
         if (chatComposer != null && chatComposer.getParent() == root) root.removeView(chatComposer);
         chatComposer = null;
         chatInput = null;
@@ -543,8 +555,7 @@ public class MainActivity extends Activity {
         for (String item : NavigationModel.bottomTabs(navigationTabs(), hiddenNavigationTabs())) {
             final String dest = item;
             boolean selected = item.equals(tab) && feature == null;
-            int itemColor = selected ? (softDark ? 0xFFF2E8FA : PURPLE)
-                    : (softDark ? 0xFFB8AFBF : MUTED);
+            int itemColor = selected ? PURPLE : MUTED;
             LinearLayout b = column();
             b.setGravity(Gravity.CENTER);
             b.setPadding(dp(2), dp(3), dp(2), dp(3));
@@ -712,26 +723,21 @@ public class MainActivity extends Activity {
         }catch(Exception e){toast("Не удалось открыть настройки вкладок: "+e.getMessage());}
     }
     private GradientDrawable navigationSurface() {
-        GradientDrawable surface = new GradientDrawable();
-        surface.setOrientation(GradientDrawable.Orientation.TOP_BOTTOM);
-        surface.setColors(softDark
-                ? new int[]{0xF74A414F,0xEB39333E,0xF7302A35}
-                : new int[]{0xF8FFFFFF,0xEAFBF8FD,0xF4F3EDF8});
+        GradientDrawable surface = glassSurface(PAPER,18);
         surface.setCornerRadii(new float[]{dp(18),dp(18),dp(18),dp(18),0,0,0,0});
-        surface.setStroke(dp(1), softDark ? 0x88988BA2 : 0xD6FFFFFF);
         return surface;
     }
     private android.graphics.drawable.Drawable navigationItem(boolean selected) {
         GradientDrawable item = new GradientDrawable();
         if (selected) {
-            item.setColor(softDark ? 0xFF493D53 : PALE);
+            item.setColor(PALE);
             item.setCornerRadius(dp(15));
-            item.setStroke(dp(1), softDark ? 0xFF695779 : 0xFFE3D5ED);
+            item.setStroke(dp(1), LINE);
         } else {
             item.setColor(0x00000000);
             item.setCornerRadius(dp(15));
         }
-        int rippleColor = softDark ? 0x557A6889 : 0x557F58A4;
+        int rippleColor = withAlpha(PURPLE,0x55);
         return new android.graphics.drawable.RippleDrawable(
                 android.content.res.ColorStateList.valueOf(rippleColor), item, null);
     }
@@ -759,8 +765,7 @@ public class MainActivity extends Activity {
             int save = canvas.save();
             canvas.translate((getWidth() - size) / 2f, (getHeight() - size) / 2f);
             canvas.scale(size / 24f, size / 24f);
-            paint.setColor(isSelected() ? (softDark ? 0xFFF2E8FA : PURPLE)
-                    : (softDark ? 0xFFB8AFBF : MUTED));
+            paint.setColor(isSelected() ? PURPLE : MUTED);
             paint.setStyle(android.graphics.Paint.Style.STROKE);
             paint.setStrokeWidth(1.8f);
             paint.setStrokeCap(android.graphics.Paint.Cap.ROUND);
@@ -1372,6 +1377,9 @@ public class MainActivity extends Activity {
         addSettingRow(updates,"↻","Проверить обновления",
                 "Проверить доступную версию приложения на GitHub",
                 ()->checkGitHubUpdate(true));
+        addSettingRow(updates,"↗","Поделиться приложением",
+                "Отправить ссылку для прямого скачивания последней версии",
+                ()->shareText(appDownloadShareText()));
 
         LinearLayout about=settingsGroup("О приложении");
         addSettingRow(about,"♡",getString(R.string.app_name),appVersionLabel(),this::showAboutDialog);
@@ -1393,7 +1401,11 @@ public class MainActivity extends Activity {
     private void showAboutDialog(){
         VmesteDialogTheme.builder(this).setTitle(getString(R.string.app_name))
                 .setMessage("Общее пространство для общения, планов и совместных занятий.\n\n"+appVersionLabel())
+                .setNeutralButton("Поделиться",(dialog,which)->shareText(appDownloadShareText()))
                 .setPositiveButton("Понятно",null).show();
+    }
+    private String appDownloadShareText(){
+        return "Скачай I'm Here — приложение для общения и планов вдвоём:\n"+LATEST_APK_URL;
     }
     private LinearLayout settingsGroup(String title){
         heading(title,null);
@@ -1433,14 +1445,22 @@ public class MainActivity extends Activity {
     }
     private void renderGamesTab(){
         renderGameRating();
-        gameCard("Крестики-нолики", "Сетевая партия с партнёром на другом устройстве", this::onlineTicTacToe);
-        gameCard("Морской бой", "Каждый расставляет свой флот на своём телефоне", this::onlineSeaBattle);
-        gameCard("Дурак", "Карточная партия с партнёром на его телефоне", this::onlineDurak);
-        gameCard("Шашки", "Классическая игра для двоих · каждый ход синхронизируется", this::onlineCheckers);
-        gameCard("Четыре в ряд", "Бросайте фишки в колонку и соберите четыре подряд", this::onlineConnectFour);
-        gameCard("Точки и квадратики", "Соединяйте точки и замыкайте квадраты", this::onlineDotsAndBoxes);
-        gameCard("Вопрос для двоих", "Отвечайте на один и тот же вопрос и сравнивайте ответы", () -> onlineCoupleQuiz("love","Что вам больше всего нравится в ваших отношениях?"));
-        gameCard("Угадай мелодию", "Напойте мелодию, пусть партнёр угадает", this::onlineGuessTune);
+        renderGameCatalog();
+    }
+    private void renderGameCatalog(){
+        for(GameCatalog.Entry game:GameCatalog.entries())
+            gameCard(game.title,game.description,gameAction(game.id));
+    }
+    private Runnable gameAction(String id){
+        switch(id){
+            case "tic_tac_toe":return this::onlineTicTacToe;
+            case "sea_battle":return this::onlineSeaBattle;
+            case "durak":return this::onlineDurak;
+            case "checkers":return this::onlineCheckers;
+            case "connect_four":return this::onlineConnectFour;
+            case "dots_boxes":return this::onlineDotsAndBoxes;
+            default:throw new IllegalArgumentException("Unsupported game: "+id);
+        }
     }
     private void renderMovieRoomTab(){
         renderMovieRoom();
@@ -1689,13 +1709,8 @@ public class MainActivity extends Activity {
         } else if (feature.contains("просмотра")) {
             renderMovieRoom();
         } else if (feature.contains("игры")) {
-            try{renderGameRating();}catch(Exception ignored){}
-            try{gameCard("Крестики-нолики", "Сетевая партия с партнёром на другом устройстве", this::onlineTicTacToe);}catch(Exception ignored){}
-            try{gameCard("Морской бой", "Каждый расставляет свой флот на своём телефоне", this::onlineSeaBattle);}catch(Exception ignored){}
-            try{gameCard("Дурак", "Карточная партия с партнёром на его телефоне", this::onlineDurak);}catch(Exception ignored){}
-            try{gameCard("Шашки", "Классическая игра для двоих · каждый ход синхронизируется", this::onlineCheckers);}catch(Exception ignored){}
-            try{gameCard("Четыре в ряд", "Бросайте фишки в колонку и соберите четыре подряд", this::onlineConnectFour);}catch(Exception ignored){}
-            try{gameCard("Точки и квадратики", "Соединяйте точки и замыкайте квадраты", this::onlineDotsAndBoxes);}catch(Exception ignored){}
+            renderGameRating();
+            renderGameCatalog();
         } else if (feature.contains("Файлы")) {
             renderFilesTab();
         } else if (feature.contains("Чат")) {
@@ -2783,8 +2798,8 @@ public class MainActivity extends Activity {
         TextView start=pill("Запустить таймер",PURPLE);body.addView(start);start.setOnClickListener(v->{int value;try{value=Integer.parseInt(minutes.getText().toString());}catch(Exception e){minutes.setError("Введите минуты");return;}if(value<1||value>1440){minutes.setError("От 1 минуты до суток");return;}String target=modes[mode.getSelectedItemPosition()];JSONObject next=new JSONObject();try{String timerId=timer==null||timer.optString("id").isEmpty()?UUID.randomUUID().toString():timer.optString("id");next.put("id",timerId);next.put("title","Таймер · "+target);next.put("mode_label",target);next.put("minutes",value);next.put("timer_end",System.currentTimeMillis()+value*60000L);next.put("started_by",sync.userId());}catch(Exception ignored){}JSONArray rows=new JSONArray();rows.put(next);save("shared_timer",rows);syncItem("shared_timer",next);scheduleReminder(next.optString("id"),next.optLong("timer_end"),"Таймер завершён",target+" · отсчёт завершён");render();});
         if(timer!=null){TextView stop=pill("Остановить таймер",0xFFB44F69);body.addView(stop);stop.setOnClickListener(v->{removeRemoteItem(timer.optString("id"));prefs.edit().remove("shared_timer").apply();render();});}
         if(sharedTimerTick!=null)gameHandler.removeCallbacks(sharedTimerTick);if(sharedTimerPoll!=null)gameHandler.removeCallbacks(sharedTimerPoll);
-        sharedTimerTick=new Runnable(){public void run(){if(!"shared_timer".equals(feature))return;JSONArray rows=read("shared_timer");JSONObject active=rows.length()==0?null:rows.optJSONObject(0);if(active==null)counter.setText("Таймер не запущен");else{long left=Math.max(0,active.optLong("timer_end")-System.currentTimeMillis());counter.setText(String.format(Locale.US,"%02d:%02d:%02d",left/3600000,(left/60000)%60,(left/1000)%60));if(left==0)counter.append("\nВремя вышло");}gameHandler.postDelayed(this,1000);}};gameHandler.post(sharedTimerTick);
-        sharedTimerPoll=new Runnable(){public void run(){if(!"shared_timer".equals(feature))return;if(sync.ready())network.execute(()->{try{JSONArray rows=sync.fetchItems();boolean found=false;for(int i=0;i<rows.length();i++){JSONObject row=rows.getJSONObject(i);JSONObject payload=row.optJSONObject("payload");if(payload!=null&&"shared_timer".equals(payload.optString("app_key")))found=true;sync.storeRemote(row,prefs);}if(!found)prefs.edit().remove("shared_timer").apply();runOnUiThread(()->{if("shared_timer".equals(feature)){if(sharedTimerTick!=null){gameHandler.removeCallbacks(sharedTimerTick);gameHandler.post(sharedTimerTick);}if(body!=null)render();}});}catch(Exception ignored){}});gameHandler.postDelayed(this,5000);}};gameHandler.postDelayed(sharedTimerPoll,5000);
+        sharedTimerTick=new Runnable(){public void run(){if(!"shared_timer".equals(feature)||!activityResumed)return;JSONArray rows=read("shared_timer");JSONObject active=rows.length()==0?null:rows.optJSONObject(0);if(active==null)counter.setText("Таймер не запущен");else{long left=Math.max(0,active.optLong("timer_end")-System.currentTimeMillis());counter.setText(String.format(Locale.US,"%02d:%02d:%02d",left/3600000,(left/60000)%60,(left/1000)%60));if(left==0)counter.append("\nВремя вышло");}gameHandler.postDelayed(this,1000);}};gameHandler.post(sharedTimerTick);
+        sharedTimerPoll=new Runnable(){public void run(){if(!"shared_timer".equals(feature)||!activityResumed)return;if(sync.ready())network.execute(()->{try{String before=prefs.getString("shared_timer","[]");JSONArray rows=sync.fetchItems();boolean found=false;for(int i=0;i<rows.length();i++){JSONObject row=rows.getJSONObject(i);JSONObject payload=row.optJSONObject("payload");if(payload!=null&&"shared_timer".equals(payload.optString("app_key")))found=true;sync.storeRemote(row,prefs);}if(SharedTimerSyncPolicy.shouldClearLocalTimer(found,hasPendingTimerUpload()))prefs.edit().remove("shared_timer").apply();String after=prefs.getString("shared_timer","[]");boolean editing=getCurrentFocus() instanceof EditText;runOnUiThread(()->{if("shared_timer".equals(feature)&&activityResumed){if(SharedTimerSyncPolicy.shouldRenderAfterSync(before,after,editing))render();}});}catch(Exception e){android.util.Log.w("VmesteTimer","Could not refresh shared timer",e);}});if("shared_timer".equals(feature)&&activityResumed)gameHandler.postDelayed(this,5000);}};gameHandler.postDelayed(sharedTimerPoll,5000);
     }
 
     private void renderSharedReminder() {
@@ -2806,12 +2821,28 @@ public class MainActivity extends Activity {
 
     private void syncQuietly() {
         flushPendingSync();
-        if(!sync.ready())return;network.execute(()->{try{String before=prefs.getAll().toString();JSONArray rows=sync.fetchItems();boolean hasTimer=false;for(int i=0;i<rows.length();i++){JSONObject row=rows.getJSONObject(i);sync.storeRemote(row,prefs);JSONObject payload=row.optJSONObject("payload");if(payload!=null){if("shared_timer".equals(payload.optString("app_key"))){hasTimer=true;scheduleReminder(row.optString("id"),payload.optLong("timer_end"),"Таймер завершён","Ваш общий таймер закончился");}if("capsule".equals(payload.optString("app_key")))scheduleReminder(row.optString("id"),payload.optLong("unlock_at"),"Капсула времени открыта","Ваше общее послание ждёт вас");if(payload.optBoolean("remind_partner")&&!sync.userId().equals(row.optString("created_by")))scheduleReminder(row.optString("id"),payload.optLong("reminder_at"),"Вместе",payload.optString("title","Напоминание"));}}if(!hasTimer)prefs.edit().remove("shared_timer").apply();String after=prefs.getAll().toString();if(!before.equals(after))runOnUiThread(()->{if(!(getCurrentFocus() instanceof EditText)&&!isFinishing())render();});}catch(Exception ignored){}});
+        if(!sync.ready())return;network.execute(()->{try{String before=prefs.getAll().toString();JSONArray rows=sync.fetchItems();boolean hasTimer=false;for(int i=0;i<rows.length();i++){JSONObject row=rows.getJSONObject(i);sync.storeRemote(row,prefs);JSONObject payload=row.optJSONObject("payload");if(payload!=null){if("shared_timer".equals(payload.optString("app_key"))){hasTimer=true;scheduleReminder(row.optString("id"),payload.optLong("timer_end"),"Таймер завершён","Ваш общий таймер закончился");}if("capsule".equals(payload.optString("app_key")))scheduleReminder(row.optString("id"),payload.optLong("unlock_at"),"Капсула времени открыта","Ваше общее послание ждёт вас");if(payload.optBoolean("remind_partner")&&!sync.userId().equals(row.optString("created_by")))scheduleReminder(row.optString("id"),payload.optLong("reminder_at"),"Вместе",payload.optString("title","Напоминание"));}}if(SharedTimerSyncPolicy.shouldClearLocalTimer(hasTimer,hasPendingTimerUpload()))prefs.edit().remove("shared_timer").apply();String after=prefs.getAll().toString();boolean editing=getCurrentFocus() instanceof EditText;if(SharedTimerSyncPolicy.shouldRenderAfterSync(before,after,editing))runOnUiThread(()->{if(!isFinishing())render();});}catch(Exception e){android.util.Log.w("VmesteSync","Background shared sync failed",e);}});
     }
-    private void flushPendingSync(){if(!sync.ready())return;JSONArray pending;try{pending=new JSONArray(prefs.getString("pending_shared_sync","[]"));}catch(Exception e){pending=new JSONArray();}if(pending.length()==0)return;final JSONArray batch=pending;network.execute(()->{for(int i=0;i<batch.length();i++){JSONObject entry=batch.optJSONObject(i);if(entry==null)continue;try{String k=entry.optString("key","");JSONObject it=entry.optJSONObject("item");if(k.isEmpty()||it==null)continue;sync.upsert(k,it);String id=it.optString("id");synchronized(MainActivity.this){JSONArray latest;try{latest=new JSONArray(prefs.getString("pending_shared_sync","[]"));}catch(Exception e){latest=new JSONArray();}for(int j=latest.length()-1;j>=0;j--){JSONObject q=latest.optJSONObject(j);if(q!=null){JSONObject itemObj=q.optJSONObject("item");if(itemObj!=null&&id.equals(itemObj.optString("id")))latest.remove(j);}}prefs.edit().putString("pending_shared_sync",latest.toString()).apply();}}catch(Exception ignored){}}});}
+    private boolean hasPendingTimerUpload(){
+        String localTimer=prefs.getString("shared_timer","[]");
+        String timerId="";
+        try{JSONArray timers=new JSONArray(localTimer);if(timers.length()>0)timerId=timers.optJSONObject(0).optString("id","");}
+        catch(Exception e){android.util.Log.w("VmesteTimer","Could not inspect local timer",e);return true;}
+        if(timerId.isEmpty())return false;
+        try{
+            JSONArray pending=new JSONArray(prefs.getString("pending_shared_sync","[]"));
+            for(int i=0;i<pending.length();i++){
+                JSONObject entry=pending.optJSONObject(i),item=entry==null?null:entry.optJSONObject("item");
+                if(entry!=null&&"shared_timer".equals(entry.optString("key"))
+                        &&item!=null&&timerId.equals(item.optString("id")))return true;
+            }
+        }catch(Exception e){android.util.Log.w("VmesteTimer","Could not inspect pending timer sync",e);return true;}
+        return false;
+    }
+    private void flushPendingSync(){if(!sync.ready())return;JSONArray pending;try{pending=new JSONArray(prefs.getString("pending_shared_sync","[]"));}catch(Exception e){android.util.Log.e("VmesteSync","Pending shared-sync queue is invalid",e);return;}if(pending.length()==0)return;final JSONArray batch=pending;network.execute(()->{for(int i=0;i<batch.length();i++){JSONObject entry=batch.optJSONObject(i);if(entry==null){android.util.Log.e("VmesteSync","Skipping malformed pending shared-sync entry at index "+i);continue;}String k=entry.optString("key","");JSONObject it=entry.optJSONObject("item");if(k.isEmpty()||it==null){android.util.Log.e("VmesteSync","Skipping incomplete pending shared-sync entry at index "+i);continue;}try{sync.upsert(k,it);String id=it.optString("id");synchronized(MainActivity.this){JSONArray latest;try{latest=new JSONArray(prefs.getString("pending_shared_sync","[]"));}catch(Exception e){android.util.Log.e("VmesteSync","Pending shared-sync queue changed to invalid JSON",e);continue;}for(int j=latest.length()-1;j>=0;j--){JSONObject q=latest.optJSONObject(j);if(q!=null){JSONObject itemObj=q.optJSONObject("item");if(itemObj!=null&&id.equals(itemObj.optString("id")))latest.remove(j);}}prefs.edit().putString("pending_shared_sync",latest.toString()).apply();}}catch(Exception e){android.util.Log.w("VmesteSync","Pending shared update will retry for key "+k,e);}}});}
 
-    @Override protected void onResume(){super.onResume();activityResumed=true;resumePendingWatchRoomInvite();syncQuietly();refreshActiveWatchRooms(true);refreshProfiles();checkGitHubUpdate(false);if(isChatOpen())startChatRefresh();String pending=prefs.getString("pending_update_url","");if(!pending.isEmpty()&&android.os.Build.VERSION.SDK_INT>=26&&getPackageManager().canRequestPackageInstalls()){String digest=prefs.getString("pending_update_digest","");String version=prefs.getString("pending_update_version","");prefs.edit().remove("pending_update_url").remove("pending_update_digest").remove("pending_update_version").apply();downloadGitHubUpdate(pending,digest,version);}if(sharedSyncPoll==null)sharedSyncPoll=new Runnable(){public void run(){if(!isFinishing()){syncQuietly();refreshActiveWatchRooms(false);refreshProfiles();if(feature!=null&&feature.contains("просмотра"))syncMovieRoomMetadata();gameHandler.postDelayed(this,15000);}}};gameHandler.removeCallbacks(sharedSyncPoll);gameHandler.postDelayed(sharedSyncPoll,15000);}
-    @Override protected void onPause(){activityResumed=false;if(sharedSyncPoll!=null)gameHandler.removeCallbacks(sharedSyncPoll);if(chatRefreshRunnable!=null)gameHandler.removeCallbacks(chatRefreshRunnable);if(chatTypingRunnable!=null){gameHandler.removeCallbacks(chatTypingRunnable);chatTypingRunnable=null;}super.onPause();}
+    @Override protected void onResume(){super.onResume();activityResumed=true;resumePendingWatchRoomInvite();syncQuietly();refreshActiveWatchRooms(true);refreshProfiles();if(pairGames.ready()){if(!GameScoreSyncScheduler.ensurePeriodic(this))android.util.Log.w("GameScoreSync","Could not schedule periodic score sync");requestGameScoreSync();}if("shared_timer".equals(feature)){if(sharedTimerTick!=null){gameHandler.removeCallbacks(sharedTimerTick);gameHandler.post(sharedTimerTick);}if(sharedTimerPoll!=null){gameHandler.removeCallbacks(sharedTimerPoll);gameHandler.postDelayed(sharedTimerPoll,5000);}}checkGitHubUpdate(false);if(isChatOpen())startChatRefresh();String pending=prefs.getString("pending_update_url","");if(!pending.isEmpty()&&android.os.Build.VERSION.SDK_INT>=26&&getPackageManager().canRequestPackageInstalls()){String digest=prefs.getString("pending_update_digest","");String version=prefs.getString("pending_update_version","");prefs.edit().remove("pending_update_url").remove("pending_update_digest").remove("pending_update_version").apply();downloadGitHubUpdate(pending,digest,version);}if(sharedSyncPoll==null)sharedSyncPoll=new Runnable(){public void run(){if(!isFinishing()){syncQuietly();refreshActiveWatchRooms(false);refreshProfiles();requestGameScoreSync();if(feature!=null&&feature.contains("просмотра"))syncMovieRoomMetadata();gameHandler.postDelayed(this,15000);}}};gameHandler.removeCallbacks(sharedSyncPoll);gameHandler.postDelayed(sharedSyncPoll,15000);}
+    @Override protected void onPause(){activityResumed=false;if(sharedSyncPoll!=null)gameHandler.removeCallbacks(sharedSyncPoll);if(gameScoreRetry!=null){gameHandler.removeCallbacks(gameScoreRetry);gameScoreRetry=null;}if("shared_timer".equals(feature)){if(sharedTimerTick!=null)gameHandler.removeCallbacks(sharedTimerTick);if(sharedTimerPoll!=null)gameHandler.removeCallbacks(sharedTimerPoll);}if(chatRefreshRunnable!=null)gameHandler.removeCallbacks(chatRefreshRunnable);if(chatTypingRunnable!=null){gameHandler.removeCallbacks(chatTypingRunnable);chatTypingRunnable=null;}super.onPause();}
 
     @Override protected void onSaveInstanceState(Bundle state) {
         state.putBoolean("pending_loyalty_scan", pendingLoyaltyScan);
@@ -3466,7 +3497,7 @@ public class MainActivity extends Activity {
         EditText avatar = new EditText(this); avatar.setSingleLine(true); avatar.setHint("Эмодзи профиля, например 🌿"); avatar.setText(prefs.getString("profile_avatar", "♡"));
         EditText bio = new EditText(this); bio.setHint("О себе или короткое пожелание"); bio.setText(prefs.getString("profile_bio", "")); bio.setMinLines(3); bio.setGravity(Gravity.TOP | Gravity.START);
         TextView avatarLabel = text("Ваше фото профиля", 12, MUTED, true); avatarLabel.setPadding(0, dp(8), 0, 0); form.addView(avatarLabel);
-        ImageView avatarPreview = new ImageView(this); avatarPreview.setScaleType(ImageView.ScaleType.CENTER_CROP); avatarPreview.setBackgroundColor(0xFFE8E0EC);
+        ImageView avatarPreview = new ImageView(this);         avatarPreview.setScaleType(ImageView.ScaleType.CENTER_CROP); avatarPreview.setBackgroundColor(PALE);
         String avatarUri=localAvatarUri();
         boolean hasPhoto=setAvatarPicture(avatarPreview,avatarUri,72);
         avatarPreview.setVisibility(hasPhoto?View.VISIBLE:View.GONE);
@@ -3474,7 +3505,7 @@ public class MainActivity extends Activity {
         TextView avatarEmoji = text(prefs.getString("profile_avatar","♡"), 24, PURPLE, true); avatarEmoji.setGravity(Gravity.CENTER); avatarEmoji.setVisibility(hasPhoto?View.GONE:View.VISIBLE);
         LinearLayout.LayoutParams emojiParams = new LinearLayout.LayoutParams(dp(72), dp(72)); emojiParams.gravity=Gravity.CENTER_HORIZONTAL; emojiParams.topMargin=dp(4); emojiParams.bottomMargin=dp(8); form.addView(avatarEmoji, emojiParams);
         TextView intro = text("Ваш уютный образ для партнёра", 12, MUTED, false); intro.setPadding(0, 0, 0, dp(10)); form.addView(intro);
-        for (EditText field : new EditText[]{name, avatar, bio}) { field.setTextColor(INK); field.setHintTextColor(MUTED); field.setPadding(dp(14), dp(11), dp(14), dp(11)); field.setBackground(shape(softDark ? 0xFF3A3440 : 0xFFFBF9FC, 14)); }
+        for (EditText field : new EditText[]{name, avatar, bio}) { field.setTextColor(INK); field.setHintTextColor(MUTED); field.setPadding(dp(14), dp(11), dp(14), dp(11)); field.setBackground(shape(PALE, 14)); }
         TextView nameLabel = text("Имя", 12, MUTED, true); form.addView(nameLabel); form.addView(name);
         TextView avatarFieldLabel = text("Эмодзи профиля", 12, MUTED, true); avatarFieldLabel.setPadding(0,dp(8),0,0); form.addView(avatarFieldLabel); form.addView(avatar);
         TextView emojiPicker=pill("Выбрать эмодзи профиля",PURPLE);
@@ -3937,8 +3968,8 @@ public class MainActivity extends Activity {
 
         android.webkit.WebView web = new android.webkit.WebView(this);
         android.webkit.WebSettings settings = web.getSettings();
-        settings.setJavaScriptEnabled(false);
-        settings.setDomStorageEnabled(false);
+        settings.setJavaScriptEnabled(true);
+        settings.setDomStorageEnabled(true);
         settings.setAllowFileAccess(false);
         settings.setAllowContentAccess(false);
         settings.setAllowFileAccessFromFileURLs(false);
@@ -4196,34 +4227,64 @@ public class MainActivity extends Activity {
     private String initialCheckersBoard() { char[] cells=emptyBoard(64).toCharArray();for(int r=0;r<3;r++)for(int c=0;c<8;c++)if((r+c)%2==1)cells[r*8+c]='b';for(int r=5;r<8;r++)for(int c=0;c<8;c++)if((r+c)%2==1)cells[r*8+c]='r';return new String(cells); }
     private void renderGameRating() {
         LinearLayout rating=card();rating.setBackground(shape(softDark?0xFF403648:PALE,20));rating.addView(text("🏆  Счёт ваших партий",16,INK,true));
-        TextView score=text("Считаем победы…",13,MUTED,false);score.setPadding(0,dp(5),0,0);rating.addView(score);
-        if(!pairGames.ready()){score.setText("Подключите пару, чтобы вести общий счёт");return;}
-        score.setOnClickListener(v->render());
+        TextView score=text("Синхронизируем общий счёт…",13,MUTED,false);
+        score.setPadding(0,dp(5),0,0);rating.addView(score);gameScoreView=score;
+        score.setOnClickListener(v->requestGameScoreSync());
+        if(!pairGames.ready()){
+            score.setText("Подключите пару, чтобы вести общий счёт");
+            return;
+        }
+        GameScoreSync.Snapshot cached=GameScoreSync.cached(this,pairGames.coupleId(),pairGames.userId());
+        if(cached!=null)showGameScore(cached);
+        requestGameScoreSync();
+    }
+
+    private void requestGameScoreSync() {
+        if(!pairGames.ready()||gameScoreSyncInFlight||gameScoreRetry!=null)return;
+        gameScoreSyncInFlight=true;
         network.execute(()->{
             try{
-                JSONArray games=pairGames.history();
-                ArrayList<GameScoreRules.Outcome> outcomes=new ArrayList<>();
-                for(int i=0;i<games.length();i++){
-                    JSONObject row=games.optJSONObject(i);
-                    JSONObject state=row==null?null:row.optJSONObject("state");
-                    if(state==null)continue;
-                    outcomes.add(new GameScoreRules.Outcome(state.optString("winner"),
-                            state.optString("p1"),state.optString("p2")));
-                }
-                GameScoreRules.Summary summary=GameScoreRules.summarize(outcomes,
-                        pairGames.userId(),prefs.getString("partner_user_id",""));
-                String result=prefs.getString("profile_name","Вы")+"  "+summary.playerWins
-                        +"  ·  "+prefs.getString("partner_name","Партнёр")+"  "+summary.partnerWins
-                        +"  ·  ничьи "+summary.draws;
-                runOnUiThread(()->{if(!isFinishing())score.setText(result);});
+                GameScoreSync.Snapshot snapshot=new GameScoreSync(MainActivity.this).refresh();
+                runOnUiThread(()->{
+                    gameScoreSyncInFlight=false;
+                    gameScoreSyncFailures=0;
+                    if(gameScoreRetry!=null)gameHandler.removeCallbacks(gameScoreRetry);
+                    gameScoreRetry=null;
+                    showGameScore(snapshot);
+                });
             }catch(Exception e){
                 runOnUiThread(()->{
-                    if(isFinishing())return;
-                    score.setText("Не удалось обновить общий счёт · нажмите, чтобы повторить");
-                    score.setOnClickListener(v->render());
+                    gameScoreSyncInFlight=false;
+                    GameScoreSync.Snapshot cached=GameScoreSync.cached(MainActivity.this,
+                            pairGames.coupleId(),pairGames.userId());
+                    if(cached!=null)showGameScore(cached);
+                    else if(gameScoreView!=null)gameScoreView.setText(
+                            "Не удалось обновить общий счёт · повторяем автоматически");
+                    scheduleGameScoreRetry();
                 });
             }
         });
+    }
+
+    private void scheduleGameScoreRetry() {
+        if(!activityResumed||isFinishing())return;
+        gameScoreSyncFailures++;
+        if(gameScoreRetry!=null)gameHandler.removeCallbacks(gameScoreRetry);
+        gameScoreRetry=()->{
+            gameScoreRetry=null;
+            requestGameScoreSync();
+        };
+        gameHandler.postDelayed(gameScoreRetry,
+                GameScoreSyncPolicy.retryDelayMillis(gameScoreSyncFailures));
+    }
+
+    private void showGameScore(GameScoreSync.Snapshot snapshot) {
+        if(gameScoreView==null||!GameScoreSyncPolicy.belongsToCurrentAccount(snapshot,
+                pairGames.coupleId(),pairGames.userId()))return;
+        String result=prefs.getString("profile_name","Вы")+"  "+snapshot.playerWins
+                +"  ·  "+prefs.getString("partner_name","Партнёр")+"  "+snapshot.partnerWins
+                +"  ·  ничьи "+snapshot.draws;
+        gameScoreView.setText(result);
     }
 
     private void onlineTicTacToe(){
@@ -5505,17 +5566,23 @@ public class MainActivity extends Activity {
         TextView h=text(title,19,INK,true); LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.topMargin=dp(13);p.bottomMargin=dp(3);body.addView(h,p);
         if(sub!=null){TextView s=text(sub,12,MUTED,false);LinearLayout.LayoutParams q=new LinearLayout.LayoutParams(-1,-2);q.bottomMargin=dp(11);body.addView(s,q);}
     }
-    private TextView pill(String value,int color) { TextView b=text(value,13,color,true);b.setGravity(Gravity.CENTER);b.setMinHeight(dp(48));b.setPadding(dp(16),dp(11),dp(16),dp(11));b.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(softDark?0x667F688E:0x557F58A4),glassSurface(PALE,22),null));LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-2,-2);p.bottomMargin=dp(10);b.setLayoutParams(p);return b; }
+    private TextView pill(String value,int color) { TextView b=text(value,13,color,true);b.setGravity(Gravity.CENTER);b.setMinHeight(dp(48));b.setPadding(dp(16),dp(11),dp(16),dp(11));b.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(withAlpha(PURPLE,0x66)),glassSurface(PALE,22),null));LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-2,-2);p.bottomMargin=dp(10);b.setLayoutParams(p);return b; }
     private GradientDrawable glassSurface(int fill,int radius) {
         GradientDrawable surface=new GradientDrawable();
         surface.setOrientation(GradientDrawable.Orientation.TOP_BOTTOM);
-        surface.setColors(softDark
-                ? new int[]{0xF74A414F,0xE83A3340,0xF4332D39}
-                : new int[]{0xF8FFFFFF,0xEAFBF8FD,0xF4F4EFF8});
+        surface.setColors(new int[]{fill,blendColor(fill,PALE,0.12f),fill});
         surface.setCornerRadius(dp(radius));
-        surface.setStroke(dp(1),softDark?0x88988BA2:0xD6FFFFFF);
+        surface.setStroke(dp(1),LINE);
         return surface;
     }
+    private int blendColor(int base,int overlay,float ratio){
+        float inverse=1f-ratio;
+        return android.graphics.Color.rgb(
+                Math.round(android.graphics.Color.red(base)*inverse+android.graphics.Color.red(overlay)*ratio),
+                Math.round(android.graphics.Color.green(base)*inverse+android.graphics.Color.green(overlay)*ratio),
+                Math.round(android.graphics.Color.blue(base)*inverse+android.graphics.Color.blue(overlay)*ratio));
+    }
+    private int withAlpha(int color,int alpha){return (color&0x00FFFFFF)|((alpha&0xFF)<<24);}
     private void addGap(LinearLayout parent,int h) { View gap=new View(this);parent.addView(gap,new LinearLayout.LayoutParams(1,dp(h))); }
 
     @Override protected void onActivityResult(int requestCode,int resultCode,Intent data) {
