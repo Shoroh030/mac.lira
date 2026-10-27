@@ -70,6 +70,7 @@ public class MainActivity extends Activity {
     private boolean softDark;
     private boolean firstRunWelcomeVisible;
     private boolean deferGameNotificationPermission;
+    private EditText chatInput;
     private android.content.SharedPreferences prefs;
     private LinearLayout root, body, nav;
     private ScrollView contentScroll;
@@ -90,6 +91,13 @@ public class MainActivity extends Activity {
     private boolean coupleRestorePending, coupleRestoreFailed;
     private String pendingPhotoKey = "", pendingPhotoItemId = "";
     private String pendingStoryCaption = "";
+    private JSONArray chatReactions = new JSONArray();
+    private JSONArray chatReceipts = new JSONArray();
+    private JSONArray chatPresence = new JSONArray();
+    private String chatReplyToId = "", chatReplyPreview = "", chatInteractionIssue = "";
+    private TextView chatTypingStatus;
+    private Runnable chatTypingRunnable;
+    private long lastTypingSentAt;
     private String storiesFilter = "";
     private String capsuleAnimationId = "";
     private String pendingFileDownloadPath = "", pendingFileDownloadName = "";
@@ -150,7 +158,7 @@ public class MainActivity extends Activity {
 
         if (coupleRestorePending) root.post(this::restoreCoupleBinding);
         handleIncomingShare(getIntent());
-        if(sync.projectChanged())toast("Supabase-проект изменён. Войдите заново и подключите пару.");
+        if(sync.projectChanged())toast("Подключение к сервису общего пространства изменилось. Войдите заново и подключите пару.");
         if (!firstRunWelcome && !sync.signedIn()
                 && !prefs.getBoolean("first_run_auth_prompt_shown", false) && !incomingShare) {
             prefs.edit().putBoolean("first_run_auth_prompt_shown", true).apply();
@@ -174,9 +182,23 @@ public class MainActivity extends Activity {
         LinearLayout content = column();
         content.setGravity(Gravity.CENTER);
         content.setPadding(dp(28), dp(24), dp(28), dp(24));
+        LinearLayout brandLockup = new LinearLayout(this);
+        brandLockup.setGravity(Gravity.CENTER);
+        ImageView brandMark = new ImageView(this);
+        brandMark.setImageResource(R.drawable.ic_together);
+        brandMark.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        brandLockup.addView(brandMark, new LinearLayout.LayoutParams(dp(38), dp(38)));
+        TextView brandName = text(getString(R.string.app_name), 23, INK, true);
+        brandName.setLetterSpacing(0.01f);
+        LinearLayout.LayoutParams brandNameParams = new LinearLayout.LayoutParams(-2, -2);
+        brandNameParams.leftMargin = dp(10);
+        brandLockup.addView(brandName, brandNameParams);
+        content.addView(brandLockup);
         TextView title = text("Ближе, даже когда далеко", 29, INK, true);
         title.setGravity(Gravity.CENTER);
-        content.addView(title);
+        LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(-1, -2);
+        titleParams.topMargin = dp(24);
+        content.addView(title, titleParams);
         TextView description = text(
                 "Общие планы, разговоры и маленькие поводы быть рядом — в одном месте.",
                 16, MUTED, false);
@@ -282,18 +304,15 @@ public class MainActivity extends Activity {
     private void handleWatchRoomInvite(String roomId) {
         pendingWatchRoomInviteId = roomId;
         if (!sync.configured()) {
-            new AlertDialog.Builder(this)
-                    .setTitle("Настройте подключение")
-                    .setMessage("Чтобы открыть приглашение, сначала подключите Supabase в разделе «Пригласить партнёра».")
-                    .setPositiveButton("Открыть настройки", (dialog, which) -> {
-                        feature=null;tab=NavigationModel.SETTINGS_TAB;render();
-                    })
-                    .setNegativeButton("Позже", null)
+            VmesteDialogTheme.builder(this)
+                    .setTitle("Подключение недоступно")
+                    .setMessage("Сейчас приложение не может подключиться к сервису общего пространства. Повторите попытку позже.")
+                    .setPositiveButton("Понятно", null)
                     .show();
             return;
         }
         if (!sync.signedIn()) {
-            new AlertDialog.Builder(this)
+            VmesteDialogTheme.builder(this)
                     .setTitle("Войдите, чтобы подключиться")
                     .setMessage("Приглашение получено. Войдите в свой аккаунт, затем подключитесь к той же паре, что и ведущий.")
                     .setPositiveButton("Войти", (dialog, which) -> accountDialog())
@@ -302,7 +321,7 @@ public class MainActivity extends Activity {
             return;
         }
         if (sync.coupleId().isEmpty()) {
-            new AlertDialog.Builder(this)
+            VmesteDialogTheme.builder(this)
                     .setTitle("Подключите свою пару")
                     .setMessage("В разделе «Пригласить партнёра» подключитесь к существующей паре ведущего. Не создавайте новую пару для этого приглашения.")
                     .setPositiveButton("Открыть раздел", (dialog, which) -> {
@@ -362,7 +381,7 @@ public class MainActivity extends Activity {
         String title="Партнёр ждёт вас в игре", name="парной игре";
         if("durak".equals(type))name="Дураке";else if("sea_battle".equals(type))name="Морском бое";else if("tic_tac_toe".equals(type))name="Крестиках-ноликах";
         String channel="vmeste_game_invites";
-        if(android.os.Build.VERSION.SDK_INT>=26){android.app.NotificationChannel c=new android.app.NotificationChannel(channel,"Игровые приглашения",android.app.NotificationManager.IMPORTANCE_DEFAULT);((android.app.NotificationManager)getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(c);}
+        if(android.os.Build.VERSION.SDK_INT>=26){android.app.NotificationChannel c=new android.app.NotificationChannel(channel,getString(R.string.app_name)+" · игровые приглашения",android.app.NotificationManager.IMPORTANCE_DEFAULT);((android.app.NotificationManager)getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(c);}
         android.app.Notification.Builder b=android.os.Build.VERSION.SDK_INT>=26?new android.app.Notification.Builder(this,channel):new android.app.Notification.Builder(this);
         b.setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle(title).setContentText("Вас ждут в "+name+" · откройте раздел «Игры»").setAutoCancel(true);
         ((android.app.NotificationManager)getSystemService(NOTIFICATION_SERVICE)).notify(type.hashCode(),b.build());
@@ -370,10 +389,19 @@ public class MainActivity extends Activity {
 
     private int dp(float n) { return (int)(n * getResources().getDisplayMetrics().density + .5f); }
     private android.graphics.Bitmap cropAvatar(android.graphics.Bitmap source,int size){
-        if(source==null)return null;int side=Math.min(source.getWidth(),source.getHeight());if(side<1)return null;
-        android.graphics.Bitmap square=android.graphics.Bitmap.createBitmap(source,(source.getWidth()-side)/2,(source.getHeight()-side)/2,side,side);
+        if(source==null)return null;
+        AvatarCropPolicy.Crop crop=AvatarCropPolicy.centeredSquare(source.getWidth(),source.getHeight());
+        android.graphics.Bitmap square=source.getWidth()==crop.side&&source.getHeight()==crop.side
+                ?source:android.graphics.Bitmap.createBitmap(source,crop.left,crop.top,crop.side,crop.side);
         android.graphics.Bitmap circle=android.graphics.Bitmap.createBitmap(size,size,android.graphics.Bitmap.Config.ARGB_8888);android.graphics.Canvas canvas=new android.graphics.Canvas(circle);
-        android.graphics.Paint paint=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG|android.graphics.Paint.FILTER_BITMAP_FLAG);paint.setShader(new android.graphics.BitmapShader(square,android.graphics.Shader.TileMode.CLAMP,android.graphics.Shader.TileMode.CLAMP));canvas.drawCircle(size/2f,size/2f,size/2f,paint);return circle;
+        android.graphics.BitmapShader shader=new android.graphics.BitmapShader(square,android.graphics.Shader.TileMode.CLAMP,android.graphics.Shader.TileMode.CLAMP);
+        android.graphics.Matrix shaderMatrix=new android.graphics.Matrix();
+        float scale=AvatarCropPolicy.scaleToTarget(crop.side,size);
+        shaderMatrix.setScale(scale,scale);
+        shader.setLocalMatrix(shaderMatrix);
+        android.graphics.Paint paint=new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG|android.graphics.Paint.FILTER_BITMAP_FLAG);paint.setShader(shader);canvas.drawCircle(size/2f,size/2f,size/2f,paint);
+        if(square!=source)square.recycle();
+        return circle;
     }
     private boolean setAvatarPicture(ImageView view,String uri,int size){
         view.setBackground(shape(PALE,Math.max(1,size/2)));view.setClipToOutline(true);
@@ -382,7 +410,7 @@ public class MainActivity extends Activity {
             else if(uri.startsWith("file://")){java.io.File f=new java.io.File(Uri.parse(uri).getPath());if(!f.exists()){view.setImageBitmap(null);return false;}android.graphics.BitmapFactory.Options bounds=new android.graphics.BitmapFactory.Options();bounds.inJustDecodeBounds=true;try(java.io.InputStream in=new java.io.FileInputStream(f)){android.graphics.BitmapFactory.decodeStream(in,null,bounds);}int sample=1;while(bounds.outWidth>0&&bounds.outHeight>0&&(bounds.outWidth/sample>1024||bounds.outHeight/sample>1024))sample*=2;android.graphics.BitmapFactory.Options opts=new android.graphics.BitmapFactory.Options();opts.inSampleSize=sample;try(java.io.InputStream in=new java.io.FileInputStream(f)){bitmap=android.graphics.BitmapFactory.decodeStream(in,null,opts);}}
             else{android.graphics.BitmapFactory.Options bounds=new android.graphics.BitmapFactory.Options();bounds.inJustDecodeBounds=true;try(java.io.InputStream in=getContentResolver().openInputStream(Uri.parse(uri))){android.graphics.BitmapFactory.decodeStream(in,null,bounds);}int sample=1;while(bounds.outWidth>0&&bounds.outHeight>0&&(bounds.outWidth/sample>1024||bounds.outHeight/sample>1024))sample*=2;android.graphics.BitmapFactory.Options opts=new android.graphics.BitmapFactory.Options();opts.inSampleSize=sample;try(java.io.InputStream in=getContentResolver().openInputStream(Uri.parse(uri))){bitmap=android.graphics.BitmapFactory.decodeStream(in,null,opts);}}
             bitmap=orientAvatar(bitmap,uri);
-            android.graphics.Bitmap rounded=cropAvatar(bitmap,dp(size));if(rounded!=null){view.setImageBitmap(rounded);return true;}view.setImageBitmap(null);return false;
+            android.graphics.Bitmap rounded=cropAvatar(bitmap,dp(size));if(bitmap!=null)bitmap.recycle();if(rounded!=null){view.setImageBitmap(rounded);return true;}view.setImageBitmap(null);return false;
         }catch(Exception ignored){view.setImageBitmap(null);return false;}}
     private android.graphics.Bitmap orientAvatar(android.graphics.Bitmap source,String uri){
         if(source==null||uri==null||uri.isEmpty())return source;
@@ -449,7 +477,9 @@ public class MainActivity extends Activity {
         LinearLayout header = new LinearLayout(this); header.setGravity(Gravity.CENTER_VERTICAL);
         header.setPadding(dp(20), dp(13), dp(20), dp(12));
         LinearLayout brand = column();
-        brand.addView(text("вместе", 23, INK, true));
+        TextView brandName = text(getString(R.string.app_name), 23, INK, true);
+        brandName.setLetterSpacing(0.01f);
+        brand.addView(brandName);
         brand.addView(text("ваша маленькая вселенная", 11, MUTED, false));
         header.addView(brand, new LinearLayout.LayoutParams(0, -2, 1));
         String profileName = prefs.getString("profile_name", "").trim();
@@ -484,9 +514,11 @@ public class MainActivity extends Activity {
     }
 
     private void render() {
+        boolean restoreChatFocus=chatInput!=null&&chatInput.hasFocus();
         if (root != null) root.setBackgroundColor(BG);
         if (chatComposer != null && chatComposer.getParent() == root) root.removeView(chatComposer);
         chatComposer = null;
+        chatInput = null;
         if(contentScroll!=null)contentScroll.setFillViewport(false);
         body.removeAllViews(); nav.removeAllViews();
         renderWatchRoomInvitation();
@@ -511,12 +543,29 @@ public class MainActivity extends Activity {
         for (String item : NavigationModel.bottomTabs(navigationTabs(), hiddenNavigationTabs())) {
             final String dest = item;
             boolean selected = item.equals(tab) && feature == null;
-            TextView b = text(iconFor(item) + "\n" + item, 10, selected ? (softDark ? 0xFFF2E8FA : PURPLE) : (softDark ? 0xFFB8AFBF : MUTED), selected);
-            b.setGravity(Gravity.CENTER); b.setPadding(dp(2), dp(3), dp(2), dp(3));
-            b.setMinHeight(dp(48));
+            int itemColor = selected ? (softDark ? 0xFFF2E8FA : PURPLE)
+                    : (softDark ? 0xFFB8AFBF : MUTED);
+            LinearLayout b = column();
+            b.setGravity(Gravity.CENTER);
+            b.setPadding(dp(2), dp(3), dp(2), dp(3));
+            b.setMinimumHeight(dp(48));
             b.setContentDescription(item);
             b.setSelected(selected);
+            b.setFocusable(true);
+            b.setClickable(true);
             b.setBackground(navigationItem(selected));
+            NavigationIconView icon = new NavigationIconView(item);
+            icon.setSelected(selected);
+            b.addView(icon, new LinearLayout.LayoutParams(dp(22), dp(22)));
+            TextView label = text(navigationLabel(item), 10, itemColor, selected);
+            label.setGravity(Gravity.CENTER);
+            label.setSingleLine(true);
+            label.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            label.setIncludeFontPadding(false);
+            label.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(-1, -2);
+            labelParams.topMargin = dp(2);
+            b.addView(label, labelParams);
             LinearLayout.LayoutParams itemParams = new LinearLayout.LayoutParams(0, -1, 1);
             itemParams.setMargins(dp(2), 0, dp(2), 0);
             nav.addView(b, itemParams);
@@ -526,6 +575,15 @@ public class MainActivity extends Activity {
         if ((feature != null && feature.contains("Чат")) || "Чат".equals(tab)) {
             chatComposer = createChatComposer();
             root.addView(chatComposer, root.indexOfChild(nav));
+            if(restoreChatFocus&&chatInput!=null){
+                chatInput.setSelection(chatInput.getText().length());
+                chatInput.requestFocus();
+                EditText inputToRestore=chatInput;
+                inputToRestore.post(()->{
+                    InputMethodManager manager=(InputMethodManager)getSystemService(Context.INPUT_METHOD_SERVICE);
+                    if(manager!=null)manager.showSoftInput(inputToRestore,InputMethodManager.SHOW_IMPLICIT);
+                });
+            }
         }
     }
     private void selectNavigationTab(String destination) {
@@ -570,7 +628,6 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) { }
         }
         hidden.remove(NavigationModel.MORE_TAB);
-        hidden.remove(NavigationModel.SETTINGS_TAB);
         return hidden;
     }
     private void navigationSettings(){
@@ -579,13 +636,13 @@ public class MainActivity extends Activity {
             HashSet<String> hidden=hiddenNavigationTabs();
             LinearLayout list=column();
             list.setPadding(dp(16),dp(10),dp(16),dp(10));
-            TextView help=text("На панели закреплены «Настройки» и «Ещё». Выберите до трёх основных разделов и задайте их порядок.",13,MUTED,false);
+            TextView help=text("На панели закреплена «Ещё». Выберите до трёх основных разделов и задайте их порядок. Настройки доступны в разделе «Ещё».",13,MUTED,false);
             list.addView(help);
             ScrollView scroll=new ScrollView(this);
             scroll.setFillViewport(false);
             scroll.addView(list);
             scroll.setBackgroundColor(PAPER);
-            AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Разделы на панели")
+            AlertDialog dialog=VmesteDialogTheme.builder(this).setTitle("Разделы на панели")
                     .setView(scroll).setNegativeButton("Отмена",null)
                     .setPositiveButton("Сохранить",null).create();
             Runnable[] draw={null};
@@ -595,8 +652,7 @@ public class MainActivity extends Activity {
                 for(int i=0;i<order.size();i++){
                     final int at=i;
                     String item=order.get(i);
-                    boolean pinned=NavigationModel.MORE_TAB.equals(item)
-                            ||NavigationModel.SETTINGS_TAB.equals(item);
+                    boolean pinned=NavigationModel.MORE_TAB.equals(item);
                     LinearLayout row=new LinearLayout(this);
                     row.setGravity(Gravity.CENTER_VERTICAL);
                     row.setPadding(dp(8),dp(3),dp(8),dp(3));
@@ -615,7 +671,6 @@ public class MainActivity extends Activity {
                         int shown=0;
                         for(String route:order){
                             if(!NavigationModel.MORE_TAB.equals(route)
-                                    &&!NavigationModel.SETTINGS_TAB.equals(route)
                                     &&!hidden.contains(route))shown++;
                         }
                         if(checked){
@@ -680,8 +735,175 @@ public class MainActivity extends Activity {
         return new android.graphics.drawable.RippleDrawable(
                 android.content.res.ColorStateList.valueOf(rippleColor), item, null);
     }
-    private String iconFor(String s) {
-        switch(s) { case "Главная": return "⌂"; case "Дела": return "✓"; case "Чат": return "✉"; case "Календарь": return "▦"; case "Хотим": return "♡"; case "Ещё": return "⋯"; case "Настройки": return "⚙"; case "Игры": return "🎮"; case "Просмотр": return "🎬"; case "Пригласить": return "🤝"; case "Подарочный радар": return "🎁"; case "Истории": return "📖"; case "Капсула": return "⏳"; case "Карты": return "💳"; case "Голосование": return "🗳"; case "Файлы": return "📎"; default: return "•••"; }
+    private String navigationLabel(String route) {
+        if ("Подарочный радар".equals(route)) return "Подарки";
+        if ("Голосование".equals(route)) return "Голос";
+        return route;
+    }
+
+    private final class NavigationIconView extends View {
+        private final String route;
+        private final android.graphics.Paint paint =
+                new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
+
+        NavigationIconView(String route) {
+            super(MainActivity.this);
+            this.route = route;
+            setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        }
+
+        @Override protected void onDraw(android.graphics.Canvas canvas) {
+            super.onDraw(canvas);
+            float size = Math.min(getWidth(), getHeight());
+            if (size <= 0) return;
+            int save = canvas.save();
+            canvas.translate((getWidth() - size) / 2f, (getHeight() - size) / 2f);
+            canvas.scale(size / 24f, size / 24f);
+            paint.setColor(isSelected() ? (softDark ? 0xFFF2E8FA : PURPLE)
+                    : (softDark ? 0xFFB8AFBF : MUTED));
+            paint.setStyle(android.graphics.Paint.Style.STROKE);
+            paint.setStrokeWidth(1.8f);
+            paint.setStrokeCap(android.graphics.Paint.Cap.ROUND);
+            paint.setStrokeJoin(android.graphics.Paint.Join.ROUND);
+            drawRouteIcon(canvas);
+            canvas.restoreToCount(save);
+        }
+
+        private void drawRouteIcon(android.graphics.Canvas canvas) {
+            switch (route) {
+                case "Главная": {
+                    android.graphics.Path path = new android.graphics.Path();
+                    path.moveTo(3, 11); path.lineTo(12, 3); path.lineTo(21, 11);
+                    path.moveTo(5, 10); path.lineTo(5, 21); path.lineTo(19, 21); path.lineTo(19, 10);
+                    canvas.drawPath(path, paint);
+                    canvas.drawRoundRect(10, 14, 14, 21, 1, 1, paint);
+                    break;
+                }
+                case "Дела": {
+                    android.graphics.Path checks = new android.graphics.Path();
+                    checks.moveTo(3, 7); checks.lineTo(5, 9); checks.lineTo(8, 5);
+                    checks.moveTo(3, 15); checks.lineTo(5, 17); checks.lineTo(8, 13);
+                    canvas.drawPath(checks, paint);
+                    canvas.drawLine(11, 7, 21, 7, paint);
+                    canvas.drawLine(11, 15, 21, 15, paint);
+                    break;
+                }
+                case "Чат": {
+                    canvas.drawRoundRect(3, 3, 21, 17, 4, 4, paint);
+                    android.graphics.Path tail = new android.graphics.Path();
+                    tail.moveTo(7, 17); tail.lineTo(5, 21); tail.lineTo(12, 17);
+                    canvas.drawPath(tail, paint);
+                    canvas.drawCircle(8, 10, 0.6f, paint);
+                    canvas.drawCircle(12, 10, 0.6f, paint);
+                    canvas.drawCircle(16, 10, 0.6f, paint);
+                    break;
+                }
+                case "Календарь":
+                    canvas.drawRoundRect(3, 5, 21, 21, 2, 2, paint);
+                    canvas.drawLine(3, 10, 21, 10, paint);
+                    canvas.drawLine(8, 3, 8, 7, paint);
+                    canvas.drawLine(16, 3, 16, 7, paint);
+                    canvas.drawLine(7, 14, 9, 14, paint);
+                    canvas.drawLine(12, 14, 14, 14, paint);
+                    canvas.drawLine(17, 14, 19, 14, paint);
+                    break;
+                case "Хотим": {
+                    android.graphics.Path heart = new android.graphics.Path();
+                    heart.moveTo(12, 21);
+                    heart.cubicTo(10, 19, 3, 14, 3, 8);
+                    heart.cubicTo(3, 3, 9, 2, 12, 7);
+                    heart.cubicTo(15, 2, 21, 3, 21, 8);
+                    heart.cubicTo(21, 14, 14, 19, 12, 21);
+                    canvas.drawPath(heart, paint);
+                    break;
+                }
+                case "Игры": {
+                    android.graphics.Path pad = new android.graphics.Path();
+                    pad.moveTo(6, 7); pad.lineTo(18, 7); pad.quadTo(21, 7, 22, 10);
+                    pad.lineTo(23, 16); pad.quadTo(23, 20, 20, 20); pad.lineTo(16, 16);
+                    pad.lineTo(8, 16); pad.lineTo(4, 20); pad.quadTo(1, 20, 1, 16);
+                    pad.lineTo(2, 10); pad.quadTo(3, 7, 6, 7);
+                    canvas.drawPath(pad, paint);
+                    canvas.drawLine(5, 10, 5, 14, paint);
+                    canvas.drawLine(3, 12, 7, 12, paint);
+                    canvas.drawCircle(17, 11, 0.8f, paint);
+                    canvas.drawCircle(20, 14, 0.8f, paint);
+                    break;
+                }
+                case "Просмотр":
+                    canvas.drawRoundRect(2, 5, 22, 19, 3, 3, paint);
+                    android.graphics.Path play = new android.graphics.Path();
+                    play.moveTo(10, 8); play.lineTo(16, 12); play.lineTo(10, 16); play.close();
+                    canvas.drawPath(play, paint);
+                    break;
+                case "Пригласить": {
+                    canvas.drawCircle(8, 8, 3, paint);
+                    canvas.drawCircle(17, 9, 2.5f, paint);
+                    android.graphics.Path people = new android.graphics.Path();
+                    people.moveTo(2, 20); people.quadTo(2, 14, 8, 14);
+                    people.quadTo(14, 14, 14, 20);
+                    people.moveTo(14, 15); people.quadTo(21, 14, 22, 20);
+                    canvas.drawPath(people, paint);
+                    break;
+                }
+                case "Подарочный радар":
+                    canvas.drawRect(3, 10, 21, 21, paint);
+                    canvas.drawLine(2, 10, 22, 10, paint);
+                    canvas.drawLine(12, 7, 12, 21, paint);
+                    canvas.drawRoundRect(9, 4, 12, 9, 2, 2, paint);
+                    canvas.drawRoundRect(12, 4, 16, 9, 2, 2, paint);
+                    break;
+                case "Истории": {
+                    android.graphics.Path book = new android.graphics.Path();
+                    book.moveTo(12, 20); book.cubicTo(9, 17, 5, 17, 3, 18);
+                    book.lineTo(3, 5); book.cubicTo(7, 4, 10, 5, 12, 8);
+                    book.moveTo(12, 20); book.cubicTo(15, 17, 19, 17, 21, 18);
+                    book.lineTo(21, 5); book.cubicTo(17, 4, 14, 5, 12, 8);
+                    book.moveTo(12, 8); book.lineTo(12, 20);
+                    canvas.drawPath(book, paint);
+                    break;
+                }
+                case "Капсула": {
+                    android.graphics.Path hourglass = new android.graphics.Path();
+                    hourglass.moveTo(5, 3); hourglass.lineTo(19, 3);
+                    hourglass.lineTo(19, 5); hourglass.lineTo(13, 11);
+                    hourglass.lineTo(19, 17); hourglass.lineTo(19, 21);
+                    hourglass.lineTo(5, 21); hourglass.lineTo(5, 17);
+                    hourglass.lineTo(11, 11); hourglass.lineTo(5, 5); hourglass.close();
+                    canvas.drawPath(hourglass, paint);
+                    break;
+                }
+                case "Карты":
+                    canvas.drawRoundRect(2, 4, 22, 20, 3, 3, paint);
+                    canvas.drawLine(2, 9, 22, 9, paint);
+                    canvas.drawLine(6, 15, 11, 15, paint);
+                    break;
+                case "Голосование": {
+                    canvas.drawRoundRect(4, 3, 20, 21, 2, 2, paint);
+                    canvas.drawRect(7, 7, 10, 10, paint);
+                    android.graphics.Path ballot = new android.graphics.Path();
+                    ballot.moveTo(7, 14); ballot.lineTo(8.5f, 16); ballot.lineTo(11, 12);
+                    canvas.drawPath(ballot, paint);
+                    canvas.drawLine(13, 8.5f, 17, 8.5f, paint);
+                    canvas.drawLine(13, 14, 17, 14, paint);
+                    break;
+                }
+                case "Файлы": {
+                    android.graphics.Path page = new android.graphics.Path();
+                    page.moveTo(6, 2); page.lineTo(15, 2); page.lineTo(20, 7);
+                    page.lineTo(20, 22); page.lineTo(6, 22); page.close();
+                    page.moveTo(15, 2); page.lineTo(15, 7); page.lineTo(20, 7);
+                    canvas.drawPath(page, paint);
+                    canvas.drawLine(9, 12, 17, 12, paint);
+                    canvas.drawLine(9, 16, 17, 16, paint);
+                    break;
+                }
+                default:
+                    canvas.drawCircle(5, 12, 1, paint);
+                    canvas.drawCircle(12, 12, 1, paint);
+                    canvas.drawCircle(19, 12, 1, paint);
+            }
+        }
     }
 
     private void renderHome() {
@@ -764,7 +986,8 @@ public class MainActivity extends Activity {
 
         heading("Подключить партнёра", "Пара открывает общие функции и синхронизацию");
         if (!sync.configured()) {
-            simpleCard("☁", "Настроить связь пары", "Сначала подключите Supabase.", this::configureServer);
+            simpleCard("☁", "Общее пространство недоступно",
+                    "Подключение настраивается автоматически. Попробуйте снова позже.", null);
             return;
         }
         if (!sync.signedIn()) {
@@ -833,16 +1056,16 @@ public class MainActivity extends Activity {
 
     private void createSharedList() {
         EditText title=new EditText(this);title.setSingleLine(true);title.setHint("Например, идеи для поездки");
-        new AlertDialog.Builder(this).setTitle("Новый список для двоих").setView(title).setNegativeButton("Отмена",null)
+        VmesteDialogTheme.builder(this).setTitle("Новый список для двоих").setView(title).setNegativeButton("Отмена",null)
                 .setPositiveButton("Создать",(d,w)->{String value=title.getText().toString().trim();if(value.isEmpty())return;JSONObject row=new JSONObject();String id=UUID.randomUUID().toString();try{row.put("id",id);row.put("list_key","list_"+id);row.put("title",value);}catch(Exception ignored){}append("list_catalog",value,"");JSONArray rows=read("list_catalog");JSONObject saved=rows.optJSONObject(rows.length()-1);if(saved!=null)try{saved.put("list_key","list_"+id);save("list_catalog",rows);syncItem("list_catalog",saved);}catch(Exception ignored){}render();}).show();
     }
 
     private void listActions(String key,String title,JSONObject custom) {
         String[] choices=custom==null?new String[]{"Открыть"}:new String[]{"Открыть", "Переименовать", "Удалить список"};
-        new AlertDialog.Builder(this).setTitle(title).setItems(choices,(d,which)->{
+        VmesteDialogTheme.builder(this).setTitle(title).setItems(choices,(d,which)->{
             if(which==0){open("list:"+key);return;}
-            if(which==1){EditText input=new EditText(this);input.setSingleLine(true);input.setText(title);new AlertDialog.Builder(this).setTitle("Название списка").setView(input).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",(x,y)->{if(custom==null){Toast.makeText(this,"Встроенный список нельзя переименовать",Toast.LENGTH_SHORT).show();return;}try{custom.put("title",input.getText().toString().trim());replaceItem("list_catalog",custom);render();}catch(Exception ignored){}}).show();return;}
-            if(custom!=null)new AlertDialog.Builder(this).setMessage("Удалить список «"+title+"» вместе со всеми пунктами?").setNegativeButton("Отмена",null).setPositiveButton("Удалить",(x,y)->{removeItem("list_catalog",custom.optString("id"));JSONArray items=read(key);for(int i=items.length()-1;i>=0;i--){JSONObject item=items.optJSONObject(i);if(item!=null)removeRemoteItem(item.optString("id"));}prefs.edit().remove(key).apply();render();}).show();
+            if(which==1){EditText input=new EditText(this);input.setSingleLine(true);input.setText(title);VmesteDialogTheme.builder(this).setTitle("Название списка").setView(input).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",(x,y)->{if(custom==null){Toast.makeText(this,"Встроенный список нельзя переименовать",Toast.LENGTH_SHORT).show();return;}try{custom.put("title",input.getText().toString().trim());replaceItem("list_catalog",custom);render();}catch(Exception ignored){}}).show();return;}
+            if(custom!=null)VmesteDialogTheme.builder(this).setMessage("Удалить список «"+title+"» вместе со всеми пунктами?").setNegativeButton("Отмена",null).setPositiveButton("Удалить",(x,y)->{removeItem("list_catalog",custom.optString("id"));JSONArray items=read(key);for(int i=items.length()-1;i>=0;i--){JSONObject item=items.optJSONObject(i);if(item!=null)removeRemoteItem(item.optString("id"));}prefs.edit().remove(key).apply();render();}).show();
         }).show();
     }
 
@@ -968,9 +1191,9 @@ public class MainActivity extends Activity {
 
     private void addCalendarEvent(String eventKey){
         Calendar when=(Calendar)selectedDay.clone();
-        new android.app.DatePickerDialog(this,(picker,year,month,day)->{
+        new android.app.DatePickerDialog(this, VmesteDialogTheme.dialogStyle(this),(picker,year,month,day)->{
             when.set(Calendar.YEAR,year);when.set(Calendar.MONTH,month);when.set(Calendar.DAY_OF_MONTH,day);
-            new android.app.TimePickerDialog(this,(time,hour,minute)->{
+            new android.app.TimePickerDialog(this, VmesteDialogTheme.dialogStyle(this),(time,hour,minute)->{
                 when.set(Calendar.HOUR_OF_DAY,hour);when.set(Calendar.MINUTE,minute);
                 when.set(Calendar.SECOND,0);when.set(Calendar.MILLISECOND,0);
                 LinearLayout form=column();form.setPadding(dp(18),dp(4),dp(18),dp(4));
@@ -978,7 +1201,7 @@ public class MainActivity extends Activity {
                 EditText detail=new EditText(this);detail.setMinLines(2);detail.setHint("Заметка (необязательно)");form.addView(detail);
                 TextView selectedTime=text(new SimpleDateFormat("EEEE, d MMMM · HH:mm",new Locale("ru")).format(when.getTime()),13,PURPLE,true);
                 selectedTime.setPadding(0,dp(8),0,dp(8));form.addView(selectedTime);
-                AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Новое событие")
+                AlertDialog dialog=VmesteDialogTheme.builder(this).setTitle("Новое событие")
                         .setView(form).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",null).create();
                 dialog.setOnShowListener(v->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button->{
                     String name=title.getText().toString().trim();
@@ -1068,7 +1291,7 @@ public class MainActivity extends Activity {
         if(oldSteps!=null){StringBuilder textValue=new StringBuilder();for(int i=0;i<oldSteps.length();i++){JSONObject step=oldSteps.optJSONObject(i);if(step!=null){if(textValue.length()>0)textValue.append('\n');textValue.append(step.optString("title"));}}stepsInput.setText(textValue.toString());}
         form.addView(stepsInput);
         ScrollView scroll=new ScrollView(this);scroll.addView(form);
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle(existing==null?"Новый план":"Изменить план")
+        AlertDialog dialog=VmesteDialogTheme.builder(this).setTitle(existing==null?"Новый план":"Изменить план")
                 .setView(scroll).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",null).create();
         dialog.setOnShowListener(v->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button->{
             String name=title.getText().toString().trim();
@@ -1101,11 +1324,11 @@ public class MainActivity extends Activity {
             heading(group[0], null);
             for (int i = 1; i < group.length; i++) {
                 String item = group[i];
-                String icon = item.substring(0, 2);
+                MoreFeatureLabel label = MoreFeatureLabel.parse(item);
                 String title = item.contains("Карта партнёра")
                         ? "Карта " + prefs.getString("partner_name", "партнёра")
-                        : item.substring(4);
-                simpleCard(icon, title, description(item), () -> open(item));
+                        : label.title;
+                simpleCard(label.icon, title, description(item), () -> open(item));
             }
         }
         heading("Инструменты", null);
@@ -1140,11 +1363,8 @@ public class MainActivity extends Activity {
         addSettingRow(appearance,"☷","Разделы на панели",
                 "Выбрать основные вкладки и их порядок",this::navigationSettings);
 
-        LinearLayout connection=settingsGroup("Подключение");
-        addSettingRow(connection,"☁","Supabase",
-                sync.url().isEmpty()?"Настроить сервер синхронизации":"Параметры сервера синхронизации",
-                this::configureServer);
-        addSettingRow(connection,"♡","Аккаунт и пара",
+        LinearLayout connection=settingsGroup("Аккаунт и пара");
+        addSettingRow(connection,"♡","Аккаунт",
                 sync.signedIn()?"Войти в другой аккаунт или зарегистрироваться":"Войти или создать аккаунт",
                 this::accountDialog);
 
@@ -1153,10 +1373,27 @@ public class MainActivity extends Activity {
                 "Проверить доступную версию приложения на GitHub",
                 ()->checkGitHubUpdate(true));
 
+        LinearLayout about=settingsGroup("О приложении");
+        addSettingRow(about,"♡",getString(R.string.app_name),appVersionLabel(),this::showAboutDialog);
+
         LinearLayout account=settingsGroup("Аккаунт");
         addSettingRow(account,"!", "Удалить аккаунт…",
                 "Удаление необратимо; сначала будет показано подтверждение",
                 this::confirmAccountDeletion);
+    }
+    private String appVersionLabel(){
+        try{
+            PackageInfo info=getPackageManager().getPackageInfo(getPackageName(),0);
+            return "Версия "+(info.versionName==null?"":info.versionName);
+        }catch(PackageManager.NameNotFoundException e){
+            android.util.Log.w("VmesteAbout","Could not read app version",e);
+            return "Версия недоступна";
+        }
+    }
+    private void showAboutDialog(){
+        VmesteDialogTheme.builder(this).setTitle(getString(R.string.app_name))
+                .setMessage("Общее пространство для общения, планов и совместных занятий.\n\n"+appVersionLabel())
+                .setPositiveButton("Понятно",null).show();
     }
     private LinearLayout settingsGroup(String title){
         heading(title,null);
@@ -1292,7 +1529,7 @@ public class MainActivity extends Activity {
                 if(bitmap==null)throw new Exception("Формат изображения не поддерживается");
                 runOnUiThread(()->{ImageView image=new ImageView(this);image.setImageBitmap(bitmap);
                     image.setAdjustViewBounds(true);image.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                    new AlertDialog.Builder(this).setTitle(title).setView(image)
+                    VmesteDialogTheme.builder(this).setTitle(title).setView(image)
                             .setPositiveButton("Закрыть",null).show();});
             }catch(Exception e){runOnUiThread(()->toast("Не удалось открыть предпросмотр: "+e.getMessage()));}});
             return;
@@ -1307,7 +1544,7 @@ public class MainActivity extends Activity {
                     preview.setTextIsSelectable(true);
                     ScrollView scroll=new ScrollView(this);scroll.setPadding(dp(16),dp(12),dp(16),dp(12));
                     scroll.addView(preview);
-                    new AlertDialog.Builder(this).setTitle(title).setView(scroll)
+                    VmesteDialogTheme.builder(this).setTitle(title).setView(scroll)
                             .setPositiveButton("Закрыть",null).show();});
             }catch(Exception e){runOnUiThread(()->toast("Не удалось открыть предпросмотр: "+e.getMessage()));}});
             return;
@@ -1317,7 +1554,7 @@ public class MainActivity extends Activity {
         String message=(apk?"APK · недоверенный установочный файл. Он не будет запущен или установлен автоматически.\n\n":"")
                 +item.optString("detail","Формат: "+mime)
                 +"\n\nДля просмотра или передачи сохраните копию на устройство.";
-        new AlertDialog.Builder(this).setTitle(title).setMessage(message)
+        VmesteDialogTheme.builder(this).setTitle(title).setMessage(message)
                 .setNegativeButton("Закрыть",null)
                 .setPositiveButton("Сохранить копию",(d,w)->requestFileDownload(item)).show();
     }
@@ -1333,7 +1570,7 @@ public class MainActivity extends Activity {
                 ||title.toLowerCase(Locale.ROOT).endsWith(".apk")){
             mime="application/vnd.android.package-archive";
             final String apkMime=mime;
-            new AlertDialog.Builder(this).setTitle("Сохранить APK")
+            VmesteDialogTheme.builder(this).setTitle("Сохранить APK")
                     .setMessage("APK будет только сохранён как недоверенный файл. Приложение не запускает и не устанавливает его автоматически.")
                     .setNegativeButton("Отмена",(d,w)->clearPendingFileDownload())
                     .setPositiveButton("Продолжить",(d,w)->startFileSavePicker(apkMime)).show();
@@ -1411,9 +1648,30 @@ public class MainActivity extends Activity {
                     wishesVote ? "Голосование за хотелки" : "Чем заняться",
                     wishesVote ? "Выберите мечту, которую исполните вместе" : "Выберите занятие для ближайшего совместного времени");
         } else if (feature.contains("Вопрос дня")) {
-            simpleCard("💭", "Что из наших общих воспоминаний хочется пережить ещё раз?", "Вопрос для вас обоих", null);
-            TextView answer = pill("Написать ответ", PURPLE); body.addView(answer); answer.setOnClickListener(v -> addDialog("answers", "Ваш ответ"));
-            renderEntries("answers");
+            long day = currentQuestionDay();
+            ArrayList<DailyQuestionPolicy.Prompt> customQuestions = new ArrayList<>();
+            JSONArray savedQuestions = read("daily_questions");
+            for (int i = 0; i < savedQuestions.length(); i++) {
+                JSONObject item = savedQuestions.optJSONObject(i);
+                if (item != null) customQuestions.add(new DailyQuestionPolicy.Prompt(
+                        item.optString("id"), item.optString("title"),
+                        item.optLong("question_date", Long.MIN_VALUE)));
+            }
+            String question = DailyQuestionPolicy.questionForDay(day, customQuestions);
+            simpleCard("💭", question, "Вопрос дня для вас обоих", null);
+            TextView answer = pill("Написать ответ", PURPLE);
+            body.addView(answer);
+            answer.setOnClickListener(v -> dailyQuestionAnswerDialog(question, day));
+            TextView addQuestion = pill("＋  Добавить свой вопрос", PALE);
+            body.addView(addQuestion);
+            addQuestion.setOnClickListener(v -> dailyQuestionCreateDialog());
+            renderDailyQuestionAnswers(question, day);
+            heading("Ваши вопросы", "Добавленные вопросы также попадут в ежедневный выбор");
+            if (savedQuestions.length() == 0) {
+                body.addView(text("Пока нет своих вопросов. Добавьте первый — он станет вопросом дня для вас обоих.", 13, MUTED, false));
+            } else {
+                renderEntries("daily_questions");
+            }
         } else if (feature.contains("Пригласить партнёра")) {
             renderCoupleSetup();
         } else if (feature.contains("Подарочный радар")) {
@@ -1516,9 +1774,9 @@ public class MainActivity extends Activity {
             }
             pass.setOnClickListener(v -> showLoyaltyPass(item));
             pass.setOnLongClickListener(v -> {
-                new AlertDialog.Builder(this).setItems(new String[]{"Редактировать карту", "Удалить карту"}, (dialog, which) -> {
+                VmesteDialogTheme.builder(this).setItems(new String[]{"Редактировать карту", "Удалить карту"}, (dialog, which) -> {
                     if (which == 0) showLoyaltyEditor(item);
-                    else new AlertDialog.Builder(this).setMessage("Удалить карту «" + item.optString("title") + "» у вас обоих?")
+                    else VmesteDialogTheme.builder(this).setMessage("Удалить карту «" + item.optString("title") + "» у вас обоих?")
                             .setNegativeButton("Отмена", null)
                             .setPositiveButton("Удалить", (confirm, choice) -> {
                                 removeItem("loyalty", item.optString("id"));
@@ -1545,11 +1803,9 @@ public class MainActivity extends Activity {
             ArrayList<String> formats = new ArrayList<>();
             for (BarcodeFormat format : LoyaltyBarcode.formats()) formats.add(format.name());
             try {
-                new IntentIntegrator(this)
+                orientationPreservingScanner()
                         .setDesiredBarcodeFormats(formats)
                         .setPrompt("Только код карты лояльности — не сканируйте банковские карты")
-                        .setBeepEnabled(false)
-                        .setOrientationLocked(false)
                         .initiateScan();
             } catch (RuntimeException e) {
                 pendingLoyaltyScan = false;
@@ -1592,7 +1848,7 @@ public class MainActivity extends Activity {
             TextView warning = text("Только карты лояльности. Не вводите номер банковской карты, срок действия или CVV. Код будет доступен обоим участникам пары.", 12, MUTED, false);
             warning.setPadding(0, dp(8), 0, 0);
             form.addView(warning);
-            AlertDialog dialog = new AlertDialog.Builder(this).setTitle(editing == null ? "Добавить карту" : "Изменить карту")
+            AlertDialog dialog = VmesteDialogTheme.builder(this).setTitle(editing == null ? "Добавить карту" : "Изменить карту")
                     .setView(form).setNegativeButton("Отмена", null).setPositiveButton("Сохранить", null).create();
             dialog.setOnShowListener(v -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button -> {
                 String name = title.getText().toString().trim();
@@ -1638,7 +1894,7 @@ public class MainActivity extends Activity {
             LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(-1, -2);
             titleParams.topMargin = dp(8);
             form.addView(title, titleParams);
-            AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Сохранить карту")
+            AlertDialog dialog = VmesteDialogTheme.builder(this).setTitle("Сохранить карту")
                     .setView(form).setNegativeButton("Отмена", null).setPositiveButton("Сохранить", null).create();
             dialog.setOnShowListener(v -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button -> {
                 String name = title.getText().toString().trim();
@@ -1771,7 +2027,7 @@ public class MainActivity extends Activity {
                 @Override public void onStartTrackingTouch(SeekBar seekBar) { }
                 @Override public void onStopTrackingTouch(SeekBar seekBar) { }
             });
-            AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Показать на кассе")
+            AlertDialog dialog = VmesteDialogTheme.builder(this).setTitle("Показать на кассе")
                     .setView(scroller).setPositiveButton("Готово", null).create();
             final float originalBrightness = getWindow().getAttributes().screenBrightness;
             Runnable setBrightness = () -> {
@@ -1891,7 +2147,7 @@ public class MainActivity extends Activity {
                 .setInterpolator(new android.view.animation.DecelerateInterpolator())
                 .withEndAction(()->lock.setText("🔒")).start();
     }
-    private void createCapsule(){EditText message=new EditText(this);message.setHint("Ваше послание будущим вам двоим");message.setMinLines(4);message.setGravity(Gravity.TOP|Gravity.START);Calendar date=Calendar.getInstance();date.add(Calendar.DAY_OF_YEAR,1);new android.app.DatePickerDialog(this,(p,y,m,d)->{date.set(y,m,d);new android.app.TimePickerDialog(this,(tp,h,min)->{date.set(Calendar.HOUR_OF_DAY,h);date.set(Calendar.MINUTE,min);date.set(Calendar.SECOND,0);new AlertDialog.Builder(this).setTitle("Запечатать послание").setView(message).setNegativeButton("Отмена",null).setPositiveButton("Запечатать капсулу",(dialog,w)->{String value=message.getText().toString().trim();if(value.isEmpty())return;JSONObject item=new JSONObject();try{String id=UUID.randomUUID().toString();item.put("id",id);item.put("title",value);item.put("detail","Послание времени");item.put("unlock_at",date.getTimeInMillis());item.put("done",false);capsuleAnimationId=id;}catch(Exception e){toast("Не удалось подготовить капсулу: "+e.getMessage());return;}JSONArray rows=read("capsule");rows.put(item);save("capsule",rows);syncItem("capsule",item);render();}).show();},date.get(Calendar.HOUR_OF_DAY),date.get(Calendar.MINUTE),true).show();},date.get(Calendar.YEAR),date.get(Calendar.MONTH),date.get(Calendar.DAY_OF_MONTH)).show();}
+    private void createCapsule(){EditText message=new EditText(this);message.setHint("Ваше послание будущим вам двоим");message.setMinLines(4);message.setGravity(Gravity.TOP|Gravity.START);Calendar date=Calendar.getInstance();date.add(Calendar.DAY_OF_YEAR,1);new android.app.DatePickerDialog(this, VmesteDialogTheme.dialogStyle(this),(p,y,m,d)->{date.set(y,m,d);new android.app.TimePickerDialog(this, VmesteDialogTheme.dialogStyle(this),(tp,h,min)->{date.set(Calendar.HOUR_OF_DAY,h);date.set(Calendar.MINUTE,min);date.set(Calendar.SECOND,0);VmesteDialogTheme.builder(this).setTitle("Запечатать послание").setView(message).setNegativeButton("Отмена",null).setPositiveButton("Запечатать капсулу",(dialog,w)->{String value=message.getText().toString().trim();if(value.isEmpty())return;JSONObject item=new JSONObject();try{String id=UUID.randomUUID().toString();item.put("id",id);item.put("title",value);item.put("detail","Послание времени");item.put("unlock_at",date.getTimeInMillis());item.put("done",false);capsuleAnimationId=id;}catch(Exception e){toast("Не удалось подготовить капсулу: "+e.getMessage());return;}JSONArray rows=read("capsule");rows.put(item);save("capsule",rows);syncItem("capsule",item);render();}).show();},date.get(Calendar.HOUR_OF_DAY),date.get(Calendar.MINUTE),true).show();},date.get(Calendar.YEAR),date.get(Calendar.MONTH),date.get(Calendar.DAY_OF_MONTH)).show();}
     private void renderStories(){
         heading("Истории для двоих","Фото и короткие моменты хранятся сутки");
         JSONArray rows=read("stories");long now=System.currentTimeMillis();
@@ -2031,6 +2287,11 @@ public class MainActivity extends Activity {
                 captionView.setPadding(dp(2),dp(10),dp(2),dp(4));entry.addView(captionView);
             }
         }
+        TextView interactions=pill("♡  Реакции и комментарии",PURPLE);
+        interactions.setContentDescription("Открыть реакции и комментарии к истории");
+        LinearLayout.LayoutParams interactionParams=new LinearLayout.LayoutParams(-1,-2);
+        interactionParams.topMargin=dp(8);entry.addView(interactions,interactionParams);
+        interactions.setOnClickListener(v->showStoryInteractions(story));
         long left=Math.max(0,story.optLong("expires_at")-now);
         long hours=left/3600000L,minutes=(left/60000L)%60;
         entry.addView(text(hours>0?"История исчезнет через "+hours+" ч "+minutes+" мин":
@@ -2040,10 +2301,25 @@ public class MainActivity extends Activity {
 
     private void createStoryDialog(){
         EditText caption=new EditText(this);caption.setHint("Подпись к фото или короткая история");caption.setMinLines(3);caption.setGravity(Gravity.TOP|Gravity.START);
-        new AlertDialog.Builder(this).setTitle("Новая история").setMessage("История сохранится на этом устройстве и синхронизируется с парой, когда подключение будет доступно. Через 24 часа она исчезнет.")
+        VmesteDialogTheme.builder(this).setTitle("Новая история").setMessage("История сохранится на этом устройстве и синхронизируется с парой, когда подключение будет доступно. Через 24 часа она исчезнет.")
                 .setView(caption).setNegativeButton("Отмена",null)
-                .setNeutralButton("Добавить фото",(d,w)->{pendingStoryCaption=caption.getText().toString().trim();Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);pick.setType("image/*");pick.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(pick,407);})
+                .setNeutralButton("Добавить фото",(d,w)->{pendingStoryCaption=caption.getText().toString().trim();chooseStoryPhotoSource();})
                 .setPositiveButton("Опубликовать текст",(d,w)->publishStory(null,caption.getText().toString().trim())).show();
+    }
+
+    private void chooseStoryPhotoSource(){
+        VmesteDialogTheme.builder(this).setTitle("Добавить фото в историю")
+                .setItems(new String[]{"Сделать фото","Выбрать фото в телефоне"},(dialog,which)->{
+                    if(which==0){
+                        try{startCameraCapture(410);}
+                        catch(Exception e){pendingStoryCaption="";toast("Не удалось открыть камеру: "+e.getMessage());}
+                    }
+                    else{
+                        Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);pick.setType("image/*");pick.addCategory(Intent.CATEGORY_OPENABLE);
+                        try{startActivityForResult(pick,407);}
+                        catch(Exception e){pendingStoryCaption="";toast("Не удалось открыть галерею: "+e.getMessage());}
+                    }
+                }).setOnCancelListener(dialog->pendingStoryCaption="").show();
     }
 
     private void publishStory(Uri photo,String caption){
@@ -2100,6 +2376,102 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void showStoryInteractions(JSONObject story){
+        if(!sync.ready()){toast("Подключитесь к паре, чтобы комментировать историю");return;}
+        String storyId=story.optString("id","");
+        if(storyId.isEmpty()){toast("Не найден идентификатор истории");return;}
+        network.execute(()->{
+            try{
+                JSONArray comments=sync.fetchStoryComments(storyId);
+                JSONArray reactions=sync.fetchStoryReactions(storyId);
+                runOnUiThread(()->showStoryInteractionsDialog(story,comments,reactions));
+            }catch(Exception e){
+                android.util.Log.w("VmesteStories","Could not load story interactions",e);
+                runOnUiThread(()->toast("Не удалось загрузить реакции и комментарии: "+e.getMessage()));
+            }
+        });
+    }
+
+    private void showStoryInteractionsDialog(JSONObject story,JSONArray comments,JSONArray reactions){
+        String storyId=story.optString("id","");
+        LinearLayout content=column();content.setPadding(dp(16),dp(8),dp(16),dp(4));
+        LinearLayout reactionRow=new LinearLayout(this);reactionRow.setGravity(Gravity.CENTER);
+        String[] emojis={"❤️","😂","😍","👍","🔥","👏","😮","😢"};
+        String myReaction="";
+        for(int i=0;i<reactions.length();i++){
+            JSONObject reaction=reactions.optJSONObject(i);
+            if(reaction!=null&&sync.userId().equals(reaction.optString("user_id")))
+                myReaction=reaction.optString("emoji","");
+        }
+        final String selectedReaction=myReaction;
+        for(String emoji:emojis){
+            int count=0;
+            for(int i=0;i<reactions.length();i++){
+                JSONObject reaction=reactions.optJSONObject(i);
+                if(reaction!=null&&emoji.equals(reaction.optString("emoji")))count++;
+            }
+            TextView button=text(emoji+(count>0?" "+count:""),13,PURPLE,true);
+            button.setGravity(Gravity.CENTER);button.setPadding(dp(4),dp(8),dp(4),dp(8));
+            button.setBackground(shape(emoji.equals(selectedReaction)?PALE:PAPER,14));
+            reactionRow.addView(button,new LinearLayout.LayoutParams(0,-2,1));
+            button.setOnClickListener(v->toggleStoryReaction(storyId,emoji,emoji.equals(selectedReaction)));
+        }
+        content.addView(reactionRow);
+        LinearLayout commentList=column();
+        if(comments.length()==0){
+            TextView empty=text("Пока нет комментариев",13,MUTED,false);
+            empty.setPadding(0,dp(14),0,dp(14));commentList.addView(empty);
+        }else{
+            for(int i=0;i<comments.length();i++){
+                JSONObject comment=comments.optJSONObject(i);if(comment==null)continue;
+                String authorId=comment.optString("author_id","");
+                String author=sync.userId().equals(authorId)?prefs.getString("profile_name","Вы")
+                        :prefs.getString("partner_name","Партнёр");
+                long timestamp=SupabaseSync.parseTimestampMillis(comment.optString("created_at",""));
+                String date=timestamp>0?android.text.format.DateFormat.format("d MMM · HH:mm",timestamp).toString():"";
+                TextView heading=text(author+(date.isEmpty()?"":" · "+date),11,PURPLE,true);
+                commentList.addView(heading);
+                TextView bodyText=text(comment.optString("body",""),14,INK,false);
+                bodyText.setPadding(0,dp(2),0,dp(10));commentList.addView(bodyText);
+            }
+        }
+        ScrollView commentsScroll=new ScrollView(this);commentsScroll.addView(commentList);
+        content.addView(commentsScroll,new LinearLayout.LayoutParams(-1,dp(220)));
+        EditText input=new EditText(this);input.setHint("Написать комментарий");input.setMinLines(1);input.setMaxLines(4);
+        input.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(2000)});
+        content.addView(input);
+        AlertDialog dialog=VmesteDialogTheme.builder(this).setTitle("История · реакции и комментарии")
+                .setView(content).setNegativeButton("Закрыть",null).setPositiveButton("Отправить",null).create();
+        dialog.setOnShowListener(ignored->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v->{
+            String body=input.getText().toString().trim();
+            if(body.isEmpty()){input.setError("Напишите комментарий");return;}
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+            network.execute(()->{
+                try{
+                    sync.addStoryComment(storyId,body);
+                    runOnUiThread(()->{dialog.dismiss();showStoryInteractions(story);});
+                }catch(Exception e){
+                    android.util.Log.w("VmesteStories","Could not send story comment",e);
+                    runOnUiThread(()->{dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);toast("Комментарий не отправлен: "+e.getMessage());});
+                }
+            });
+        }));
+        dialog.show();
+    }
+
+    private void toggleStoryReaction(String storyId,String emoji,boolean remove){
+        network.execute(()->{
+            try{
+                if(remove)sync.removeStoryReaction(storyId);
+                else sync.setStoryReaction(storyId,emoji);
+                showStoryInteractions(new JSONObject().put("id",storyId));
+            }catch(Exception e){
+                android.util.Log.w("VmesteStories","Could not save story reaction",e);
+                runOnUiThread(()->toast("Реакция не сохранена: "+e.getMessage()));
+            }
+        });
+    }
+
     private void showStoryImage(String path,String localPath){
         toast("Открываю историю…");
         network.execute(()->{try{
@@ -2116,7 +2488,7 @@ public class MainActivity extends Activity {
                 bitmap=android.graphics.BitmapFactory.decodeByteArray(bytes,0,bytes.length,opts);
             }
             if(bitmap==null)throw new Exception("Формат изображения не поддерживается");
-            runOnUiThread(()->{ImageView image=new ImageView(this);image.setImageBitmap(bitmap);image.setAdjustViewBounds(true);new AlertDialog.Builder(this).setTitle("История для двоих").setView(image).setPositiveButton("Закрыть",null).show();});}
+            runOnUiThread(()->{ImageView image=new ImageView(this);image.setImageBitmap(bitmap);image.setAdjustViewBounds(true);VmesteDialogTheme.builder(this).setTitle("История для двоих").setView(image).setPositiveButton("Закрыть",null).show();});}
             catch(Exception e){runOnUiThread(()->toast("Не удалось открыть фото истории: "+e.getMessage()));}});
     }
     private void renderPartnerCard(){
@@ -2213,7 +2585,7 @@ public class MainActivity extends Activity {
             content.getText().insert(start,prefix);content.setSelection(start+prefix.length());
         });
         ScrollView scroll=new ScrollView(this);scroll.addView(form);
-        AlertDialog dialog=new AlertDialog.Builder(this)
+        AlertDialog dialog=VmesteDialogTheme.builder(this)
                 .setTitle(existing==null?"Новая заметка":"Изменить заметку").setView(scroll)
                 .setNegativeButton("Отмена",null).setPositiveButton("Сохранить",null).create();
         dialog.setOnShowListener(v->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button->{
@@ -2274,7 +2646,7 @@ public class MainActivity extends Activity {
         details.addView(text("Приготовление",16,INK,true));
         renderNoteContent(details,recipe.optString("steps"),"steps");
         ScrollView scroll=new ScrollView(this);scroll.addView(details);
-        new AlertDialog.Builder(this).setTitle(recipe.optString("title","Рецепт"))
+        VmesteDialogTheme.builder(this).setTitle(recipe.optString("title","Рецепт"))
                 .setView(scroll).setPositiveButton("Закрыть",null).show();
     }
 
@@ -2293,7 +2665,7 @@ public class MainActivity extends Activity {
         steps.setGravity(Gravity.TOP|Gravity.START);steps.setMinLines(5);
         if(existing!=null)steps.setText(existing.optString("steps"));form.addView(steps);
         ScrollView scroll=new ScrollView(this);scroll.addView(form);
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle(existing==null?"Новый рецепт":"Изменить рецепт")
+        AlertDialog dialog=VmesteDialogTheme.builder(this).setTitle(existing==null?"Новый рецепт":"Изменить рецепт")
                 .setView(scroll).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",null).create();
         dialog.setOnShowListener(v->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button->{
             String name=title.getText().toString().trim();
@@ -2315,7 +2687,7 @@ public class MainActivity extends Activity {
         }));
         dialog.show();
     }
-    private void editPartnerFact(JSONObject current,String title,String key){EditText value=new EditText(this);value.setHint("Напишите по-доброму и конкретно");value.setMinLines(3);value.setGravity(Gravity.TOP|Gravity.START);value.setText(current.optString(key,""));new AlertDialog.Builder(this).setTitle(title).setView(value).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",(d,w)->{try{current.put(key,value.getText().toString().trim());if(!current.has("id"))current.put("id",UUID.randomUUID().toString());JSONArray rows=new JSONArray();rows.put(current);save("partner_card",rows);syncItem("partner_card",current);render();}catch(Exception ignored){}}).show();}
+    private void editPartnerFact(JSONObject current,String title,String key){EditText value=new EditText(this);value.setHint("Напишите по-доброму и конкретно");value.setMinLines(3);value.setGravity(Gravity.TOP|Gravity.START);value.setText(current.optString(key,""));VmesteDialogTheme.builder(this).setTitle(title).setView(value).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",(d,w)->{try{current.put(key,value.getText().toString().trim());if(!current.has("id"))current.put("id",UUID.randomUUID().toString());JSONArray rows=new JSONArray();rows.put(current);save("partner_card",rows);syncItem("partner_card",current);render();}catch(Exception ignored){}}).show();}
     private JSONObject coinState(String storeKey,ArrayList<JSONObject> options,JSONObject previous){
         JSONObject state;
         try{state=previous==null?new JSONObject():new JSONObject(previous.toString());}catch(Exception e){state=new JSONObject();}
@@ -2343,14 +2715,14 @@ public class MainActivity extends Activity {
         String[] labels={"1 победа","3 победы","6 побед","10 побед"};
         int[] targets={1,3,6,10};int selected=0;
         for(int i=0;i<targets.length;i++)if(targets[i]==state.optInt("target_wins",1))selected=i;
-        new AlertDialog.Builder(this).setTitle("Сколько побед нужно для серии?")
+        VmesteDialogTheme.builder(this).setTitle("Сколько побед нужно для серии?")
                 .setSingleChoiceItems(labels,selected,(dialog,which)->{
                     Runnable apply=()->{
                         JSONObject next=coinState(storeKey,options,state);
                         try{next.put("target_wins",targets[which]);next.put("wins_first",0);next.put("wins_second",0);next.put("series_finished",false);next.put("series_winner","");next.put("title","");saveCoinState(storeKey,next);render();}
                         catch(Exception e){toast("Не удалось настроить серию: "+e.getMessage());}
                     };
-                    if(winsA+ winsB>0)new AlertDialog.Builder(this).setTitle("Начать счёт заново?")
+                    if(winsA+ winsB>0)VmesteDialogTheme.builder(this).setTitle("Начать счёт заново?")
                             .setMessage("Смена длины серии сбросит текущий счёт.")
                             .setNegativeButton("Оставить как есть",(d,w)->{}).setPositiveButton("Сбросить и изменить",(d,w)->apply.run()).show();
                     else apply.run();
@@ -2417,12 +2789,14 @@ public class MainActivity extends Activity {
 
     private void renderSharedReminder() {
         heading("Напоминание для партнёра","Напоминание синхронизируется в общем календаре");
-        TextView create=pill("＋ Выбрать дату и время",PURPLE);body.addView(create);create.setOnClickListener(v->{Calendar when=Calendar.getInstance();new android.app.DatePickerDialog(this,(picker,year,month,day)->{when.set(Calendar.YEAR,year);when.set(Calendar.MONTH,month);when.set(Calendar.DAY_OF_MONTH,day);new android.app.TimePickerDialog(this,(time,hour,minute)->{when.set(Calendar.HOUR_OF_DAY,hour);when.set(Calendar.MINUTE,minute);when.set(Calendar.SECOND,0);if(when.getTimeInMillis()<=System.currentTimeMillis()){toast("Выберите время в будущем");return;}EditText note=new EditText(this);note.setHint("Что напомнить партнёру?");new AlertDialog.Builder(this).setTitle("Общее напоминание").setView(note).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",(d,w)->{String value=note.getText().toString().trim();if(value.isEmpty())value="Пора выполнить ваш общий план";append("events",value,"Напоминание партнёру");JSONArray rows=read("events");JSONObject item=rows.optJSONObject(rows.length()-1);if(item!=null)try{item.put("reminder_at",when.getTimeInMillis());item.put("remind_partner",true);save("events",rows);syncItem("events",item);scheduleReminder(item.optString("id"),when.getTimeInMillis(),"Вместе",value);}catch(Exception ignored){}render();}).show();},when.get(Calendar.HOUR_OF_DAY),when.get(Calendar.MINUTE),true).show();},when.get(Calendar.YEAR),when.get(Calendar.MONTH),when.get(Calendar.DAY_OF_MONTH)).show();});
+        TextView create=pill("＋ Выбрать дату и время",PURPLE);body.addView(create);create.setOnClickListener(v->{Calendar when=Calendar.getInstance();new android.app.DatePickerDialog(this, VmesteDialogTheme.dialogStyle(this),(picker,year,month,day)->{when.set(Calendar.YEAR,year);when.set(Calendar.MONTH,month);when.set(Calendar.DAY_OF_MONTH,day);new android.app.TimePickerDialog(this, VmesteDialogTheme.dialogStyle(this),(time,hour,minute)->{when.set(Calendar.HOUR_OF_DAY,hour);when.set(Calendar.MINUTE,minute);when.set(Calendar.SECOND,0);if(when.getTimeInMillis()<=System.currentTimeMillis()){toast("Выберите время в будущем");return;}EditText note=new EditText(this);note.setHint("Что напомнить партнёру?");VmesteDialogTheme.builder(this).setTitle("Общее напоминание").setView(note).setNegativeButton("Отмена",null).setPositiveButton("Сохранить",(d,w)->{String value=note.getText().toString().trim();if(value.isEmpty())value="Пора выполнить ваш общий план";append("events",value,"Напоминание партнёру");JSONArray rows=read("events");JSONObject item=rows.optJSONObject(rows.length()-1);if(item!=null)try{item.put("reminder_at",when.getTimeInMillis());item.put("remind_partner",true);save("events",rows);syncItem("events",item);scheduleReminder(item.optString("id"),when.getTimeInMillis(),"Вместе",value);}catch(Exception ignored){}render();}).show();},when.get(Calendar.HOUR_OF_DAY),when.get(Calendar.MINUTE),true).show();},when.get(Calendar.YEAR),when.get(Calendar.MONTH),when.get(Calendar.DAY_OF_MONTH)).show();});
         JSONArray events=read("events");for(int i=0;i<events.length();i++){JSONObject item=events.optJSONObject(i);if(item!=null&&item.optBoolean("remind_partner"))renderEditableEntry("events",events,i,"🔔");}
     }
 
     private void scheduleReminder(String id,long at,String title,String message) {
-        if("Вместе".equals(title)&&prefs.getBoolean("owned_partner_reminder_"+id,false))return;
+        boolean partnerReminder="Вместе".equals(title)||getString(R.string.app_name).equals(title);
+        if(partnerReminder&&prefs.getBoolean("owned_partner_reminder_"+id,false))return;
+        if("Вместе".equals(title))title=getString(R.string.app_name);
         if(id.isEmpty()||at<=System.currentTimeMillis())return;
         if(android.os.Build.VERSION.SDK_INT>=33&&checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)!=android.content.pm.PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{android.Manifest.permission.POST_NOTIFICATIONS},8101);}
         android.content.Intent intent=new android.content.Intent(this,ReminderReceiver.class);intent.putExtra("title",title);intent.putExtra("body",message);intent.putExtra("notification_id",id.hashCode());
@@ -2436,8 +2810,8 @@ public class MainActivity extends Activity {
     }
     private void flushPendingSync(){if(!sync.ready())return;JSONArray pending;try{pending=new JSONArray(prefs.getString("pending_shared_sync","[]"));}catch(Exception e){pending=new JSONArray();}if(pending.length()==0)return;final JSONArray batch=pending;network.execute(()->{for(int i=0;i<batch.length();i++){JSONObject entry=batch.optJSONObject(i);if(entry==null)continue;try{String k=entry.optString("key","");JSONObject it=entry.optJSONObject("item");if(k.isEmpty()||it==null)continue;sync.upsert(k,it);String id=it.optString("id");synchronized(MainActivity.this){JSONArray latest;try{latest=new JSONArray(prefs.getString("pending_shared_sync","[]"));}catch(Exception e){latest=new JSONArray();}for(int j=latest.length()-1;j>=0;j--){JSONObject q=latest.optJSONObject(j);if(q!=null){JSONObject itemObj=q.optJSONObject("item");if(itemObj!=null&&id.equals(itemObj.optString("id")))latest.remove(j);}}prefs.edit().putString("pending_shared_sync",latest.toString()).apply();}}catch(Exception ignored){}}});}
 
-    @Override protected void onResume(){super.onResume();activityResumed=true;resumePendingWatchRoomInvite();syncQuietly();refreshActiveWatchRooms(true);refreshProfiles();checkGitHubUpdate(false);if(isChatOpen())startChatRefresh();String pending=prefs.getString("pending_update_url","");if(!pending.isEmpty()&&android.os.Build.VERSION.SDK_INT>=26&&getPackageManager().canRequestPackageInstalls()){String digest=prefs.getString("pending_update_digest","");String version=prefs.getString("pending_update_version","");prefs.edit().remove("pending_update_url").remove("pending_update_digest").remove("pending_update_version").apply();downloadGitHubUpdate(pending,digest,version);}if(sharedSyncPoll==null)sharedSyncPoll=new Runnable(){public void run(){if(!isFinishing()){syncQuietly();refreshActiveWatchRooms(false);refreshProfiles();gameHandler.postDelayed(this,15000);}}};gameHandler.removeCallbacks(sharedSyncPoll);gameHandler.postDelayed(sharedSyncPoll,15000);}
-    @Override protected void onPause(){activityResumed=false;if(sharedSyncPoll!=null)gameHandler.removeCallbacks(sharedSyncPoll);if(chatRefreshRunnable!=null)gameHandler.removeCallbacks(chatRefreshRunnable);super.onPause();}
+    @Override protected void onResume(){super.onResume();activityResumed=true;resumePendingWatchRoomInvite();syncQuietly();refreshActiveWatchRooms(true);refreshProfiles();checkGitHubUpdate(false);if(isChatOpen())startChatRefresh();String pending=prefs.getString("pending_update_url","");if(!pending.isEmpty()&&android.os.Build.VERSION.SDK_INT>=26&&getPackageManager().canRequestPackageInstalls()){String digest=prefs.getString("pending_update_digest","");String version=prefs.getString("pending_update_version","");prefs.edit().remove("pending_update_url").remove("pending_update_digest").remove("pending_update_version").apply();downloadGitHubUpdate(pending,digest,version);}if(sharedSyncPoll==null)sharedSyncPoll=new Runnable(){public void run(){if(!isFinishing()){syncQuietly();refreshActiveWatchRooms(false);refreshProfiles();if(feature!=null&&feature.contains("просмотра"))syncMovieRoomMetadata();gameHandler.postDelayed(this,15000);}}};gameHandler.removeCallbacks(sharedSyncPoll);gameHandler.postDelayed(sharedSyncPoll,15000);}
+    @Override protected void onPause(){activityResumed=false;if(sharedSyncPoll!=null)gameHandler.removeCallbacks(sharedSyncPoll);if(chatRefreshRunnable!=null)gameHandler.removeCallbacks(chatRefreshRunnable);if(chatTypingRunnable!=null){gameHandler.removeCallbacks(chatTypingRunnable);chatTypingRunnable=null;}super.onPause();}
 
     @Override protected void onSaveInstanceState(Bundle state) {
         state.putBoolean("pending_loyalty_scan", pendingLoyaltyScan);
@@ -2490,11 +2864,8 @@ public class MainActivity extends Activity {
 
     private void renderCoupleSetup() {
         if (!sync.configured()) {
-            simpleCard("☁", "Общее пространство", "Добавьте адрес и публичный ключ Supabase, чтобы связывать данные двух телефонов.", null);
-            TextView configure = pill("Настроить подключение", PURPLE); body.addView(configure);
-            configure.setOnClickListener(v -> {
-                feature=null;tab=NavigationModel.SETTINGS_TAB;render();
-            });
+            simpleCard("☁", "Общее пространство недоступно",
+                    "Подключение настраивается автоматически. Попробуйте снова позже.", null);
             return;
         }
         if (!sync.signedIn()) {
@@ -2528,24 +2899,11 @@ public class MainActivity extends Activity {
             TextView showQr = pill("Показать QR-код приглашения", PURPLE); body.addView(showQr);
             showQr.setOnClickListener(v -> showInviteCodeDialog());
             TextView share = pill("Отправить код партнёру", PURPLE); body.addView(share);
-            share.setOnClickListener(v -> shareText("Присоединяйся к нашему пространству «Вместе». Код: " + sync.inviteCode()));
+            share.setOnClickListener(v -> shareText("Присоединяйся к общему пространству "
+                    + getString(R.string.app_name) + ". Код: " + sync.inviteCode()));
             TextView refresh = pill("Синхронизировать данные", PURPLE); body.addView(refresh);
             refresh.setOnClickListener(v -> syncItems());
         }
-    }
-
-    private void configureServer() {
-        LinearLayout form = column(); form.setPadding(dp(18), 0, dp(18), 0);
-        EditText url = new EditText(this); url.setSingleLine(true); url.setHint("Project URL (https://…supabase.co)");
-        EditText key = new EditText(this); key.setSingleLine(true); key.setHint("Publishable / anon key");
-        url.setText(sync.url()); key.setText(sync.key());
-        form.addView(url); form.addView(key);
-        new AlertDialog.Builder(this).setTitle("Подключение Supabase").setMessage("Сначала создайте проект и примените SQL-инструкцию из папки supabase. Секретный service_role key сюда вводить нельзя.")
-                .setView(form).setNegativeButton("Отмена", null).setPositiveButton("Сохранить", (d, w) -> {
-                    String projectUrl = url.getText().toString().trim(), publicKey = key.getText().toString().trim();
-                    if (!projectUrl.startsWith("https://") || publicKey.isEmpty()) { toast("Проверьте URL и публичный ключ"); return; }
-                    sync.saveProject(projectUrl, publicKey); render();
-                }).show();
     }
 
     private void accountDialog() {
@@ -2553,7 +2911,7 @@ public class MainActivity extends Activity {
         EditText email = new EditText(this); email.setSingleLine(true); email.setHint("Электронная почта"); email.setInputType(33);
         EditText password = new EditText(this); password.setSingleLine(true); password.setHint("Пароль (от 6 символов)"); password.setInputType(129);
         form.addView(email); form.addView(password);
-        new AlertDialog.Builder(this).setTitle("Аккаунт Вместе").setView(form).setNegativeButton("Отмена", null)
+        VmesteDialogTheme.builder(this).setTitle(getString(R.string.app_name)+" · аккаунт").setView(form).setNegativeButton("Отмена", null)
                 .setNeutralButton("Регистрация", (d, w) -> authenticate(email.getText().toString(), password.getText().toString(), true))
                 .setPositiveButton("Войти", (d, w) -> authenticate(email.getText().toString(), password.getText().toString(), false)).show();
     }
@@ -2594,7 +2952,7 @@ public class MainActivity extends Activity {
 
     private void createCoupleDialog() {
         EditText name = new EditText(this); name.setSingleLine(true); name.setHint("Название пары, например: Мы");
-        new AlertDialog.Builder(this).setTitle("Создать приглашение")
+        VmesteDialogTheme.builder(this).setTitle("Создать приглашение")
                 .setMessage("Создайте пространство, затем покажите QR-код партнёру. У каждого должен быть свой аккаунт.")
                 .setView(name).setNegativeButton("Отмена", null)
                 .setPositiveButton("Создать", (d, w) -> runNetwork(() -> sync.createCouple(name.getText().toString()), result -> {
@@ -2610,7 +2968,7 @@ public class MainActivity extends Activity {
                 | android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
                 | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         code.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(15)});
-        new AlertDialog.Builder(this).setTitle("Ввести код приглашения")
+        VmesteDialogTheme.builder(this).setTitle("Ввести код приглашения")
                 .setMessage("Или отсканируйте QR-код на главном экране или во вкладке «Пригласить».")
                 .setView(code).setNegativeButton("Отмена", null)
                 .setPositiveButton("Присоединиться", (d, w) -> joinCoupleWithCode(code.getText().toString())).show();
@@ -2638,14 +2996,12 @@ public class MainActivity extends Activity {
     }
 
     private void startInviteScanner() {
-        if (!sync.configured()) { toast("Сначала настройте подключение к общему пространству"); return; }
+        if (!sync.configured()) { toast("Подключение к сервису пары временно недоступно"); return; }
         if (!sync.signedIn()) { accountDialog(); return; }
         try {
-            new IntentIntegrator(this)
+            orientationPreservingScanner()
                     .setDesiredBarcodeFormats(java.util.Collections.singletonList(BarcodeFormat.QR_CODE.toString()))
-                    .setPrompt("Наведите камеру на QR-код приглашения Вместе")
-                    .setBeepEnabled(false)
-                    .setOrientationLocked(false)
+                    .setPrompt("Наведите камеру на QR-код приглашения "+getString(R.string.app_name))
                     .initiateScan();
         } catch (RuntimeException e) {
             android.util.Log.w("VmesteInvite", "Could not launch the QR scanner", e);
@@ -2672,8 +3028,9 @@ public class MainActivity extends Activity {
         TextView invite = text(code, 22, INK, true); invite.setGravity(Gravity.CENTER); invite.setPadding(0,dp(12),0,dp(4)); content.addView(invite);
         TextView hint = text("Партнёр может отсканировать этот код в разделе «Пригласить».", 13, MUTED, false);
         hint.setGravity(Gravity.CENTER); content.addView(hint);
-        new AlertDialog.Builder(this).setTitle("Приглашение для пары").setView(content)
-                .setNeutralButton("Поделиться кодом", (d,w) -> shareText("Присоединяйся к нашему пространству «Вместе». Код: " + code))
+        VmesteDialogTheme.builder(this).setTitle("Приглашение для пары").setView(content)
+                .setNeutralButton("Поделиться кодом", (d,w) -> shareText("Присоединяйся к общему пространству "
+                        + getString(R.string.app_name) + ". Код: " + code))
                 .setPositiveButton("Готово", null).show();
     }
 
@@ -2681,7 +3038,7 @@ public class MainActivity extends Activity {
         syncMovieRoomMetadata();
         JSONObject room = readMovieRoom();
         if (room == null) {
-            simpleCard("🍿", "Выберите фильм или видео", "YouTube и публичные MP4/HLS-ссылки синхронизируются в комнате. Закрытые плееры могут не поддерживать управление.", null);
+            simpleCard("🍿", "Выберите фильм или видео", "Любая HTTPS-ссылка откроется у обоих. YouTube и публичные MP4/HLS-ссылки также синхронизируют воспроизведение.", null);
             TextView create = pill("＋  Создать кино-комнату", PURPLE); body.addView(create);
             create.setOnClickListener(v -> editMovieRoom(null));
             TextView youtube = pill("Найти видео на YouTube", PURPLE); body.addView(youtube);
@@ -2727,7 +3084,7 @@ public class MainActivity extends Activity {
 
     private void showWatchRoomJoinOptions() {
         if (!ensureWatchRoomAccess()) return;
-        new AlertDialog.Builder(this)
+        VmesteDialogTheme.builder(this)
                 .setTitle("Подключиться к комнате")
                 .setItems(new String[]{"Выбрать активную комнату", "Ввести код или ссылку", "Сканировать QR-код"}, (dialog, choice) -> {
                     if (choice == 0) joinLiveRoom();
@@ -2744,7 +3101,7 @@ public class MainActivity extends Activity {
         code.setHint("Код VMESTE:ROOM:… или ссылка vmeste://room/…");
         code.setInputType(android.text.InputType.TYPE_CLASS_TEXT
                 | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        AlertDialog dialog = new AlertDialog.Builder(this)
+        AlertDialog dialog = VmesteDialogTheme.builder(this)
                 .setTitle("Ввести приглашение")
                 .setMessage("Вставьте код или ссылку, полученные от ведущего.")
                 .setView(code)
@@ -2855,7 +3212,7 @@ public class MainActivity extends Activity {
             tab = "Пригласить";
             feature = null;
             render();
-            toast("Сначала настройте Supabase в разделе «Пригласить партнёра».");
+            toast("Подключение к сервису пары временно недоступно.");
             return false;
         }
         if (!sync.signedIn()) {
@@ -2880,17 +3237,26 @@ public class MainActivity extends Activity {
         JSONObject room = readMovieRoom();
         String roomTitle = room == null ? "Совместный просмотр" : room.optString("title", "Совместный просмотр");
         this.<JSONObject>runNetwork(() -> {
-            String id=sync.startWatchRoom(roomTitle);
-            JSONObject active=new JSONObject();active.put("id",id);active.put("host_id",sync.userId());active.put("title",roomTitle);active.put("state","active");
             String playerUrl=room==null?"":room.optString("url","");
+            String titleForRoom=roomTitle;
+            boolean movieUrlSyncFailed=false;
             try {
                 JSONObject sharedMovie=sync.fetchMovieRoom();
-                if(sharedMovie!=null)playerUrl=sharedMovie.optString("url",playerUrl);
+                if(sharedMovie!=null && (room==null
+                        || sharedMovie.optLong("updated",0)>room.optLong("updated",0))) {
+                    playerUrl=sharedMovie.optString("url",playerUrl);
+                    titleForRoom=sharedMovie.optString("title",roomTitle);
+                } else if(room!=null) {
+                    sync.upsertMovieRoom(room);
+                }
             } catch(Exception e) {
-                active.put("movie_url_sync_failed",true);
+                movieUrlSyncFailed=true;
                 android.util.Log.w("VmesteWatch","Could not sync the optional movie link",e);
             }
+            String id=sync.startWatchRoom(titleForRoom);
+            JSONObject active=new JSONObject();active.put("id",id);active.put("host_id",sync.userId());active.put("title",titleForRoom);active.put("state","active");
             active.put("player_url",playerUrl);
+            active.put("movie_url_sync_failed",movieUrlSyncFailed);
             return active;
         }, active -> {
             watchRoomCreationInFlight = false;
@@ -2901,7 +3267,7 @@ public class MainActivity extends Activity {
             if(active.optBoolean("movie_url_sync_failed"))toast("Комната открыта, но не удалось обновить ссылку на видео");
         }, error -> {
             watchRoomCreationInFlight = false;
-            new AlertDialog.Builder(this)
+            VmesteDialogTheme.builder(this)
                     .setTitle("Комната не создана")
                     .setMessage(WatchRoomError.label(error.getMessage()))
                     .setPositiveButton("Понятно", null)
@@ -2918,7 +3284,7 @@ public class MainActivity extends Activity {
                 createLiveRoom();
                 return;
             }
-            new AlertDialog.Builder(this)
+            VmesteDialogTheme.builder(this)
                     .setTitle("Уже есть активная комната")
                     .setMessage("Сначала выберите комнату, где партнёр уже ждёт. Создание новой комнаты завершит все предыдущие активные комнаты.")
                     .setPositiveButton("Выбрать активную", (dialog, which) -> showActiveWatchRooms(rooms))
@@ -2938,7 +3304,7 @@ public class MainActivity extends Activity {
 
     private void showActiveWatchRooms(JSONArray rooms) {
         if (rooms.length() == 0) {
-            new AlertDialog.Builder(this)
+            VmesteDialogTheme.builder(this)
                     .setTitle("Активных комнат нет")
                     .setMessage("Попросите партнёра создать комнату и пригласить вас, затем обновите список. Новая комната не будет создана автоматически.")
                     .setPositiveButton("Обновить", (dialog, which) -> joinLiveRoom())
@@ -2959,7 +3325,7 @@ public class MainActivity extends Activity {
                     : "";
             labels[i] = "Комната " + (i + 1) + " · ведущий: " + hostLabel + timestamp;
         }
-        new AlertDialog.Builder(this)
+        VmesteDialogTheme.builder(this)
                 .setTitle("Выберите ведущего")
                 .setMessage("Комнаты отсортированы от новых к старым. После аварийного закрытия запись может быть устаревшей — выбирайте только комнату, где ведущий сейчас ждёт.")
                 .setItems(labels, (dialog, which) -> openSelectedWatchRoom(rooms.optJSONObject(which)))
@@ -2979,7 +3345,7 @@ public class MainActivity extends Activity {
     }
 
     private void confirmOpenHostedWatchRoom(String roomId) {
-        new AlertDialog.Builder(this)
+        VmesteDialogTheme.builder(this)
                 .setTitle("Комната отмечена как активная")
                 .setMessage("После аварийного завершения SDP/ICE могли устареть. Открывайте эту комнату только если хотите продолжить её; создание новой завершит старые активные комнаты.")
                 .setPositiveButton("Продолжить эту", (dialog, which) -> openHostedWatchRoom(roomId))
@@ -2989,7 +3355,7 @@ public class MainActivity extends Activity {
     }
 
     private void confirmCreateFreshWatchRoom() {
-        new AlertDialog.Builder(this)
+        VmesteDialogTheme.builder(this)
                 .setTitle("Создать новую комнату?")
                 .setMessage("Все старые активные комнаты этой пары будут завершены. Продолжить?")
                 .setPositiveButton("Создать новую", (dialog, which) -> createLiveRoom())
@@ -3023,17 +3389,21 @@ public class MainActivity extends Activity {
         if (!ensureWatchRoomAccess()) return;
         pendingWatchRoomScan = true;
         try {
-            new IntentIntegrator(this)
+            orientationPreservingScanner()
                     .setDesiredBarcodeFormats(java.util.Collections.singletonList(BarcodeFormat.QR_CODE.toString()))
-                    .setPrompt("Наведите камеру на QR-код комнаты «Вместе»")
-                    .setBeepEnabled(false)
-                    .setOrientationLocked(false)
+                    .setPrompt("Наведите камеру на QR-код комнаты "+getString(R.string.app_name))
                     .initiateScan();
         } catch (RuntimeException e) {
             pendingWatchRoomScan = false;
             android.util.Log.w("VmesteWatch", "Could not launch the room QR scanner", e);
             toast("Не удалось открыть сканер QR-кода");
         }
+    }
+
+    private IntentIntegrator orientationPreservingScanner() {
+        return new IntentIntegrator(this)
+                .setBeepEnabled(false)
+                .setOrientationLocked(true);
     }
 
     private void openSelectedWatchRoomFromQr(String payload) {
@@ -3055,7 +3425,7 @@ public class MainActivity extends Activity {
             showWatchRoomError(new Exception("У выбранной комнаты отсутствует код"));
             return;
         }
-        new AlertDialog.Builder(this)
+        VmesteDialogTheme.builder(this)
                 .setTitle("Подключиться к комнате?")
                 .setMessage("Запись комнаты отмечена как активная, но это не подтверждает, что ведущий сейчас в сети. Если ведущий закрыл приложение аварийно, попросите его создать новую комнату.")
                 .setPositiveButton("Подключиться", (dialog, which) -> openJoinableWatchRoom(roomId))
@@ -3083,7 +3453,7 @@ public class MainActivity extends Activity {
 
     private void showWatchRoomError(Exception error) {
         String message = WatchRoomError.label(error == null ? null : error.getMessage());
-        new AlertDialog.Builder(this)
+        VmesteDialogTheme.builder(this)
                 .setTitle("Не удалось выполнить действие с комнатой")
                 .setMessage(message)
                 .setPositiveButton("Понятно", null)
@@ -3098,7 +3468,7 @@ public class MainActivity extends Activity {
         TextView avatarLabel = text("Ваше фото профиля", 12, MUTED, true); avatarLabel.setPadding(0, dp(8), 0, 0); form.addView(avatarLabel);
         ImageView avatarPreview = new ImageView(this); avatarPreview.setScaleType(ImageView.ScaleType.CENTER_CROP); avatarPreview.setBackgroundColor(0xFFE8E0EC);
         String avatarUri=localAvatarUri();
-        boolean hasPhoto=setAvatarPicture(avatarPreview,avatarUri,48);
+        boolean hasPhoto=setAvatarPicture(avatarPreview,avatarUri,72);
         avatarPreview.setVisibility(hasPhoto?View.VISIBLE:View.GONE);
         LinearLayout.LayoutParams avatarParams = new LinearLayout.LayoutParams(dp(72), dp(72)); avatarParams.gravity=Gravity.CENTER_HORIZONTAL; avatarParams.topMargin=dp(4); avatarParams.bottomMargin=dp(8); form.addView(avatarPreview, avatarParams);
         TextView avatarEmoji = text(prefs.getString("profile_avatar","♡"), 24, PURPLE, true); avatarEmoji.setGravity(Gravity.CENTER); avatarEmoji.setVisibility(hasPhoto?View.GONE:View.VISIBLE);
@@ -3107,7 +3477,12 @@ public class MainActivity extends Activity {
         for (EditText field : new EditText[]{name, avatar, bio}) { field.setTextColor(INK); field.setHintTextColor(MUTED); field.setPadding(dp(14), dp(11), dp(14), dp(11)); field.setBackground(shape(softDark ? 0xFF3A3440 : 0xFFFBF9FC, 14)); }
         TextView nameLabel = text("Имя", 12, MUTED, true); form.addView(nameLabel); form.addView(name);
         TextView avatarFieldLabel = text("Эмодзи профиля", 12, MUTED, true); avatarFieldLabel.setPadding(0,dp(8),0,0); form.addView(avatarFieldLabel); form.addView(avatar);
-        TextView emojiPicker=pill("Выбрать эмодзи профиля",PURPLE);form.addView(emojiPicker);
+        TextView emojiPicker=pill("Выбрать эмодзи профиля",PURPLE);
+        emojiPicker.setSingleLine(true);
+        LinearLayout.LayoutParams emojiPickerParams=new LinearLayout.LayoutParams(-1,dp(48));
+        emojiPickerParams.topMargin=dp(8);
+        emojiPickerParams.bottomMargin=dp(8);
+        form.addView(emojiPicker,emojiPickerParams);
         emojiPicker.setOnClickListener(v->showProfileEmojiPicker(avatar));
         TextView bioLabel = text("Пара слов о себе", 12, MUTED, true); bioLabel.setPadding(0, dp(8), 0, 0); form.addView(bioLabel); form.addView(bio);
         TextView previewName = text(name.getText().toString().trim().isEmpty() ? "Как вас будут видеть" : name.getText().toString().trim(), 12, MUTED, false); previewName.setGravity(Gravity.CENTER); previewName.setPadding(0,dp(4),0,0); form.addView(previewName);
@@ -3141,7 +3516,7 @@ public class MainActivity extends Activity {
             public void afterTextChanged(android.text.Editable e) { }
         });
         ScrollView profileScroll=new ScrollView(this);profileScroll.setBackgroundColor(PAPER);profileScroll.setFillViewport(true);profileScroll.addView(form);
-        AlertDialog profileDialog = new AlertDialog.Builder(this).setTitle("Мой профиль").setView(profileScroll).setNegativeButton("Отмена", null)
+        AlertDialog profileDialog = VmesteDialogTheme.builder(this).setTitle("Мой профиль").setView(profileScroll).setNegativeButton("Отмена", null)
                 .setPositiveButton("Сохранить", (d,w) -> {
                     String n = name.getText().toString().trim(), a = avatar.getText().toString().trim(), b = bio.getText().toString().trim();
                     if (n.isEmpty()) { toast("Введите имя для профиля"); return; }
@@ -3159,7 +3534,7 @@ public class MainActivity extends Activity {
         String[] choices={"♡","🌿","🌙","☀️","✨","🌸","🌻","🍀","🪻","🦋","🐈","🐇","🦊","🐻","🐼","🐧","🐢","🐬","🍓","🍒","🍑","🍉","🍋","🍄","☕","🎧","🎨","📚","🧸","💌","💜","🩵"};
         android.widget.GridLayout grid=new android.widget.GridLayout(this);grid.setColumnCount(4);
         grid.setPadding(dp(8),dp(8),dp(8),dp(8));
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Эмодзи профиля")
+        AlertDialog dialog=VmesteDialogTheme.builder(this).setTitle("Эмодзи профиля")
                 .setView(grid).setNegativeButton("Закрыть",null).create();
         for(String choice:choices){
             TextView item=text(choice,25,INK,false);item.setGravity(Gravity.CENTER);
@@ -3220,7 +3595,7 @@ public class MainActivity extends Activity {
     private boolean isSha256Digest(String value) { return value != null && value.matches("(?i)^sha256:[0-9a-f]{64}$"); }
 
     private void showGitHubUpdate(String version, String url, String digest) {
-        AlertDialog updateDialog = new AlertDialog.Builder(this).setTitle("Доступно обновление " + version).setMessage("Новая версия «Вместе» опубликована в GitHub. Скачать APK и установить?")
+        AlertDialog updateDialog = VmesteDialogTheme.builder(this).setTitle("Доступно обновление " + version).setMessage("Новая версия "+getString(R.string.app_name)+" опубликована в GitHub. Скачать APK и установить?")
                 .setNegativeButton("Позже", null).setPositiveButton("Обновить", (d, w) -> {
                     if (android.os.Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
                         prefs.edit().putString("pending_update_url", url).putString("pending_update_digest", digest).putString("pending_update_version", version).apply();
@@ -3474,10 +3849,10 @@ public class MainActivity extends Activity {
     private void editMovieRoom(JSONObject existing) {
         LinearLayout form = column(); form.setPadding(dp(18), 0, dp(18), 0);
         EditText title = new EditText(this); title.setSingleLine(true); title.setHint("Название фильма");
-        EditText url = new EditText(this); url.setSingleLine(true); url.setHint("YouTube или публичное видео MP4/HLS"); url.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+        EditText url = new EditText(this); url.setSingleLine(true); url.setHint("HTTPS-ссылка на видео или сайт"); url.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_VARIATION_URI);
         if (existing != null) { title.setText(existing.optString("title")); url.setText(existing.optString("url")); }
         form.addView(title); form.addView(url);
-        new AlertDialog.Builder(this).setTitle("Кино-комната").setMessage("В общей комнате синхронизируются YouTube и публичные HTTPS-видео MP4/HLS. Закрытые и DRM-плееры не обходятся и могут не поддерживать синхронизацию.")
+        VmesteDialogTheme.builder(this).setTitle("Кино-комната").setMessage("HTTPS-ссылка откроется у обоих. YouTube и публичные MP4/HLS-ссылки поддерживают синхронизацию воспроизведения; для других сайтов она зависит от сайта. DRM и ограничения доступа не обходятся.")
                 .setView(form).setNegativeButton("Отмена", null).setPositiveButton("Сохранить", (d, w) -> {
                     String name = title.getText().toString().trim(), link = url.getText().toString().trim();
                     if (name.isEmpty()) name = "Вечер кино";
@@ -3539,7 +3914,7 @@ public class MainActivity extends Activity {
                 return target.getHost()==null||!("https".equalsIgnoreCase(targetScheme)||"http".equalsIgnoreCase(targetScheme));
             }
         });
-        new AlertDialog.Builder(this).setTitle("Публикация партнёра").setView(web)
+        VmesteDialogTheme.builder(this).setTitle("Публикация партнёра").setView(web)
                 .setNegativeButton("Закрыть",null)
                 .setPositiveButton("Открыть в браузере",(d,w)->openUrl(link)).show();
         web.loadUrl(link);
@@ -3635,7 +4010,7 @@ public class MainActivity extends Activity {
             }
         });
 
-        AlertDialog dialog = new AlertDialog.Builder(this)
+        AlertDialog dialog = VmesteDialogTheme.builder(this)
                 .setTitle("Предпросмотр подарка")
                 .setView(content)
                 .setNegativeButton("Закрыть", null)
@@ -3753,21 +4128,62 @@ public class MainActivity extends Activity {
                 state.put("board",BoardGameRules.swapCheckersColors(state.optString("board")));
         }
     }
-    private void startNextGame(String type,JSONObject[] current,Runnable draw){
+    private void confirmGameReset(String type,JSONObject[] current,Runnable draw){
+        VmesteDialogTheme.builder(this)
+                .setTitle("Начать заново?")
+                .setMessage("Текущая партия будет сброшена для вас и партнёра.")
+                .setNegativeButton("Отмена",null)
+                .setPositiveButton("Сбросить игру",(dialog,which)->resetCurrentGame(type,current,draw))
+                .show();
+    }
+    private void resetCurrentGame(String type,JSONObject[] current,Runnable draw){
         network.execute(()->{
             try{
                 JSONObject previous=pairGames.fetch(current[0].getString("id"));
-                if(previous==null||!"finished".equals(previous.optString("status")))
-                    throw new Exception("Новая партия доступна после завершения текущей");
-                JSONObject state=previous.optJSONObject("state");
+                if(previous==null)throw new Exception("Партия не найдена");
+                JSONObject oldState=previous.optJSONObject("state");
                 String me=pairGames.userId();
-                if(state==null||(!me.equals(state.optString("p1"))&&!me.equals(state.optString("p2"))))
+                if(oldState==null||(!me.equals(oldState.optString("p1"))&&!me.equals(oldState.optString("p2"))))
                     throw new Exception("Вы не участник этой партии");
-                if(state.optString("p2").isEmpty())
-                    throw new Exception("Для новой партии дождитесь подключения партнёра");
-                JSONObject next=openOrJoinGame(type);
-                runOnUiThread(()->{current[0]=next;draw.run();});
-            }catch(Exception e){runOnUiThread(()->toast("Не удалось начать новую партию: "+e.getMessage()));}
+                String p1=oldState.optString("p1"),p2=oldState.optString("p2");
+                if(p2.isEmpty())throw new Exception("Сбросить игру можно после подключения партнёра");
+                JSONObject state=new JSONObject();state.put("p1",p1);state.put("p2",p2);
+                String nextStatus="active";
+                if("tic_tac_toe".equals(type)){
+                    state.put("board",".........");state.put("turn",p1);state.put("winner","");
+                }else if("connect_four".equals(type)){
+                    state.put("board",emptyBoard(42));state.put("turn",p1);state.put("winner","");
+                }else if("checkers".equals(type)){
+                    state.put("board",initialCheckersBoard());state.put("turn",p1);state.put("winner","");state.put("chain",-1);
+                }else if("dots_boxes".equals(type)){
+                    state.put("edges",emptyBoard(40));state.put("boxes",emptyBoard(16));state.put("score1",0);state.put("score2",0);state.put("turn",p1);state.put("winner","");
+                }else if("sea_battle".equals(type)){
+                    state.put("p1Fleet",randomFleet());state.put("p2Fleet",randomFleet());
+                    state.put("p1Ready",false);state.put("p2Ready",false);
+                    state.put("p1Shots",new JSONArray());state.put("p2Shots",new JSONArray());
+                    state.put("turn","");state.put("winner","");nextStatus="waiting";
+                }else if("durak".equals(type)){
+                    ArrayList<Integer> cards=new ArrayList<>();for(int i=0;i<36;i++)cards.add(i);
+                    java.util.Collections.shuffle(cards);JSONArray h1=new JSONArray(),h2=new JSONArray(),deck=new JSONArray();
+                    for(int i=0;i<36;i++){int card=cards.get(i);if(i<6)h1.put(card);else if(i<12)h2.put(card);else deck.put(card);}
+                    state.put("p1Hand",h1);state.put("p2Hand",h2);state.put("deck",deck);
+                    state.put("trump",cards.get(35)%4);state.put("attacker",p1);
+                    state.put("attack",-1);state.put("defense",-1);state.put("winner","");
+                }else if("guess_tune".equals(type)){
+                    String tune=TUNES[new Random().nextInt(TUNES.length)];
+                    state.put("prompt","Напойте мелодию: "+tune);state.put("correct",tune);
+                    state.put("p1Ready",false);state.put("p2Answer","");state.put("winner","");
+                }else if("couple_quiz".equals(type)){
+                    state.put("prompt",oldState.optString("prompt","Вопрос для двоих"));
+                    state.put("question",oldState.optString("question","Какой мой идеальный выходной?"));
+                    state.put("p1Answer","");state.put("p2Answer","");
+                }else{
+                    throw new Exception("Неизвестный тип игры");
+                }
+                if(isRandomTurnGame(type))setRandomFirstTurn(state,type);
+                JSONObject reset=pairGames.update(previous.getString("id"),previous.optLong("version"),state,nextStatus);
+                runOnUiThread(()->{current[0]=reset;draw.run();});
+            }catch(Exception e){runOnUiThread(()->toast("Не удалось сбросить игру: "+e.getMessage()));}
         });
     }
     private JSONArray randomFleet(){
@@ -3819,14 +4235,14 @@ public class MainActivity extends Activity {
         LinearLayout panel=column();panel.setPadding(dp(14),dp(8),dp(14),dp(8));
         TextView status=text("",14,INK,true);status.setGravity(Gravity.CENTER);status.setPadding(dp(10),dp(10),dp(10),dp(10));status.setBackground(shape(PALE,15));panel.addView(status);
         LinearLayout board=column();board.setGravity(Gravity.CENTER);board.setPadding(dp(8),dp(8),dp(8),dp(8));board.setBackground(shape(0xFFEDE4F1,20));LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(-1,-2);bp.topMargin=dp(10);panel.addView(board,bp);
-        TextView restart=pill("Новая партия",PURPLE);restart.setGravity(Gravity.CENTER);LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,-2);rp.topMargin=dp(10);panel.addView(restart,rp);
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Крестики-нолики · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();
+        TextView restart=pill("Начать заново",PURPLE);restart.setGravity(Gravity.CENTER);LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,-2);rp.topMargin=dp(10);panel.addView(restart,rp);
+        AlertDialog dialog=VmesteDialogTheme.builder(this).setTitle("Крестики-нолики · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();
         Runnable[] draw={null};draw[0]=()->{JSONObject g=game[0],s=g.optJSONObject("state");if(s==null)return;String me=pairGames.userId(),p1=s.optString("p1"),p2=s.optString("p2"),boardState=s.optString("board","........."),turn=s.optString("turn"),winner=s.optString("winner");boolean active="active".equals(g.optString("status"));char myMark=GameStartRules.ticTacToeMarkForPlayer(me,s.optString("first_player"),p1),partnerMark=myMark=='X'?'O':'X';
             if(p2.isEmpty())status.setText("Комната создана. Ждём, пока партнёр откроет эту игру на своём телефоне.");else if(!winner.isEmpty())status.setText(winner.equals(me)?"Вы победили! ✨":"Партнёр победил. Сыграем ещё? 💛");else if(!active)status.setText("Партия завершена");else status.setText(turn.equals(me)?"Ваш ход · "+myMark:"Ход партнёра · "+partnerMark);
-            restart.setVisibility(active||p2.isEmpty()?View.GONE:View.VISIBLE);
+            restart.setVisibility(GameRestartPolicy.canRestart(g.optString("status"),p1,p2,me)?View.VISIBLE:View.GONE);
             board.removeAllViews();for(int row=0;row<3;row++){LinearLayout line=new LinearLayout(this);line.setGravity(Gravity.CENTER);board.addView(line);for(int col=0;col<3;col++){int i=row*3+col;char mark=i<boardState.length()?boardState.charAt(i):'.';TextView cell=text(mark=='.'?"":String.valueOf(mark),31,mark=='X'?0xFF71529B:0xFFD66D92,true);cell.setGravity(Gravity.CENTER);cell.setBackground(shape(0xFFFBF9FC,14));LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(0,dp(70),1);cp.setMargins(dp(3),dp(3),dp(3),dp(3));line.addView(cell,cp);cell.setEnabled(active&&turn.equals(me)&&mark=='.'&&winner.isEmpty());cell.setOnClickListener(v->{network.execute(()->{try{JSONObject fresh=pairGames.fetch(g.getString("id"));if(fresh==null)return;JSONObject ns=new JSONObject(fresh.getJSONObject("state").toString());if(!pairGames.userId().equals(ns.optString("turn")))return;String b=ns.optString("board",".........");if(b.charAt(i)!='.')return;char player=GameStartRules.ticTacToeMarkForPlayer(me,ns.optString("first_player"),ns.optString("p1"));StringBuilder sb=new StringBuilder(b);sb.setCharAt(i,player);ns.put("board",sb.toString());boolean won=hasWinner(sb.toString(),player);boolean full=sb.indexOf(".")<0;if(won)ns.put("winner",me);else if(!full)ns.put("turn",me.equals(ns.optString("p1"))?ns.optString("p2"):ns.optString("p1"));String newStatus=won||full?"finished":"active";JSONObject saved=pairGames.update(fresh.getString("id"),fresh.optLong("version"),ns,newStatus);runOnUiThread(()->{try{game[0]=saved;draw[0].run();}catch(Exception e){toast("Ошибка игры: "+e.getMessage());}});}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});});}}
         };
-        restart.setOnClickListener(v->startNextGame("tic_tac_toe",game,draw[0]));
+        restart.setOnClickListener(v->confirmGameReset("tic_tac_toe",game,draw[0]));
         draw[0].run();dialog.setOnDismissListener(d->{closed[0]=true;});dialog.show();poll[0]=()->{if(closed[0])return;network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));if(fresh!=null)runOnUiThread(()->{try{game[0]=fresh;draw[0].run();}catch(Exception ignored){}});}catch(Exception ignored){}if(!closed[0])gameHandler.postDelayed(poll[0],1400);});};gameHandler.postDelayed(poll[0],1400);
     }
     private boolean hasWinner(String board,char p){int[][] lines={{0,1,2},{3,4,5},{6,7,8},{0,3,6},{1,4,7},{2,5,8},{0,4,8},{2,4,6}};for(int[] l:lines)if(board.charAt(l[0])==p&&board.charAt(l[1])==p&&board.charAt(l[2])==p)return true;return false;}
@@ -3850,9 +4266,11 @@ public class MainActivity extends Activity {
         TextView rotate=pill("↻",PURPLE);rotate.setGravity(Gravity.CENTER);actions.addView(rotate,new LinearLayout.LayoutParams(dp(42),dp(44)));
         TextView undo=pill("↶",PURPLE);undo.setGravity(Gravity.CENTER);actions.addView(undo,new LinearLayout.LayoutParams(dp(42),dp(44)));
         TextView ready=pill("Готов",PURPLE);ready.setGravity(Gravity.CENTER);LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(0,dp(44),1);rp.leftMargin=dp(5);actions.addView(ready,rp);
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Морской бой · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();
+        TextView restart=pill("Начать заново",PURPLE);restart.setGravity(Gravity.CENTER);LinearLayout.LayoutParams restartParams=new LinearLayout.LayoutParams(-1,dp(46));restartParams.topMargin=dp(8);panel.addView(restart,restartParams);
+        AlertDialog dialog=VmesteDialogTheme.builder(this).setTitle("Морской бой · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();
         Runnable[] draw={null};draw[0]=()->{JSONObject g=game[0],s=g.optJSONObject("state");if(s==null)return;String me=pairGames.userId(),p1=s.optString("p1"),p2=s.optString("p2"),winner=s.optString("winner"),turn=s.optString("turn");boolean first=me.equals(p1);String fleetKey=first?"p1Fleet":"p2Fleet",shotsKey=first?"p1Shots":"p2Shots",readyKey=first?"p1Ready":"p2Ready";JSONArray own=s.optJSONArray(fleetKey);if(own==null)own=new JSONArray();JSONArray shots=s.optJSONArray(shotsKey);if(shots==null)shots=new JSONArray();boolean bothReady=s.optBoolean("p1Ready")&&s.optBoolean("p2Ready"),active="active".equals(g.optString("status"));
             if(p2.isEmpty())status.setText("Расставьте флот. Ждём, когда партнёр войдёт в игру со своего телефона.");else if(!winner.isEmpty())status.setText(winner.equals(me)?"Вы победили! ⚓":"Партнёр нашёл ваш флот. Сыграем ещё? 💛");else if(!bothReady)status.setText("Поставьте флот и нажмите «Готов». Игра начнётся, когда будут готовы оба.");else if(turn.equals(me))status.setText("Ваш ход · выберите клетку на поле партнёра");else status.setText("Ход партнёра · ваш флот пока скрыт");
+            restart.setVisibility(GameRestartPolicy.canRestart(g.optString("status"),p1,p2,me)?View.VISIBLE:View.GONE);
             boolean setup=!bothReady&&winner.isEmpty();shuffle.setVisibility(setup?View.VISIBLE:View.GONE);manual.setVisibility(setup?View.VISIBLE:View.GONE);rotate.setVisibility(setup&&manualMode[0]?View.VISIBLE:View.GONE);undo.setVisibility(setup&&manualMode[0]?View.VISIBLE:View.GONE);ready.setVisibility(setup?View.VISIBLE:View.GONE);ready.setText(s.optBoolean(readyKey)?"Вы готовы ✓":"Готов");
             boardTabs.setVisibility(setup?View.GONE:View.VISIBLE);enemyTab.setEnabled(bothReady);myFleetTab.setBackground(shape(ownBoardSelected[0]?0xFFDCC9E9:PALE,18));enemyTab.setBackground(shape(!ownBoardSelected[0]?0xFFDCC9E9:PALE,18));
             board.removeAllViews();JSONArray shownOwn=manualMode[0]&&setup?manualFleet[0]:own;HashSet<Integer> ownCells=new HashSet<>();for(int j=0;j<shownOwn.length();j++){JSONArray ship=shownOwn.optJSONArray(j);if(ship!=null)for(int k=0;k<ship.length();k++)ownCells.add(ship.optInt(k,-1));}JSONArray enemyFleet=s.optJSONArray(first?"p2Fleet":"p1Fleet");if(enemyFleet==null)enemyFleet=new JSONArray();HashSet<Integer> enemyCells=new HashSet<>();for(int j=0;j<enemyFleet.length();j++){JSONArray ship=enemyFleet.optJSONArray(j);if(ship!=null)for(int k=0;k<ship.length();k++)enemyCells.add(ship.optInt(k,-1));}
@@ -3892,6 +4310,7 @@ public class MainActivity extends Activity {
         undo.setOnClickListener(v->{if(manualFleet[0].length()>0)manualFleet[0].remove(manualFleet[0].length()-1);draw[0].run();});
         shuffle.setOnClickListener(v->{manualMode[0]=false;network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));JSONObject s=new JSONObject(fresh.getJSONObject("state").toString());s.put(meets(s,"p1")?"p1Fleet":"p2Fleet",randomFleet());s.put(meets(s,"p1")?"p1Ready":"p2Ready",false);JSONObject saved=pairGames.update(fresh.getString("id"),fresh.optLong("version"),s,"waiting");runOnUiThread(()->{try{game[0]=saved;draw[0].run();}catch(Exception e){toast("Ошибка игры: "+e.getMessage());}});}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});});
         ready.setOnClickListener(v->{if(manualMode[0]&&manualFleet[0].length()!=12){toast("Расставьте все 12 кораблей");return;}network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));JSONObject s=new JSONObject(fresh.getJSONObject("state").toString());boolean first=pairGames.userId().equals(s.optString("p1"));String key=first?"p1Ready":"p2Ready";if(manualMode[0])s.put(first?"p1Fleet":"p2Fleet",manualFleet[0]);s.put(key,true);boolean start=s.optBoolean(first?"p2Ready":"p1Ready")&&!s.optString("p2").isEmpty();if(start&&s.optString("first_player").isEmpty())setRandomFirstTurn(s,"sea_battle");JSONObject saved=pairGames.update(fresh.getString("id"),fresh.optLong("version"),s,start?"active":"waiting");runOnUiThread(()->{try{game[0]=saved;draw[0].run();}catch(Exception e){toast("Ошибка игры: "+e.getMessage());}});}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});});
+        restart.setOnClickListener(v->confirmGameReset("sea_battle",game,draw[0]));
         draw[0].run();dialog.setOnDismissListener(d->{closed[0]=true;});dialog.show();poll[0]=()->{if(closed[0])return;network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));if(fresh!=null)runOnUiThread(()->{try{game[0]=fresh;draw[0].run();}catch(Exception ignored){}});}catch(Exception ignored){}if(!closed[0])gameHandler.postDelayed(poll[0],1400);});};gameHandler.postDelayed(poll[0],1400);
     }
     private boolean placeManualShip(JSONArray fleet,int start,boolean horizontal){
@@ -3939,13 +4358,15 @@ public class MainActivity extends Activity {
         TextView deckInfo=text("",12,MUTED,false);deckInfo.setGravity(Gravity.CENTER);panel.addView(deckInfo);
         TextView take=pill("Забрать карту",PURPLE);take.setGravity(Gravity.CENTER);panel.addView(take);
         LinearLayout hand= new LinearLayout(this);hand.setGravity(Gravity.CENTER);hand.setPadding(0,dp(8),0,dp(4));panel.addView(hand);
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Дурак · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();
+        TextView restart=pill("Начать заново",PURPLE);restart.setGravity(Gravity.CENTER);LinearLayout.LayoutParams restartParams=new LinearLayout.LayoutParams(-1,dp(46));restartParams.topMargin=dp(8);panel.addView(restart,restartParams);
+        AlertDialog dialog=VmesteDialogTheme.builder(this).setTitle("Дурак · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();
         Runnable[] draw={null};draw[0]=()->{JSONObject g=game[0],s=g.optJSONObject("state");if(s==null)return;String me=pairGames.userId(),p1=s.optString("p1"),p2=s.optString("p2"),attacker=s.optString("attacker"),winner=s.optString("winner");boolean first=me.equals(p1),active="active".equals(g.optString("status"));JSONArray own=s.optJSONArray(first?"p1Hand":"p2Hand");if(own==null)own=new JSONArray();int attack=s.optInt("attack",-1),defense=s.optInt("defense",-1);int deck=s.optJSONArray("deck")==null?0:s.optJSONArray("deck").length();
             if(p2.isEmpty())status.setText("Колода готова. Ждём второго игрока.");else if(!winner.isEmpty())status.setText(winner.equals("draw")?"Ничья!":winner.equals(me)?"Вы вышли первым — победа! 🎉":"Партнёр вышел первым. Вы — дурак 😄");else status.setText(attacker.equals(me)?"Ваш ход атаки":"Ход партнёра · "+(attack>=0?(defense>=0?"карта отбита":"выберите карту выше или заберите") : "ожидайте атаку"));
+            restart.setVisibility(GameRestartPolicy.canRestart(g.optString("status"),p1,p2,me)?View.VISIBLE:View.GONE);
             table.setText(attack<0?"Стол пуст":"Атака  "+showDurakCard(attack)+(defense>=0?"     ·     Отбой  "+showDurakCard(defense):""));int trump=s.optInt("trump",0);String[] suits={"♣ треф","♦ бубен","♥ червей","♠ пик"};deckInfo.setText("Карт у партнёра: "+s.optJSONArray(first?"p2Hand":"p1Hand").length()+"  ·  колода: "+deck+"  ·  КОЗЫРЬ: "+suits[Math.max(0,Math.min(3,trump))]);boolean mayTake=active&&p2.length()>0&&attacker.equals(me)?false:active&&p2.length()>0&&!attacker.equals(me)&&attack>=0&&defense<0;take.setVisibility(mayTake?View.VISIBLE:View.GONE);
             hand.removeAllViews();for(int k=0;k<own.length();k++){int code=own.optInt(k,-1);if(code<0||code>=36)continue;Card card=new Card(6+code/4,code%4);TextView button=text(card.show(),17,card.suit==1||card.suit==2?0xFFD84B5E:INK,true);button.setGravity(Gravity.CENTER);button.setBackground(shape(PAPER,11));button.setElevation(dp(2));LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(0,dp(62),1);cp.setMargins(dp(2),dp(2),dp(2),dp(2));hand.addView(button,cp);boolean canPlay=active&&p2.length()>0&&(attacker.equals(me)?attack<0:attack>=0&&defense<0&&beats(card,new Card(6+attack/4,attack%4),s.optInt("trump")));button.setEnabled(canPlay);button.setOnClickListener(v->playDurakCard(code,game,draw));}
         };
-        take.setOnClickListener(v->takeDurakCard(game,draw));draw[0].run();dialog.setOnDismissListener(d->{closed[0]=true;});dialog.show();poll[0]=()->{if(closed[0])return;network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));if(fresh!=null)runOnUiThread(()->{try{game[0]=fresh;draw[0].run();}catch(Exception ignored){}});}catch(Exception ignored){}if(!closed[0])gameHandler.postDelayed(poll[0],1400);});};gameHandler.postDelayed(poll[0],1400);
+        take.setOnClickListener(v->takeDurakCard(game,draw));restart.setOnClickListener(v->confirmGameReset("durak",game,draw[0]));draw[0].run();dialog.setOnDismissListener(d->{closed[0]=true;});dialog.show();poll[0]=()->{if(closed[0])return;network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));if(fresh!=null)runOnUiThread(()->{try{game[0]=fresh;draw[0].run();}catch(Exception ignored){}});}catch(Exception ignored){}if(!closed[0])gameHandler.postDelayed(poll[0],1400);});};gameHandler.postDelayed(poll[0],1400);
     }
     private String showDurakCard(int code){return new Card(6+code/4,code%4).show();}
     private void playDurakCard(int code,JSONObject[] game,Runnable[] draw){network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));JSONObject s=new JSONObject(fresh.getJSONObject("state").toString());String me=pairGames.userId(),attacker=s.optString("attacker");boolean first=me.equals(s.optString("p1"));String handKey=first?"p1Hand":"p2Hand";JSONArray hand=s.optJSONArray(handKey);int attack=s.optInt("attack",-1),defense=s.optInt("defense",-1);int cardIndex=-1;for(int i=0;i<hand.length();i++)if(hand.optInt(i)==code)cardIndex=i;if(cardIndex<0)throw new Exception("Этой карты уже нет в вашей руке");if(me.equals(attacker)){if(attack>=0)throw new Exception("Сначала завершите текущую пару карт");s.put("attack",code);hand.remove(cardIndex);}else{if(attack<0||defense>=0)throw new Exception("Сейчас нельзя отбить карту");Card c=new Card(6+code/4,code%4),a=new Card(6+attack/4,attack%4);if(!beats(c,a,s.optInt("trump")))throw new Exception("Подходит только карта выше по масти или козырь");s.put("defense",code);hand.remove(cardIndex);settleDurak(s,true);}
@@ -3955,16 +4376,18 @@ public class MainActivity extends Activity {
     private void onlineCoupleQuiz(String mode,String question){if(!pairGames.ready()){toast("Сначала войдите в аккаунт и подключитесь к партнёру");return;}network.execute(()->{try{JSONObject g=openOrJoinGame("couple_quiz",question);runOnUiThread(()->showOnlineCoupleQuiz(g));}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});}
     private void showOnlineCoupleQuiz(JSONObject initial){
         final JSONObject[] game={initial};final boolean[] closed={false};final Runnable[] poll={null};LinearLayout panel=column();panel.setPadding(dp(18),dp(8),dp(18),dp(8));TextView prompt=text("",16,INK,true);panel.addView(prompt);TextView status=text("",13,PURPLE,true);LinearLayout.LayoutParams sp=new LinearLayout.LayoutParams(-1,-2);sp.topMargin=dp(10);panel.addView(status,sp);EditText answer=new EditText(this);answer.setHint("Ваш ответ — он пока скрыт от партнёра");answer.setMinLines(2);LinearLayout.LayoutParams ep=new LinearLayout.LayoutParams(-1,-2);ep.topMargin=dp(9);panel.addView(answer,ep);TextView submit=pill("Отправить ответ",PURPLE);submit.setGravity(Gravity.CENTER);LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(-1,dp(46));bp.topMargin=dp(8);panel.addView(submit,bp);TextView reveal=text("",14,INK,false);LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,-2);rp.topMargin=dp(10);panel.addView(reveal,rp);
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Вопрос для двоих · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();Runnable[] draw={null};draw[0]=()->{JSONObject g=game[0],s=g.optJSONObject("state");if(s==null)return;String me=pairGames.userId(),p2=s.optString("p2"),ownKey=me.equals(s.optString("p1"))?"p1Answer":"p2Answer",a=s.optString("p1Answer"),b=s.optString("p2Answer");prompt.setText(s.optString("question"));boolean ready="active".equals(g.optString("status")),done=!a.isEmpty()&&!b.isEmpty();status.setText(p2.isEmpty()?"Ждём, когда партнёр присоединится со своего телефона.":done?"Оба ответа открыты 💛":!ready?"Ожидаем партнёра…":s.optString(ownKey).isEmpty()?"Напишите свой ответ — партнёр увидит его, когда ответит тоже.":"Ваш ответ сохранён. Ждём ответ партнёра…");answer.setVisibility(ready&&!done&&s.optString(ownKey).isEmpty()?View.VISIBLE:View.GONE);submit.setVisibility(answer.getVisibility());reveal.setText(done?"Ваш ответ: "+a+"\nОтвет партнёра: "+b:"");};submit.setOnClickListener(v->{String value=answer.getText().toString().trim();if(value.isEmpty())return;network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));JSONObject s=new JSONObject(fresh.getJSONObject("state").toString());String key=pairGames.userId().equals(s.optString("p1"))?"p1Answer":"p2Answer";if(!s.optString(key).isEmpty())return;s.put(key,value);boolean done=!s.optString("p1Answer").isEmpty()&&!s.optString("p2Answer").isEmpty();JSONObject saved=pairGames.update(fresh.getString("id"),fresh.optLong("version"),s,done?"finished":"active");runOnUiThread(()->{try{game[0]=saved;answer.setText("");draw[0].run();}catch(Exception e){toast("Ошибка игры: "+e.getMessage());}});}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});});draw[0].run();dialog.setOnDismissListener(d->closed[0]=true);dialog.show();poll[0]=()->{if(closed[0])return;network.execute(()->{try{JSONObject g=pairGames.fetch(game[0].getString("id"));if(g!=null)runOnUiThread(()->{try{game[0]=g;draw[0].run();}catch(Exception ignored){}});}catch(Exception ignored){}if(!closed[0])gameHandler.postDelayed(poll[0],1600);});};gameHandler.postDelayed(poll[0],1600);
+        TextView restart=pill("Начать заново",PURPLE);restart.setGravity(Gravity.CENTER);LinearLayout.LayoutParams restartParams=new LinearLayout.LayoutParams(-1,dp(46));restartParams.topMargin=dp(8);panel.addView(restart,restartParams);
+        AlertDialog dialog=VmesteDialogTheme.builder(this).setTitle("Вопрос для двоих · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();Runnable[] draw={null};draw[0]=()->{JSONObject g=game[0],s=g.optJSONObject("state");if(s==null)return;String me=pairGames.userId(),p1=s.optString("p1"),p2=s.optString("p2"),ownKey=me.equals(p1)?"p1Answer":"p2Answer",a=s.optString("p1Answer"),b=s.optString("p2Answer");prompt.setText(s.optString("question"));boolean ready="active".equals(g.optString("status")),done=!a.isEmpty()&&!b.isEmpty();status.setText(p2.isEmpty()?"Ждём, когда партнёр присоединится со своего телефона.":done?"Оба ответа открыты 💛":!ready?"Ожидаем партнёра…":s.optString(ownKey).isEmpty()?"Напишите свой ответ — партнёр увидит его, когда ответит тоже.":"Ваш ответ сохранён. Ждём ответ партнёра…");answer.setVisibility(ready&&!done&&s.optString(ownKey).isEmpty()?View.VISIBLE:View.GONE);submit.setVisibility(answer.getVisibility());reveal.setText(done?"Ваш ответ: "+a+"\nОтвет партнёра: "+b:"");restart.setVisibility(GameRestartPolicy.canRestart(g.optString("status"),p1,p2,me)?View.VISIBLE:View.GONE);};submit.setOnClickListener(v->{String value=answer.getText().toString().trim();if(value.isEmpty())return;network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));JSONObject s=new JSONObject(fresh.getJSONObject("state").toString());String key=pairGames.userId().equals(s.optString("p1"))?"p1Answer":"p2Answer";if(!s.optString(key).isEmpty())return;s.put(key,value);boolean done=!s.optString("p1Answer").isEmpty()&&!s.optString("p2Answer").isEmpty();JSONObject saved=pairGames.update(fresh.getString("id"),fresh.optLong("version"),s,done?"finished":"active");runOnUiThread(()->{try{game[0]=saved;answer.setText("");draw[0].run();}catch(Exception e){toast("Ошибка игры: "+e.getMessage());}});}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});});restart.setOnClickListener(v->confirmGameReset("couple_quiz",game,draw[0]));draw[0].run();dialog.setOnDismissListener(d->closed[0]=true);dialog.show();poll[0]=()->{if(closed[0])return;network.execute(()->{try{JSONObject g=pairGames.fetch(game[0].getString("id"));if(g!=null)runOnUiThread(()->{try{game[0]=g;draw[0].run();}catch(Exception ignored){}});}catch(Exception ignored){}if(!closed[0])gameHandler.postDelayed(poll[0],1600);});};gameHandler.postDelayed(poll[0],1600);
     }
     private void onlineGuessTune(){if(!pairGames.ready()){toast("Сначала войдите в аккаунт и подключитесь к партнёру");return;}network.execute(()->{try{JSONObject g=openOrJoinGame("guess_tune");runOnUiThread(()->showOnlineGuessTune(g));}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});}
     private void showOnlineGuessTune(JSONObject initial){
         final JSONObject[] game={initial};final boolean[] closed={false};final Runnable[] poll={null};LinearLayout panel=column();panel.setPadding(dp(18),dp(8),dp(18),dp(8));TextView prompt=text("",16,INK,true);panel.addView(prompt);TextView status=text("",13,PURPLE,true);LinearLayout.LayoutParams sp=new LinearLayout.LayoutParams(-1,-2);sp.topMargin=dp(9);panel.addView(status,sp);EditText answer=new EditText(this);answer.setSingleLine(true);answer.setHint("Введите название мелодии");LinearLayout.LayoutParams ep=new LinearLayout.LayoutParams(-1,-2);ep.topMargin=dp(9);panel.addView(answer,ep);TextView action=pill("Я напел — угадывай",PURPLE);action.setGravity(Gravity.CENTER);LinearLayout.LayoutParams ap=new LinearLayout.LayoutParams(-1,dp(46));ap.topMargin=dp(8);panel.addView(action,ap);TextView result=text("",14,INK,true);panel.addView(result);
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Угадай мелодию · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();Runnable[] draw={null};draw[0]=()->{JSONObject s=game[0].optJSONObject("state");if(s==null)return;String me=pairGames.userId();boolean host=me.equals(s.optString("p1"));String guess=s.optString("p2Answer"),winner=s.optString("winner");if(host){prompt.setText("Напойте партнёру: «"+s.optString("correct")+"».");answer.setVisibility(View.GONE);action.setVisibility("finished".equals(game[0].optString("status"))?View.GONE:View.VISIBLE);status.setText(s.optBoolean("p1Ready")?"Партнёр угадывает…":"Найдите эту мелодию и спойте её вслух.");result.setText(!guess.isEmpty()?"Ответ: "+guess+" · "+(winner.equals(me)?"Угадано! 🎉":"Попробуйте ещё раз в следующей партии") : "");}else{prompt.setText(s.optBoolean("p1Ready")?"Партнёр напел мелодию. Что это было?":"Ждём, пока партнёр напоёт мелодию…");answer.setVisibility(s.optBoolean("p1Ready")&&guess.isEmpty()?View.VISIBLE:View.GONE);action.setVisibility(answer.getVisibility());action.setText("Отправить ответ");status.setText(guess.isEmpty()?"Введите название, затем отправьте ответ.":"Ответ отправлен. Ждём результат…");result.setText(!guess.isEmpty()?"Ответ: "+guess+" · "+(winner.equals(me)?"Верно! 🎉":"Не угадано — следующая песня будет вашей") : "");}};
-        action.setOnClickListener(v->{boolean host=pairGames.userId().equals(game[0].optJSONObject("state").optString("p1"));String value=answer.getText().toString().trim();if(!host&&value.isEmpty())return;network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));JSONObject s=new JSONObject(fresh.getJSONObject("state").toString());String next="active";if(host){s.put("p1Ready",true);}else{if(!s.optBoolean("p1Ready"))throw new Exception("Сначала дождитесь мелодию");s.put("p2Answer",value);boolean correct=value.equalsIgnoreCase(s.optString("correct"));if(correct)s.put("winner",pairGames.userId());else s.put("winner","wrong");next="finished";}JSONObject saved=pairGames.update(fresh.getString("id"),fresh.optLong("version"),s,next);runOnUiThread(()->{try{game[0]=saved;answer.setText("");draw[0].run();}catch(Exception e){toast("Ошибка игры: "+e.getMessage());}});}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});});draw[0].run();dialog.setOnDismissListener(d->closed[0]=true);dialog.show();poll[0]=()->{if(closed[0])return;network.execute(()->{try{JSONObject g=pairGames.fetch(game[0].getString("id"));if(g!=null)runOnUiThread(()->{try{game[0]=g;draw[0].run();}catch(Exception ignored){}});}catch(Exception ignored){}if(!closed[0])gameHandler.postDelayed(poll[0],1600);});};gameHandler.postDelayed(poll[0],1600);
+        TextView restart=pill("Начать заново",PURPLE);restart.setGravity(Gravity.CENTER);LinearLayout.LayoutParams restartParams=new LinearLayout.LayoutParams(-1,dp(46));restartParams.topMargin=dp(8);panel.addView(restart,restartParams);
+        AlertDialog dialog=VmesteDialogTheme.builder(this).setTitle("Угадай мелодию · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();Runnable[] draw={null};draw[0]=()->{JSONObject g=game[0],s=g.optJSONObject("state");if(s==null)return;String me=pairGames.userId(),p1=s.optString("p1"),p2=s.optString("p2");boolean host=me.equals(p1);String guess=s.optString("p2Answer"),winner=s.optString("winner");restart.setVisibility(GameRestartPolicy.canRestart(g.optString("status"),p1,p2,me)?View.VISIBLE:View.GONE);if(host){prompt.setText("Напойте партнёру: «"+s.optString("correct")+"».");answer.setVisibility(View.GONE);action.setVisibility("finished".equals(g.optString("status"))?View.GONE:View.VISIBLE);status.setText(s.optBoolean("p1Ready")?"Партнёр угадывает…":"Найдите эту мелодию и спойте её вслух.");result.setText(!guess.isEmpty()?"Ответ: "+guess+" · "+(winner.equals(me)?"Угадано! 🎉":"Попробуйте ещё раз в следующей партии") : "");}else{prompt.setText(s.optBoolean("p1Ready")?"Партнёр напел мелодию. Что это было?":"Ждём, пока партнёр напоёт мелодию…");answer.setVisibility(s.optBoolean("p1Ready")&&guess.isEmpty()?View.VISIBLE:View.GONE);action.setVisibility(answer.getVisibility());action.setText("Отправить ответ");status.setText(guess.isEmpty()?"Введите название, затем отправьте ответ.":"Ответ отправлен. Ждём результат…");result.setText(!guess.isEmpty()?"Ответ: "+guess+" · "+(winner.equals(me)?"Верно! 🎉":"Не угадано — следующая песня будет вашей") : "");}};
+        action.setOnClickListener(v->{boolean host=pairGames.userId().equals(game[0].optJSONObject("state").optString("p1"));String value=answer.getText().toString().trim();if(!host&&value.isEmpty())return;network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));JSONObject s=new JSONObject(fresh.getJSONObject("state").toString());String next="active";if(host){s.put("p1Ready",true);}else{if(!s.optBoolean("p1Ready"))throw new Exception("Сначала дождитесь мелодию");s.put("p2Answer",value);boolean correct=value.equalsIgnoreCase(s.optString("correct"));if(correct)s.put("winner",pairGames.userId());else s.put("winner","wrong");next="finished";}JSONObject saved=pairGames.update(fresh.getString("id"),fresh.optLong("version"),s,next);runOnUiThread(()->{try{game[0]=saved;answer.setText("");draw[0].run();}catch(Exception e){toast("Ошибка игры: "+e.getMessage());}});}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});});restart.setOnClickListener(v->confirmGameReset("guess_tune",game,draw[0]));draw[0].run();dialog.setOnDismissListener(d->closed[0]=true);dialog.show();poll[0]=()->{if(closed[0])return;network.execute(()->{try{JSONObject g=pairGames.fetch(game[0].getString("id"));if(g!=null)runOnUiThread(()->{try{game[0]=g;draw[0].run();}catch(Exception ignored){}});}catch(Exception ignored){}if(!closed[0])gameHandler.postDelayed(poll[0],1600);});};gameHandler.postDelayed(poll[0],1600);
     }
     private void promptGame(String q) {
-        new AlertDialog.Builder(this).setTitle("Вопрос для двоих").setMessage(q+"\n\nПо очереди назовите ответ и сравните, насколько хорошо вы друг друга знаете!")
+        VmesteDialogTheme.builder(this).setTitle("Вопрос для двоих").setMessage(q+"\n\nПо очереди назовите ответ и сравните, насколько хорошо вы друг друга знаете!")
                 .setPositiveButton("Дальше",null).show();
     }
     private void ticTacToe() {
@@ -3987,7 +4410,7 @@ public class MainActivity extends Activity {
             }
         }
         TextView resetButton=pill("Новая партия",PURPLE);resetButton.setGravity(Gravity.CENTER);LinearLayout.LayoutParams resetParams=new LinearLayout.LayoutParams(-1,-2);resetParams.topMargin=dp(12);panel.addView(resetButton,resetParams);resetButton.setOnClickListener(v->reset[0].run());
-        new AlertDialog.Builder(this).setTitle("Крестики-нолики").setView(panel).setNegativeButton("Закрыть",null).show();
+        VmesteDialogTheme.builder(this).setTitle("Крестики-нолики").setView(panel).setNegativeButton("Закрыть",null).show();
     }
     private boolean hasWinner(char[] b,char p){
         int[][] lines={{0,1,2},{3,4,5},{6,7,8},{0,3,6},{1,4,7},{2,5,8},{0,4,8},{2,4,6}};
@@ -4001,13 +4424,13 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams statusParams=new LinearLayout.LayoutParams(-1,-2);statusParams.bottomMargin=dp(10);panel.addView(status,statusParams);
         LinearLayout board=column();board.setPadding(dp(5),dp(5),dp(5),dp(5));board.setBackground(shape(0xFFDCECF1,18));panel.addView(board);TextView[] cells=new TextView[size*size];
         for(int row=0;row<size;row++){LinearLayout line=new LinearLayout(this);line.setGravity(Gravity.CENTER);board.addView(line);for(int col=0;col<size;col++){int i=row*size+col;TextView cell=text("",16,INK,true);cells[i]=cell;cell.setGravity(Gravity.CENTER);cell.setBackground(shape(0xFFB9D9E4,7));LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(0,dp(36),1);cp.setMargins(dp(1),dp(1),dp(1),dp(1));line.addView(cell,cp);cell.setOnClickListener(v->{if(fired[i]||finished[0])return;fired[i]=true;shots[0]++;int ship=shipAt[i];if(ship>0){hits[0]++;hitsPerShip[ship-1]++;cell.setText("✦");cell.setTextColor(0xFFC64D61);cell.setBackground(shape(0xFFF5D8D9,7));boolean sunk=hitsPerShip[ship-1]>=shipLengths[ship-1];status.setText((sunk?new String[]{"","Эсминец потоплен!","Катер потоплен!","Шлюпка потоплена!"}[ship]:"Попадание!")+"\nПопаданий: "+hits[0]+" из 6 · выстрелов: "+shots[0]);}else{cell.setText("·");cell.setTextColor(0xFF5F8EA4);cell.setBackground(shape(0xFFEAF4F6,7));status.setText("Мимо. Попаданий: "+hits[0]+" из 6 · выстрелов: "+shots[0]);}if(hits[0]==6){finished[0]=true;status.setText("Флот найден! Отличная стрельба ⚓\nВсего выстрелов: "+shots[0]);}});}}
-        new AlertDialog.Builder(this).setTitle("Морской бой · поиск флота").setView(panel).setNegativeButton("Закрыть",null).show();
+        VmesteDialogTheme.builder(this).setTitle("Морской бой · поиск флота").setView(panel).setNegativeButton("Закрыть",null).show();
     }
     private void guessTune() {
         String[] tunes={"Ода к радости","Вальс цветов","Маленькая ночная серенада","Щелкунчик: Танец феи Драже"};
         int answer=new Random().nextInt(tunes.length);int wrong=(answer+1+new Random().nextInt(tunes.length-1))%tunes.length;
         String hint=tunes[answer];String[] options={hint,tunes[wrong]};if(new Random().nextBoolean()){String t=options[0];options[0]=options[1];options[1]=t;}
-        new AlertDialog.Builder(this).setTitle("Угадай мелодию")
+        VmesteDialogTheme.builder(this).setTitle("Угадай мелодию")
                 .setMessage("Один из вас напевает мелодию, второй выбирает название. После ответа поменяйтесь!")
                 .setSingleChoiceItems(options,-1,(dialog,which)->{String result=options[which].equals(hint)?"Верно! Отличная музыкальная память 💛":"Правильный ответ: "+hint;
                     Toast.makeText(this,result,Toast.LENGTH_LONG).show();dialog.dismiss();}).setNegativeButton("Отмена",null).show();
@@ -4027,7 +4450,7 @@ public class MainActivity extends Activity {
         TextView tableCards=text("Стол пуст",15,0xFFFFFFFF,true);tableCards.setGravity(Gravity.CENTER);tableCards.setPadding(dp(8),dp(16),dp(8),dp(16));table.addView(tableCards);
         TextView take=pill("Забрать карту",PURPLE);take.setGravity(Gravity.CENTER);take.setVisibility(View.GONE);LinearLayout.LayoutParams takeParams=new LinearLayout.LayoutParams(-2,-2);takeParams.gravity=Gravity.CENTER;table.addView(take,takeParams);
         TextView handTitle=text("Ваши карты",13,MUTED,true);handTitle.setPadding(0,dp(13),0,dp(6));panel.addView(handTitle);LinearLayout cards=new LinearLayout(this);cards.setGravity(Gravity.CENTER);panel.addView(cards);
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Дурак · карточная партия").setView(panel).setNegativeButton("Завершить",null).create();
+        AlertDialog dialog=VmesteDialogTheme.builder(this).setTitle("Дурак · карточная партия").setView(panel).setNegativeButton("Завершить",null).create();
         Runnable[] draw={null};draw[0]=()->{
             cards.removeAllViews();rival.setText("Соперник · карт: "+cpuHand.size()+"   ·   колода: "+deck.size());
             if(finished[0])return;
@@ -4063,6 +4486,162 @@ public class MainActivity extends Activity {
         }
     }
 
+    private long currentQuestionDay() {
+        Calendar local = Calendar.getInstance();
+        Calendar utcDate = new java.util.GregorianCalendar(java.util.TimeZone.getTimeZone("UTC"));
+        utcDate.clear();
+        utcDate.set(local.get(Calendar.YEAR), local.get(Calendar.MONTH), local.get(Calendar.DAY_OF_MONTH));
+        return utcDate.getTimeInMillis() / 86_400_000L;
+    }
+
+    private void renderDailyQuestionAnswers(String question, long day) {
+        heading("Ответы друг другу", "Ответьте на один и тот же вопрос");
+        JSONArray answers = read("answers");
+        boolean hasCurrentAnswers = false;
+        ArrayList<JSONObject> history = new ArrayList<>();
+        String currentUser = sync == null ? "" : sync.userId();
+        for (int i = 0; i < answers.length(); i++) {
+            JSONObject item = answers.optJSONObject(i);
+            if (item == null) continue;
+            if (item.optLong("question_date", Long.MIN_VALUE) == day
+                    && question.equals(item.optString("question_text"))) {
+                hasCurrentAnswers = true;
+                LinearLayout answerCard = card();
+                String author = item.optString("answerer_id");
+                if (author.isEmpty()) author = item.optString("created_by");
+                String label = !currentUser.isEmpty() && currentUser.equals(author)
+                        ? "Ваш ответ" : author.isEmpty() ? "Ответ" : "Ответ партнёра";
+                answerCard.addView(text(label, 12, PURPLE, true));
+                answerCard.addView(text(item.optString("title"), 14, INK, false));
+                body.addView(answerCard);
+            } else {
+                history.add(item);
+            }
+        }
+        if (!hasCurrentAnswers) {
+            body.addView(text("Пока нет ответов. Можно начать с вашего.", 13, MUTED, false));
+        }
+        if (!history.isEmpty()) {
+            heading("Предыдущие ответы", "Ваши ответы сохраняются");
+            for (JSONObject item : history) {
+                LinearLayout answerCard = card();
+                String previousQuestion = item.optString("question_text");
+                answerCard.addView(text(previousQuestion.isEmpty() ? "Ответ на прежний вопрос"
+                        : previousQuestion, 12, MUTED, true));
+                answerCard.addView(text(item.optString("title"), 14, INK, false));
+                body.addView(answerCard);
+            }
+        }
+    }
+
+    private void dailyQuestionCreateDialog() {
+        EditText input = new EditText(this);
+        input.setHint("Напишите вопрос для вас двоих");
+        input.setMinLines(2);
+        input.setMaxLines(4);
+        input.setPadding(dp(18), dp(12), dp(18), dp(12));
+        AlertDialog dialog = VmesteDialogTheme.builder(this).setTitle("Свой вопрос дня")
+                .setMessage("Он станет общим вопросом на сегодня и останется в вашей подборке.")
+                .setView(input).setNegativeButton("Отмена", null)
+                .setPositiveButton("Добавить", null).create();
+        dialog.setOnShowListener(v -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button -> {
+            String prompt = input.getText().toString().trim();
+            if (prompt.length() < 5) {
+                input.setError("Добавьте немного больше деталей");
+                return;
+            }
+            if (prompt.length() > 240) {
+                input.setError("Вопрос должен быть не длиннее 240 символов");
+                return;
+            }
+            JSONArray questions = read("daily_questions");
+            JSONObject existing = null;
+            for (int i = 0; i < questions.length(); i++) {
+                JSONObject item = questions.optJSONObject(i);
+                if (item != null && prompt.equalsIgnoreCase(item.optString("title").trim())) {
+                    existing = item;
+                    break;
+                }
+            }
+            long day = currentQuestionDay();
+            try {
+                if (existing == null) {
+                    existing = new JSONObject();
+                    existing.put("id", UUID.randomUUID().toString());
+                    existing.put("title", prompt);
+                    existing.put("detail", "Добавлен вами");
+                    existing.put("done", false);
+                    existing.put("ts", System.currentTimeMillis());
+                    questions.put(existing);
+                }
+                existing.put("question_date", day);
+                save("daily_questions", questions);
+                syncItem("daily_questions", existing);
+                dialog.dismiss();
+                render();
+                toast("Ваш вопрос выбран на сегодня");
+            } catch (Exception e) {
+                toast("Не удалось сохранить вопрос: " + e.getMessage());
+            }
+        }));
+        dialog.show();
+    }
+
+    private void dailyQuestionAnswerDialog(String question, long day) {
+        EditText input = new EditText(this);
+        input.setHint("Ваш ответ");
+        input.setMinLines(2);
+        input.setMaxLines(5);
+        input.setPadding(dp(18), dp(12), dp(18), dp(12));
+        AlertDialog dialog = VmesteDialogTheme.builder(this).setTitle("Ответить")
+                .setMessage(question).setView(input).setNegativeButton("Отмена", null)
+                .setPositiveButton("Сохранить ответ", null).create();
+        dialog.setOnShowListener(v -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button -> {
+            String answer = input.getText().toString().trim();
+            if (answer.isEmpty()) {
+                input.setError("Напишите ответ");
+                return;
+            }
+            try {
+                String userId = sync == null ? "" : sync.userId();
+                JSONArray rows = read("answers");
+                JSONObject item = null;
+                int itemIndex = -1;
+                for (int i = 0; i < rows.length(); i++) {
+                    JSONObject candidate = rows.optJSONObject(i);
+                    if (candidate == null || candidate.optLong("question_date", Long.MIN_VALUE) != day
+                            || !question.equals(candidate.optString("question_text"))) continue;
+                    String owner = candidate.optString("answerer_id");
+                    if (owner.isEmpty()) owner = candidate.optString("created_by");
+                    if (userId.equals(owner)) {
+                        item = candidate;
+                        itemIndex = i;
+                        break;
+                    }
+                }
+                if (item == null) {
+                    item = new JSONObject();
+                    item.put("id", UUID.randomUUID().toString());
+                }
+                item.put("title", answer);
+                item.put("detail", "Ответ на вопрос дня");
+                item.put("question_date", day);
+                item.put("question_text", question);
+                item.put("answerer_id", userId);
+                item.put("ts", System.currentTimeMillis());
+                if (itemIndex >= 0) rows.put(itemIndex, item);
+                else rows.put(item);
+                save("answers", rows);
+                syncItem("answers", item);
+                dialog.dismiss();
+                render();
+            } catch (Exception e) {
+                toast("Не удалось сохранить ответ: " + e.getMessage());
+            }
+        }));
+        dialog.show();
+    }
+
     private void renderChat() {
         if(contentScroll!=null)contentScroll.setFillViewport(true);
         JSONArray messages=read("messages");
@@ -4082,6 +4661,11 @@ public class MainActivity extends Activity {
             ScrollView list=messageScroll[0];
             if(list!=null)list.post(()->list.fullScroll(ScrollView.FOCUS_DOWN));
         });
+        if(!chatInteractionIssue.isEmpty()){
+            TextView issue=text(chatInteractionIssue,11,MUTED,false);
+            issue.setPadding(dp(6),dp(3),dp(6),dp(6));
+            body.addView(issue);
+        }
         LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);box.setPadding(dp(8),dp(8),dp(8),dp(8));box.setBackgroundColor(0x00000000);
         ScrollView scroll=new ScrollView(this);messageScroll[0]=scroll;scroll.setFillViewport(true);
         scroll.addView(box,new ScrollView.LayoutParams(-1,-2));
@@ -4118,28 +4702,49 @@ public class MainActivity extends Activity {
             String avatarSrc=mine?localAvatarUri():prefs.getString("partner_avatar_uri","");
             if(!mine&&avatarSrc.isEmpty())avatarSrc=prefs.getString("partner_avatar_data","");
             boolean hasPhoto=!avatarSrc.isEmpty();
-            if(hasPhoto){ImageView avatarImg=new ImageView(this);avatarImg.setScaleType(ImageView.ScaleType.CENTER_CROP);avatarImg.setBackgroundColor(0xFFE8E0EC);setAvatarPicture(avatarImg,avatarSrc,22);rowWrap.addView(avatarImg,new LinearLayout.LayoutParams(dp(22),dp(22)));} else rowWrap.addView(avatar,new LinearLayout.LayoutParams(dp(28),dp(28)));
+            if(hasPhoto){
+                ImageView avatarImg=new ImageView(this);avatarImg.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                avatarImg.setBackgroundColor(0xFFE8E0EC);
+                if(setAvatarPicture(avatarImg,avatarSrc,22))rowWrap.addView(avatarImg,new LinearLayout.LayoutParams(dp(22),dp(22)));
+                else rowWrap.addView(avatar,new LinearLayout.LayoutParams(dp(28),dp(28)));
+            }else rowWrap.addView(avatar,new LinearLayout.LayoutParams(dp(28),dp(28)));
             String messageBody=row.optString("title");JSONObject media=null;
             try{JSONObject parsed=new JSONObject(messageBody);if(parsed.optBoolean("vmeste_media"))media=parsed;}catch(Exception ignored){}
             String displayText=media==null?messageBody:("Кружок".equals(media.optString("type"))?"◉ Видеокружок":("Голосовое".equals(media.optString("type"))?"▶ Голосовое":"GIF".equals(media.optString("type"))?"GIF · посмотреть":"Фото".equals(media.optString("type"))?"📷 Фото":("Видео".equals(media.optString("type"))?"▶ Видео":"♫ Аудио")));
+            boolean deleted=!row.optString("deleted_at","").isEmpty();
+            if(deleted)displayText="Сообщение удалено";
             TextView bubble=text(displayText,14,INK,false);bubble.setPadding(dp(12),dp(9),dp(12),dp(9));bubble.setMaxWidth(dp(260));bubble.setBackground(shape(mine?0xFFEFE5F6:0xFFF3F4F6,16));
-            if(mine&&media==null){
-                bubble.setOnLongClickListener(v->{showMessageActions(row);return true;});
-                bubble.setContentDescription("Ваше сообщение. Нажмите и удерживайте, чтобы изменить");
+            LinearLayout bubbleWrap=new LinearLayout(this);bubbleWrap.setOrientation(LinearLayout.VERTICAL);
+            String replyPreview=row.optString("reply_preview","");
+            if(!replyPreview.isEmpty()){
+                TextView reply=text("Ответ на: "+replyPreview,10,MUTED,false);
+                reply.setPadding(dp(12),dp(5),dp(12),dp(2));bubbleWrap.addView(reply);
             }
-            if(media!=null){String type=media.optString("type"),path=media.optString("local_path",media.optString("path"));bubble.setOnClickListener(v->playChatAttachment(path,type));}
+            if(!row.optString("forwarded_from","").isEmpty()){
+                TextView forwarded=text("Переслано от "+row.optString("forwarded_from_name","партнёра"),10,MUTED,false);
+                forwarded.setPadding(dp(12),dp(3),dp(12),dp(2));bubbleWrap.addView(forwarded);
+            }
+            bubbleWrap.addView(bubble);
+            if(!deleted&&media!=null){String type=media.optString("type"),path=media.optString("local_path",media.optString("path"));bubble.setOnClickListener(v->playChatAttachment(path,type));}
             else {
-                String link=SharedLink.firstHttpUrl(displayText);
+                String link=deleted?"":SharedLink.firstHttpUrl(displayText);
                 if(!link.isEmpty()){bubble.setOnClickListener(v->openSharedLink(link));bubble.setContentDescription("Открыть ссылку во внутреннем просмотре");}
             }
             long ts=row.optLong("ts",0);String timeStr=ts>0?android.text.format.DateFormat.format("HH:mm",ts).toString():"";
             if(row.has("edited_at"))timeStr += (timeStr.isEmpty()?"":" · ")+"изменено";
+            if(mine)timeStr += (timeStr.isEmpty()?"":" · ")+messageReceiptLabel(row.optString("id"));
             TextView time=text(timeStr,9,MUTED,false);
-            LinearLayout bubbleWrap=new LinearLayout(this);bubbleWrap.setOrientation(LinearLayout.VERTICAL);bubbleWrap.addView(bubble);bubbleWrap.addView(time);
+            bubbleWrap.addView(time);
             LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(-2,-2);bp.gravity=mine?Gravity.RIGHT:Gravity.LEFT;bp.setMargins(mine?dp(50):dp(8),0,mine?dp(8):dp(50),0);rowWrap.addView(bubbleWrap,bp);
             line.addView(rowWrap);
+            renderMessageReactions(row.optString("id"),line);
+            bubble.setOnLongClickListener(v->{showMessageActions(row);return true;});
             box.addView(line);
         }
+        chatTypingStatus=text("",11,MUTED,false);
+        chatTypingStatus.setPadding(dp(8),dp(2),dp(8),dp(4));
+        body.addView(chatTypingStatus);
+        updateChatTypingStatus();
         startChatRefresh();
         box.post(()->{
             if(chatScrollPolicy.isFollowingLatest())scroll.fullScroll(ScrollView.FOCUS_DOWN);
@@ -4148,9 +4753,207 @@ public class MainActivity extends Activity {
         });
     }
 
+    private void renderMessageReactions(String messageId,LinearLayout parent){
+        java.util.LinkedHashMap<String,Integer> counts=new java.util.LinkedHashMap<>();
+        String myReaction="";
+        for(int i=0;i<chatReactions.length();i++){
+            JSONObject reaction=chatReactions.optJSONObject(i);
+            if(reaction==null||!messageId.equals(reaction.optString("message_id")))continue;
+            String emoji=reaction.optString("emoji","");
+            if(emoji.isEmpty())continue;
+            counts.put(emoji,counts.containsKey(emoji)?counts.get(emoji)+1:1);
+            if(sync.userId().equals(reaction.optString("user_id")))myReaction=emoji;
+        }
+        if(counts.isEmpty())return;
+        LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);
+        for(java.util.Map.Entry<String,Integer> entry:counts.entrySet()){
+            String emoji=entry.getKey();
+            TextView chip=text(emoji+" "+entry.getValue(),12,PURPLE,true);
+            chip.setGravity(Gravity.CENTER);chip.setPadding(dp(7),dp(4),dp(7),dp(4));
+            chip.setBackground(shape(emoji.equals(myReaction)?PALE:PAPER,14));
+            LinearLayout.LayoutParams params=new LinearLayout.LayoutParams(-2,-2);
+            params.setMargins(dp(4),dp(2),dp(2),dp(2));row.addView(chip,params);
+            chip.setOnClickListener(v->showMessageReactionPicker(messageId));
+        }
+        parent.addView(row);
+    }
+
+    private String messageReceiptLabel(String messageId){
+        for(int i=0;i<chatReceipts.length();i++){
+            JSONObject receipt=chatReceipts.optJSONObject(i);
+            if(receipt==null||!messageId.equals(receipt.optString("message_id")))continue;
+            if(!receipt.optString("read_at","").isEmpty())return "✓✓ Прочитано";
+            if(!receipt.optString("delivered_at","").isEmpty())return "✓✓ Доставлено";
+        }
+        return "✓ Отправлено";
+    }
+
+    private void updateChatTypingStatus(){
+        if(chatTypingStatus==null)return;
+        String partnerId=prefs.getString("partner_user_id","");
+        long now=System.currentTimeMillis();boolean typing=false;
+        for(int i=0;i<chatPresence.length();i++){
+            JSONObject row=chatPresence.optJSONObject(i);
+            if(row==null||partnerId.isEmpty()||!partnerId.equals(row.optString("user_id")))continue;
+            long last=SupabaseSync.parseTimestampMillis(row.optString("last_typed_at",""));
+            typing=last>0&&now-last<=6000;
+        }
+        chatTypingStatus.setText(typing?"Партнёр печатает…":"");
+        chatTypingStatus.setVisibility(typing?View.VISIBLE:View.GONE);
+    }
+
+    private void scheduleChatTyping(){
+        if(!sync.ready()||pendingSharedText.trim().isEmpty()||chatTypingRunnable!=null)return;
+        long elapsed=System.currentTimeMillis()-lastTypingSentAt;
+        long delay=lastTypingSentAt==0?250:Math.max(100,2000-elapsed);
+        chatTypingRunnable=()->{
+            chatTypingRunnable=null;
+            if(!sync.ready()||pendingSharedText.trim().isEmpty())return;
+            network.execute(()->{
+                try{sync.publishChatTyping();long sentAt=System.currentTimeMillis();runOnUiThread(()->lastTypingSentAt=sentAt);}
+                catch(Exception e){android.util.Log.w("VmesteChat","Could not publish typing status",e);}
+            });
+        };
+        gameHandler.postDelayed(chatTypingRunnable,delay);
+    }
+
+    private void showMessageReactionPicker(String messageId){
+        if(!sync.ready()){toast("Подключитесь к паре, чтобы поставить реакцию");return;}
+        String[] emojis={"❤️","😂","😍","👍","🔥","👏","😮","😢"};
+        VmesteDialogTheme.builder(this).setTitle("Реакция на сообщение").setItems(emojis,(dialog,which)->{
+            boolean selected=false;
+            for(int i=0;i<chatReactions.length();i++){
+                JSONObject reaction=chatReactions.optJSONObject(i);
+                if(reaction!=null&&messageId.equals(reaction.optString("message_id"))
+                        &&sync.userId().equals(reaction.optString("user_id"))
+                        &&emojis[which].equals(reaction.optString("emoji"))){selected=true;break;}
+            }
+            final boolean remove=selected;
+            network.execute(()->{
+                try{
+                    if(remove)sync.removeMessageReaction(messageId);
+                    else sync.setMessageReaction(messageId,emojis[which]);
+                    JSONArray updated=sync.fetchMessageReactions();
+                    runOnUiThread(()->{chatReactions=updated;if(isChatOpen())render();});
+                }catch(Exception e){android.util.Log.w("VmesteChat","Could not save message reaction",e);runOnUiThread(()->toast("Реакция не сохранена: "+e.getMessage()));}
+            });
+        }).show();
+    }
+
     private void showMessageActions(JSONObject message){
-        if(!sync.ready()){toast("Чтобы изменить сообщение, подключитесь к паре");return;}
-        new AlertDialog.Builder(this).setItems(new String[]{"Изменить сообщение"},(dialog,which)->editChatMessage(message)).show();
+        if(!message.optString("deleted_at","").isEmpty()){toast("Удалённое сообщение недоступно для действий");return;}
+        ArrayList<String> options=new ArrayList<>();
+        options.add("Ответить");options.add("Переслать партнёру");options.add("Добавить реакцию");
+        boolean mine=sync.userId().equals(message.optString("sender_id"));
+        boolean deleted=!message.optString("deleted_at","").isEmpty();
+        JSONObject media=jsonObject(message.optString("title",""));
+        boolean isMedia=media!=null&&media.optBoolean("vmeste_media");
+        if(mine&&!deleted&&!isMedia)options.add("Изменить сообщение");
+        if(mine&&!deleted)options.add("Удалить у обоих");
+        String[] choices=options.toArray(new String[0]);
+        VmesteDialogTheme.builder(this).setItems(choices,(dialog,which)->{
+            String choice=choices[which];
+            if("Ответить".equals(choice)){
+                chatReplyToId=message.optString("id");
+                chatReplyPreview=messagePreview(message);
+                render();
+            }else if("Переслать партнёру".equals(choice))forwardChatMessage(message);
+            else if("Добавить реакцию".equals(choice))showMessageReactionPicker(message.optString("id"));
+            else if("Изменить сообщение".equals(choice))editChatMessage(message);
+            else if("Удалить у обоих".equals(choice))confirmDeleteChatMessage(message);
+        }).show();
+    }
+
+    private String messagePreview(JSONObject message){
+        String value=message.optString("title","");
+        JSONObject media=jsonObject(value);
+        if(media!=null&&media.optBoolean("vmeste_media"))return "Фото".equals(media.optString("type"))?"Фото":media.optString("type","Вложение");
+        value=value.replaceAll("\\s+"," ").trim();
+        return value.length()>80?value.substring(0,77)+"…":value;
+    }
+
+    private void sendChatText(String value){
+        String textValue=value==null?"":value.trim();
+        if(textValue.isEmpty())return;
+        try{
+            JSONObject message=buildChatMessage(textValue,UUID.randomUUID().toString(),chatReplyToId,chatReplyPreview,"","");
+            chatReplyToId="";chatReplyPreview="";
+            persistChatMessage(message);
+        }catch(Exception e){toast("Не удалось подготовить сообщение: "+e.getMessage());}
+    }
+
+    private JSONObject buildChatMessage(String body,String id,String replyId,String replyPreview,String forwardedId,String forwardedName)throws Exception{
+        JSONObject message=new JSONObject();message.put("id",id);message.put("title",body);message.put("detail","Сейчас");
+        message.put("ts",System.currentTimeMillis());message.put("done",false);message.put("sender_id",sync.userId());
+        if(replyId!=null&&!replyId.isEmpty()){message.put("reply_to",replyId);message.put("reply_preview",replyPreview);}
+        if(forwardedId!=null&&!forwardedId.isEmpty()){message.put("forwarded_from",forwardedId);message.put("forwarded_from_name",forwardedName);}
+        return message;
+    }
+
+    private void persistChatMessage(JSONObject message)throws Exception{
+        JSONArray rows=read("messages");rows.put(message);save("messages",rows);syncItem("messages",message);
+        runOnUiThread(()->{
+            chatScrollPolicy.onMessagesAdded(0,true);chatScrollY=Integer.MAX_VALUE;
+            if(isChatOpen())render();
+        });
+    }
+
+    private void forwardChatMessage(JSONObject source){
+        String sourceId=source.optString("id");
+        String senderName=sync.userId().equals(source.optString("sender_id"))
+                ?prefs.getString("profile_name","Вы"):prefs.getString("partner_name","Партнёр");
+        String body=source.optString("title","");
+        JSONObject media=jsonObject(body);
+        String newId=UUID.randomUUID().toString();
+        if(media==null||!media.optBoolean("vmeste_media")){
+            try{persistChatMessage(buildChatMessage(body,newId,"","",sourceId,senderName));}
+            catch(Exception e){toast("Не удалось переслать сообщение: "+e.getMessage());}
+            return;
+        }
+        if(!sync.ready()){toast("Подключитесь к паре, чтобы переслать вложение");return;}
+        toast("Подготавливаю пересылку вложения…");
+        network.execute(()->{
+            try{
+                JSONObject copy=new JSONObject(media.toString());
+                String type=copy.optString("type","Фото"),mime=copy.optString("mime",defaultChatMime(type));
+                Uri sourceUri=null;String local=copy.optString("local_path","");
+                if(!local.isEmpty()){
+                    Uri candidate=Uri.parse(local);
+                    if("file".equals(candidate.getScheme())&&new File(candidate.getPath()).isFile())sourceUri=candidate;
+                    else if("content".equals(candidate.getScheme()))sourceUri=candidate;
+                }
+                if(sourceUri==null){
+                    String remote=copy.optString("path","");
+                    if(remote.isEmpty())throw new Exception("Локальная и облачная копии вложения недоступны");
+                    byte[] bytes=sync.downloadAttachment(remote);
+                    File folder=new File(getFilesDir(),"chat_archive");
+                    if(!folder.exists()&&!folder.mkdirs())throw new Exception("Не удалось создать архив чата");
+                    File downloaded=new File(folder,newId+"."+attachmentExtension(type,mime));
+                    try(FileOutputStream output=new FileOutputStream(downloaded)){output.write(bytes);}
+                    sourceUri=Uri.fromFile(downloaded);
+                }
+                Uri archive=archiveChatAttachment(sourceUri,newId,type,mime);
+                copy.put("path",sync.uploadAttachment(archive,newId,this,mime));
+                copy.put("local_path",archive.toString());
+                JSONObject forwarded=buildChatMessage(copy.toString(),newId,"","",sourceId,senderName);
+                persistChatMessage(forwarded);
+                runOnUiThread(()->toast("Вложение переслано партнёру"));
+            }catch(Exception e){android.util.Log.w("VmesteChat","Could not forward attachment",e);runOnUiThread(()->toast("Не удалось переслать вложение: "+e.getMessage()));}
+        });
+    }
+
+    private void confirmDeleteChatMessage(JSONObject message){
+        if(!sync.ready()){toast("Подключитесь к паре, чтобы удалить сообщение у обоих");return;}
+        VmesteDialogTheme.builder(this).setTitle("Удалить сообщение у обоих?")
+                .setMessage("Текст будет скрыт у вас и партнёра.")
+                .setNegativeButton("Отмена",null).setPositiveButton("Удалить",(dialog,which)->network.execute(()->{
+                    try{
+                        sync.deleteMessage(message.optString("id"));
+                        JSONArray rows=read("messages");JSONObject local=findItem(rows,message.optString("id"));
+                        if(local!=null){local.put("deleted_at",System.currentTimeMillis());save("messages",replaceById(rows,local));}
+                        runOnUiThread(()->{if(isChatOpen())render();});
+                    }catch(Exception e){android.util.Log.w("VmesteChat","Could not delete message",e);runOnUiThread(()->toast("Сообщение не удалено: "+e.getMessage()));}
+                })).show();
     }
 
     private void editChatMessage(JSONObject message){
@@ -4159,7 +4962,7 @@ public class MainActivity extends Activity {
         input.setMinLines(2);
         input.setGravity(Gravity.TOP|Gravity.START);
         input.setFilters(new android.text.InputFilter[]{new android.text.InputFilter.LengthFilter(4000)});
-        new AlertDialog.Builder(this).setTitle("Изменить сообщение")
+        VmesteDialogTheme.builder(this).setTitle("Изменить сообщение")
                 .setMessage("Партнёр увидит обновлённый текст.")
                 .setView(input).setNegativeButton("Отмена",null)
                 .setPositiveButton("Сохранить",(dialog,which)->{
@@ -4201,14 +5004,38 @@ public class MainActivity extends Activity {
                             boolean incoming=row.has("body")&&!sync.userId().equals(row.optString("sender_id"));
                             if(incoming&&!containsMessage(previous,row.optString("id")))unread++;
                             sync.storeRemote(row,prefs);
-                            if(incoming)archiveIncomingMessage(row);
+                            if(incoming){
+                                archiveIncomingMessage(row);
+                                if(!hasReadReceipt(chatReceipts,row.optString("id"))){
+                                    try{sync.acknowledgeMessageRead(row.optString("id"));}
+                                    catch(Exception e){android.util.Log.w("VmesteChat","Could not acknowledge message read",e);}
+                                }
+                            }
                         }
                         boolean changed=!before.equals(prefs.getString("messages","[]"));
+                        JSONArray reactions=chatReactions,receipts=chatReceipts,presence=chatPresence;
+                        String issue="";
+                        try{
+                            reactions=sync.fetchMessageReactions();
+                            receipts=sync.fetchMessageReceipts();
+                            presence=sync.fetchChatPresence();
+                        }catch(Exception e){
+                            android.util.Log.w("VmesteChat","Chat interaction schema is unavailable",e);
+                            issue="Реакции, статусы и индикатор набора требуют актуальной миграции Supabase.";
+                        }
+                        boolean interactionChanged=!chatReactions.toString().equals(reactions.toString())
+                                ||!chatReceipts.toString().equals(receipts.toString())
+                                ||!chatInteractionIssue.equals(issue);
+                        JSONArray updatedReactions=reactions,updatedReceipts=receipts,updatedPresence=presence;
+                        String updatedIssue=issue;
                         final int newCount=unread;
                         runOnUiThread(()->{
                             if(!isChatOpen()||!activityResumed)return;
+                            chatReactions=updatedReactions;chatReceipts=updatedReceipts;
+                            chatPresence=updatedPresence;chatInteractionIssue=updatedIssue;
+                            updateChatTypingStatus();
                             chatScrollPolicy.onMessagesAdded(newCount,false);
-                            if(changed)render();
+                            if(changed||interactionChanged)render();
                             else if(chatRefreshRunnable==this)gameHandler.postDelayed(this,3000);
                         });
                     }catch(Exception e){
@@ -4223,6 +5050,15 @@ public class MainActivity extends Activity {
 
     private boolean containsMessage(JSONArray rows,String id){
         for(int i=0;i<rows.length();i++){JSONObject row=rows.optJSONObject(i);if(row!=null&&id.equals(row.optString("id")))return true;}
+        return false;
+    }
+
+    private boolean hasReadReceipt(JSONArray receipts,String messageId){
+        for(int i=0;i<receipts.length();i++){
+            JSONObject row=receipts.optJSONObject(i);
+            if(row!=null&&messageId.equals(row.optString("message_id"))
+                    &&!row.optString("read_at","").isEmpty())return true;
+        }
         return false;
     }
 
@@ -4264,14 +5100,30 @@ public class MainActivity extends Activity {
     }
 
     private View createChatComposer(){
+        LinearLayout container=column();
+        if(!chatReplyToId.isEmpty()){
+            LinearLayout reply=new LinearLayout(this);reply.setGravity(Gravity.CENTER_VERTICAL);
+            TextView preview=text("Ответ на: "+chatReplyPreview,12,MUTED,false);
+            preview.setMaxLines(1);preview.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            reply.addView(preview,new LinearLayout.LayoutParams(0,-2,1));
+            TextView clear=text("×",22,MUTED,true);clear.setGravity(Gravity.CENTER);clear.setContentDescription("Отменить ответ");
+            reply.addView(clear,new LinearLayout.LayoutParams(dp(48),dp(40)));
+            clear.setOnClickListener(v->{chatReplyToId="";chatReplyPreview="";render();});
+            container.addView(reply);
+        }
         LinearLayout row=new LinearLayout(this);row.setGravity(Gravity.CENTER_VERTICAL);row.setPadding(dp(8),dp(5),dp(8),dp(5));row.setBackground(glassSurface(PAPER,18));row.setElevation(dp(2));
         TextView attach=text("＋",24,PURPLE,true);attach.setGravity(Gravity.CENTER);row.addView(attach,new LinearLayout.LayoutParams(dp(48),dp(48)));
         attach.setContentDescription("Добавить фото, файл, GIF или видеокружок");
-        attach.setOnClickListener(v->new AlertDialog.Builder(this).setTitle("Вложение").setItems(new String[]{"Фото, видео или аудио из телефона","GIF из телефона","Записать видеокружок (до минуты)"},(d,which)->{try{if(which==0){Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);pick.setType("*/*");pick.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(pick,404);}else if(which==1){Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);pick.setType("image/gif");pick.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(pick,408);}else startCameraCapture(405);}catch(Exception e){toast("Не удалось открыть камеру или галерею: "+e.getMessage());}}).show());
+        attach.setOnClickListener(v->VmesteDialogTheme.builder(this).setTitle("Вложение").setItems(new String[]{"Фото, видео или аудио из телефона","GIF из телефона","Записать видеокружок (до минуты)"},(d,which)->{try{if(which==0){Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);pick.setType("*/*");pick.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(pick,404);}else if(which==1){Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);pick.setType("image/gif");pick.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(pick,408);}else startCameraCapture(405);}catch(Exception e){toast("Не удалось открыть камеру или галерею: "+e.getMessage());}}).show());
         TextView emoji=text("☺",20,PURPLE,true);emoji.setGravity(Gravity.CENTER);emoji.setContentDescription("Выбрать эмодзи");row.addView(emoji,new LinearLayout.LayoutParams(dp(48),dp(48)));
-        EditText input=new EditText(this);input.setSingleLine(true);input.setHint("Сообщение партнёру…");row.addView(input,new LinearLayout.LayoutParams(0,dp(48),1));
+        EditText input=new EditText(this);chatInput=input;input.setSingleLine(true);input.setHint("Сообщение партнёру…");row.addView(input,new LinearLayout.LayoutParams(0,dp(48),1));
         emoji.setOnClickListener(v->showChatEmojiPicker(input));
         input.setText(pendingSharedText);
+        input.addTextChangedListener(new android.text.TextWatcher(){
+            @Override public void beforeTextChanged(CharSequence s,int start,int count,int after){}
+            @Override public void onTextChanged(CharSequence s,int start,int before,int count){pendingSharedText=s.toString();scheduleChatTyping();}
+            @Override public void afterTextChanged(android.text.Editable editable){}
+        });
         if(pendingSharedUri!=null){
             TextView sharedPhoto=text("📎",18,PURPLE,true);sharedPhoto.setGravity(Gravity.CENTER);
             sharedPhoto.setContentDescription("Фото из другого приложения готово к отправке");
@@ -4294,11 +5146,12 @@ public class MainActivity extends Activity {
                 }
                 else toast("Чтобы отправить фото партнёру, сначала подключите пару");
             }
-            if(!value.isEmpty()){chatScrollPolicy.onMessagesAdded(0,true);chatScrollY=Integer.MAX_VALUE;append("messages",value,"Сейчас");}
+            if(!value.isEmpty()){pendingSharedText="";sendChatText(value);}
             pendingSharedText="";
-            if(!value.isEmpty()||pendingSharedUri==null)render();
+            if(value.isEmpty()&&pendingSharedUri==null)render();
         });
-        return row;
+        container.addView(row);
+        return container;
     }
 
     private void showChatEmojiPicker(EditText input){
@@ -4306,7 +5159,7 @@ public class MainActivity extends Activity {
         android.widget.GridLayout grid=new android.widget.GridLayout(this);
         grid.setColumnCount(4);
         grid.setPadding(dp(12),dp(8),dp(12),dp(8));
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Эмодзи").setView(grid)
+        AlertDialog dialog=VmesteDialogTheme.builder(this).setTitle("Эмодзи").setView(grid)
                 .setNegativeButton("Закрыть",null).create();
         for(String value:emojis){
             TextView button=text(value,25,INK,false);
@@ -4340,7 +5193,7 @@ public class MainActivity extends Activity {
         String sizeText=size>0?formatBytes(size):"размер проверится при чтении";
         String message="Файл: "+attachmentName(uri)+" · "+sizeText
                 +"\n\nПеред отправкой он останется в архиве этого телефона и загрузится в закрытое хранилище пары. После получения файла партнёром облачная копия удаляется; локальная копия остаётся. Автоматическое сжатие не выполняется.";
-        new AlertDialog.Builder(this).setTitle("Отправить "+type.toLowerCase(Locale.ROOT)+"?")
+        VmesteDialogTheme.builder(this).setTitle("Отправить "+type.toLowerCase(Locale.ROOT)+"?")
                 .setMessage(message).setNegativeButton("Не отправлять",(dialog,which)->{})
                 .setPositiveButton("Отправить",(dialog,which)->{
                     if(accepted!=null)accepted.run();
@@ -4375,8 +5228,8 @@ public class MainActivity extends Activity {
         ArrayList<String> missing=new ArrayList<>();
         if(checkSelfPermission(android.Manifest.permission.CAMERA)!=android.content.pm.PackageManager.PERMISSION_GRANTED)missing.add(android.Manifest.permission.CAMERA);
         if(requestCode==405&&checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)!=android.content.pm.PackageManager.PERMISSION_GRANTED)missing.add(android.Manifest.permission.RECORD_AUDIO);
-        if(!missing.isEmpty()){requestPermissions(missing.toArray(new String[0]),905);toast("Разрешите камеру и микрофон, затем нажмите кнопку ещё раз");return;}
-        startActivityForResult(new Intent(this,CameraCaptureActivity.class).putExtra("photo_only",requestCode==406),requestCode);
+        if(!missing.isEmpty()){requestPermissions(missing.toArray(new String[0]),905);toast(requestCode==405?"Разрешите камеру и микрофон, затем нажмите кнопку ещё раз":"Разрешите камеру, затем нажмите кнопку ещё раз");return;}
+        startActivityForResult(new Intent(this,CameraCaptureActivity.class).putExtra("photo_only",requestCode==406||requestCode==410),requestCode);
     }
     private void saveAvatar(Uri uri){
         try{
@@ -4398,7 +5251,7 @@ public class MainActivity extends Activity {
         }catch(Exception e){toast("Не удалось сохранить фото профиля: "+e.getMessage());}
     }
     private void confirmAccountDeletion() {
-        new AlertDialog.Builder(this).setTitle("Удалить аккаунт?")
+        VmesteDialogTheme.builder(this).setTitle("Удалить аккаунт?")
                 .setMessage("Аккаунт Supabase и доступ к общему пространству будут удалены. Это действие нельзя отменить.")
                 .setNegativeButton("Отмена",null)
                 .setPositiveButton("Удалить",(d,w)->runNetwork(()->{sync.deleteAccount();return true;},ok->{prefs.edit().clear().apply();toast("Аккаунт удалён");render();}))
@@ -4426,8 +5279,23 @@ public class MainActivity extends Activity {
     private void uploadChatAttachment(Uri uri,String type,String mime){
         if(!sync.ready()){toast("Сначала подключите общее пространство пары");return;}
         if(mime==null||mime.isEmpty())mime=defaultChatMime(type);
-        final String uploadMime=mime;
-        String id=UUID.randomUUID().toString();toast("Отправляю "+type.toLowerCase(Locale.ROOT)+"…");network.execute(()->{try{Uri archive=archiveChatAttachment(uri,id,type,uploadMime);String path=sync.uploadAttachment(archive,id,this,uploadMime);JSONObject media=new JSONObject();media.put("vmeste_media",true);media.put("type",type);media.put("mime",uploadMime);media.put("path",path);media.put("local_path",archive.toString());JSONObject item=new JSONObject();item.put("id",id);item.put("title",media.toString());item.put("detail","Сейчас");item.put("ts",System.currentTimeMillis());item.put("done",false);item.put("sender_id",sync.userId());JSONArray rows=read("messages");rows.put(item);save("messages",rows);syncItem("messages",item);runOnUiThread(()->{if(isChatOpen())render();});}catch(Exception e){runOnUiThread(()->toast("Не удалось отправить вложение: "+e.getMessage()));}});
+        final String uploadMime=mime,replyId=chatReplyToId,replyPreview=chatReplyPreview;
+        String id=UUID.randomUUID().toString();
+        toast("Отправляю "+type.toLowerCase(Locale.ROOT)+"…");
+        network.execute(()->{
+            try{
+                Uri archive=archiveChatAttachment(uri,id,type,uploadMime);
+                String path=sync.uploadAttachment(archive,id,this,uploadMime);
+                JSONObject media=new JSONObject();media.put("vmeste_media",true);media.put("type",type);
+                media.put("mime",uploadMime);media.put("path",path);media.put("local_path",archive.toString());
+                JSONObject item=buildChatMessage(media.toString(),id,replyId,replyPreview,"","");
+                JSONArray rows=read("messages");rows.put(item);save("messages",rows);syncItem("messages",item);
+                runOnUiThread(()->{
+                    if(chatReplyToId.equals(replyId)){chatReplyToId="";chatReplyPreview="";}
+                    if(isChatOpen())render();
+                });
+            }catch(Exception e){runOnUiThread(()->toast("Не удалось отправить вложение: "+e.getMessage()));}
+        });
     }
     private String defaultChatMime(String type){
         if("GIF".equals(type))return "image/gif";
@@ -4458,7 +5326,7 @@ public class MainActivity extends Activity {
     private void playChatAttachment(String path,String type){
         try{Uri uri=Uri.parse(path);if("file".equals(uri.getScheme())){showChatAttachment(uri,type);return;}}catch(Exception ignored){}network.execute(()->{try{byte[] bytes=sync.downloadAttachment(path);File folder=new File(getFilesDir(),"chat_archive");if(!folder.exists()&&!folder.mkdirs())throw new Exception("Не удалось создать архив чата");File file=new File(folder,"received-"+UUID.randomUUID()+"."+attachmentExtension(type,""));try(FileOutputStream out=new FileOutputStream(file)){out.write(bytes);}runOnUiThread(()->showChatAttachment(Uri.fromFile(file),type));}catch(Exception e){runOnUiThread(()->toast(e.getMessage()));}});
     }
-    private void showChatAttachment(Uri uri,String type){try{if("Голосовое".equals(type)){android.media.MediaPlayer player=new android.media.MediaPlayer();player.setDataSource(this,uri);player.setOnCompletionListener(android.media.MediaPlayer::release);player.prepare();player.start();toast("Воспроизводится голосовое сообщение");}else if("Фото".equals(type)){ImageView image=new ImageView(this);image.setImageURI(uri);image.setAdjustViewBounds(true);new AlertDialog.Builder(this).setTitle("Фото от партнёра").setView(image).setPositiveButton("Закрыть",null).show();}else if("GIF".equals(type)){showChatGif(uri);}else if("Кружок".equals(type)){android.webkit.WebView player=new android.webkit.WebView(this);player.getSettings().setJavaScriptEnabled(true);player.getSettings().setAllowFileAccess(true);String page="<meta name='viewport' content='width=device-width,initial-scale=1'><style>body{margin:0;background:#211d25;display:grid;place-items:center;height:100vh}video{width:88vw;height:88vw;max-width:440px;max-height:440px;border-radius:50%;object-fit:cover}</style><video controls autoplay playsinline src='"+uri.toString()+"'></video>";player.loadDataWithBaseURL("file:///",page,"text/html","UTF-8",null);new AlertDialog.Builder(this).setTitle("Видеокружок").setView(player).setPositiveButton("Закрыть",null).show();}else if("Видео".equals(type)){android.widget.VideoView video=new android.widget.VideoView(this);video.setVideoURI(uri);new AlertDialog.Builder(this).setTitle("Видео от партнёра").setView(video).setPositiveButton("Закрыть",null).show();video.start();}else{android.media.MediaPlayer player=new android.media.MediaPlayer();player.setDataSource(this,uri);player.setOnCompletionListener(android.media.MediaPlayer::release);player.prepare();player.start();toast("Воспроизводится аудио");}}catch(Exception e){toast("Не удалось воспроизвести вложение: "+e.getMessage());}}
+    private void showChatAttachment(Uri uri,String type){try{if("Голосовое".equals(type)){android.media.MediaPlayer player=new android.media.MediaPlayer();player.setDataSource(this,uri);player.setOnCompletionListener(android.media.MediaPlayer::release);player.prepare();player.start();toast("Воспроизводится голосовое сообщение");}else if("Фото".equals(type)){ImageView image=new ImageView(this);image.setImageURI(uri);image.setAdjustViewBounds(true);VmesteDialogTheme.builder(this).setTitle("Фото от партнёра").setView(image).setPositiveButton("Закрыть",null).show();}else if("GIF".equals(type)){showChatGif(uri);}else if("Кружок".equals(type)){android.webkit.WebView player=new android.webkit.WebView(this);player.getSettings().setJavaScriptEnabled(true);player.getSettings().setAllowFileAccess(true);String page="<meta name='viewport' content='width=device-width,initial-scale=1'><style>body{margin:0;background:#211d25;display:grid;place-items:center;height:100vh}video{width:88vw;height:88vw;max-width:440px;max-height:440px;border-radius:50%;object-fit:cover}</style><video controls autoplay playsinline src='"+uri.toString()+"'></video>";player.loadDataWithBaseURL("file:///",page,"text/html","UTF-8",null);VmesteDialogTheme.builder(this).setTitle("Видеокружок").setView(player).setPositiveButton("Закрыть",null).show();}else if("Видео".equals(type)){android.widget.VideoView video=new android.widget.VideoView(this);video.setVideoURI(uri);VmesteDialogTheme.builder(this).setTitle("Видео от партнёра").setView(video).setPositiveButton("Закрыть",null).show();video.start();}else{android.media.MediaPlayer player=new android.media.MediaPlayer();player.setDataSource(this,uri);player.setOnCompletionListener(android.media.MediaPlayer::release);player.prepare();player.start();toast("Воспроизводится аудио");}}catch(Exception e){toast("Не удалось воспроизвести вложение: "+e.getMessage());}}
 
     private void showChatGif(Uri uri)throws Exception{
         View content;
@@ -4488,7 +5356,7 @@ public class MainActivity extends Activity {
                 content.setMinimumHeight(dp(220));
             }
         }
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("GIF")
+        AlertDialog dialog=VmesteDialogTheme.builder(this).setTitle("GIF")
                 .setView(content).setPositiveButton("Закрыть",null).create();
         android.graphics.drawable.AnimatedImageDrawable playback=animated;
         dialog.setOnShowListener(v->{if(android.os.Build.VERSION.SDK_INT>=28&&playback!=null)playback.start();});
@@ -4533,7 +5401,7 @@ public class MainActivity extends Activity {
 
     private void itemActions(String key,JSONObject item){
         ArrayList<String> options=new ArrayList<>();options.add("Редактировать");if("plans".equals(key))options.add("Добавить фото-отчёт");options.add("Удалить");
-        String[] choices=options.toArray(new String[0]);new AlertDialog.Builder(this).setItems(choices,(d,which)->{
+        String[] choices=options.toArray(new String[0]);VmesteDialogTheme.builder(this).setItems(choices,(d,which)->{
             String choice=choices[which];if(choice.equals("Редактировать")){
                 if("notes".equals(key))editNoteDialog(item);
                 else if("recipes".equals(key))editRecipeDialog(item);
@@ -4541,7 +5409,7 @@ public class MainActivity extends Activity {
                 return;
             }
             if(choice.equals("Добавить фото-отчёт")){pendingPhotoKey=key;pendingPhotoItemId=item.optString("id");Intent pick=new Intent(Intent.ACTION_OPEN_DOCUMENT);pick.setType("image/*");pick.addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(pick,403);return;}
-            new AlertDialog.Builder(this).setMessage("Удалить «"+item.optString("title")+"»?").setNegativeButton("Отмена",null).setPositiveButton("Удалить",(x,y)->{removeItem(key,item.optString("id"));render();}).show();
+            VmesteDialogTheme.builder(this).setMessage("Удалить «"+item.optString("title")+"»?").setNegativeButton("Отмена",null).setPositiveButton("Удалить",(x,y)->{removeItem(key,item.optString("id"));render();}).show();
         }).show();
     }
 
@@ -4551,7 +5419,7 @@ public class MainActivity extends Activity {
         EditText title=new EditText(this);title.setSingleLine(true);title.setHint("Название");title.setText(item.optString("title"));form.addView(title);
         EditText detail=new EditText(this);detail.setHint("Описание или заметка");detail.setText(item.optString("detail"));form.addView(detail);
         EditText category=new EditText(this);category.setSingleLine(true);category.setHint("Раздел / категория");category.setText(item.optString("category"));if("wishes".equals(key))form.addView(category);
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Изменить запись").setView(form).setNegativeButton("Отмена",null).setNeutralButton("Удалить",null).setPositiveButton("Сохранить",null).create();
+        AlertDialog dialog=VmesteDialogTheme.builder(this).setTitle("Изменить запись").setView(form).setNegativeButton("Отмена",null).setNeutralButton("Удалить",null).setPositiveButton("Сохранить",null).create();
         dialog.setOnShowListener(v->{dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(x->{String value=title.getText().toString().trim();if(value.isEmpty()){title.setError("Введите название");return;}try{item.put("title",value);item.put("detail",detail.getText().toString().trim());if("wishes".equals(key))item.put("category",category.getText().toString().trim());replaceItem(key,item);dialog.dismiss();render();}catch(Exception ignored){}});dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(x->{removeItem(key,item.optString("id"));dialog.dismiss();render();});});dialog.show();
     }
     private void addDialog(String key, String title) {
@@ -4559,7 +5427,7 @@ public class MainActivity extends Activity {
         EditText name = new EditText(this); name.setHint("loyalty".equals(key) ? "Название карты, например Пеликан" : "gifts".equals(key)?"Название подарка или ссылка":"Что хотите сохранить?"); name.setSingleLine(true); form.addView(name);
         EditText detail = new EditText(this); detail.setHint("loyalty".equals(key) ? "Номер карты или штрихкод" : "gifts".equals(key)?"Ссылка на магазин или заметка":"Заметка или дата (необязательно)"); form.addView(detail);
         EditText category = new EditText(this); category.setSingleLine(true); category.setHint("Раздел / категория"); if ("wishes".equals(key)) form.addView(category);
-        new AlertDialog.Builder(this).setTitle(title).setView(form).setNegativeButton("Отмена", null)
+        VmesteDialogTheme.builder(this).setTitle(title).setView(form).setNegativeButton("Отмена", null)
                 .setPositiveButton("Сохранить", (d,w) -> { String t=name.getText().toString().trim(), extra=detail.getText().toString().trim(); if (!t.isEmpty()) { append(key,t,extra); JSONArray rows=read(key);JSONObject item=rows.optJSONObject(rows.length()-1);if(item!=null)try{if("wishes".equals(key))item.put("category",category.getText().toString().trim());if("gifts".equals(key)){String url=giftUrl(extra,t);if(!url.isEmpty()){item.put("url",url);item.put("detail",url);if(giftUrl("",t).equals(url)){item.put("title_from_url",true);try{item.put("title",new java.net.URL(url).getHost().replaceFirst("^www\\.",""));}catch(Exception ignored){}};}save(key,rows);syncItem(key,item);if(!url.isEmpty())enrichGiftLink(item,url);}else if("wishes".equals(key)){save(key,rows);syncItem(key,item);}}catch(Exception ignored){}render(); } }).show();
     }
     private String giftUrl(String detail,String title){
@@ -4687,9 +5555,22 @@ public class MainActivity extends Activity {
             if(!sync.ready()){toast("Фото-отчёт можно синхронизировать после подключения пары");return;}
             toast("Загружаю фото-отчёт…");network.execute(()->{try{String path=sync.uploadAttachment(uri,id,this);runOnUiThread(()->{JSONObject item=findItem(read(key),id);if(item!=null)try{item.put("photo_path",path);item.put("reported_at",System.currentTimeMillis());replaceItem(key,item);render();toast("Фото прикреплено к плану для вас двоих");}catch(Exception e){toast(e.getMessage());}});}catch(Exception e){runOnUiThread(()->toast("Не удалось загрузить фото: "+e.getMessage()));}});return;
         }
-        if(requestCode==407&&resultCode==RESULT_OK&&data!=null&&data.getData()!=null){
-            Uri uri=data.getData();try{getContentResolver().takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION);}catch(Exception ignored){}
-            String caption=pendingStoryCaption;pendingStoryCaption="";publishStory(uri,caption);return;
+        if(requestCode==407||requestCode==410){
+            String caption=pendingStoryCaption;pendingStoryCaption="";
+            if(resultCode!=RESULT_OK||data==null)return;
+            Uri uri=null;
+            if(requestCode==410&&data.hasExtra("path")){
+                String path=data.getStringExtra("path");
+                if(path!=null&&!path.isEmpty())uri=Uri.fromFile(new File(path));
+            }
+            else if(requestCode==407&&data.getData()!=null){
+                uri=data.getData();
+                try{getContentResolver().takePersistableUriPermission(uri,Intent.FLAG_GRANT_READ_URI_PERMISSION);}
+                catch(Exception ignored){}
+            }
+            if(uri!=null)publishStory(uri,caption);
+            else toast("Фото не получено — попробуйте ещё раз");
+            return;
         }
         if(requestCode==402&&resultCode==RESULT_OK&&data!=null&&data.getData()!=null) {
             Uri uri=data.getData();
@@ -4746,7 +5627,10 @@ public class MainActivity extends Activity {
         boolean granted=results.length>0&&results[0]==android.content.pm.PackageManager.PERMISSION_GRANTED;
         if(requestCode==905){
             if(granted)startCameraCapture(pendingCameraRequestCode);
-            else toast("Разрешите камеру и микрофон, чтобы использовать фото/видео.");
+            else{
+                if(pendingCameraRequestCode==410)pendingStoryCaption="";
+                toast(pendingCameraRequestCode==405?"Разрешите камеру и микрофон, чтобы записать видео.":"Разрешите камеру, чтобы сделать фото.");
+            }
             pendingCameraRequestCode=0;
             return;
         }
@@ -4774,8 +5658,8 @@ public class MainActivity extends Activity {
         LinearLayout panel=column();panel.setPadding(dp(10),dp(6),dp(10),dp(6));
         TextView status=text("",14,INK,true);status.setGravity(Gravity.CENTER);status.setPadding(dp(10),dp(10),dp(10),dp(10));status.setBackground(shape(PALE,14));panel.addView(status);
         LinearLayout board=column();board.setGravity(Gravity.CENTER);board.setPadding(dp(6),dp(6),dp(6),dp(6));board.setBackground(shape(0xFF214D6B,20));LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(-1,-2);bp.topMargin=dp(8);panel.addView(board,bp);
-        TextView restart=pill("Новая партия",PURPLE);restart.setGravity(Gravity.CENTER);LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,-2);rp.topMargin=dp(10);panel.addView(restart,rp);
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Четыре в ряд · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();
+        TextView restart=pill("Начать заново",PURPLE);restart.setGravity(Gravity.CENTER);LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,-2);rp.topMargin=dp(10);panel.addView(restart,rp);
+        AlertDialog dialog=VmesteDialogTheme.builder(this).setTitle("Четыре в ряд · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();
         Runnable[] draw={null};
         draw[0]=()->{
             JSONObject g=game[0];
@@ -4801,7 +5685,7 @@ public class MainActivity extends Activity {
                     ?"Ваш ход — выберите колонку":"Ход партнёра")
                     +" · вы "+(myToken=='R'?"красные":"синие")
                     +" / партнёр "+(partnerToken=='R'?"красные":"синие"));
-            restart.setVisibility(participant&&!p2.isEmpty()&&"finished".equals(g.optString("status"))?View.VISIBLE:View.GONE);
+            restart.setVisibility(GameRestartPolicy.canRestart(g.optString("status"),p1,p2,me)?View.VISIBLE:View.GONE);
             board.removeAllViews();
             int cellSize=Math.max(dp(34),Math.min(dp(48),
                     (getResources().getDisplayMetrics().widthPixels-dp(80))/COLS));
@@ -4863,7 +5747,7 @@ public class MainActivity extends Activity {
                 }
             }
         };
-        restart.setOnClickListener(v->startNextGame("connect_four",game,draw[0]));
+        restart.setOnClickListener(v->confirmGameReset("connect_four",game,draw[0]));
         draw[0].run();dialog.setOnDismissListener(d->{closed[0]=true;});dialog.show();poll[0]=()->{if(closed[0])return;network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));if(fresh!=null)runOnUiThread(()->{try{game[0]=fresh;draw[0].run();}catch(Exception ignored){}});}catch(Exception ignored){}if(!closed[0])gameHandler.postDelayed(poll[0],1400);});};gameHandler.postDelayed(poll[0],1400);
     }
     private boolean hasConnectFour(String b,char p){int ROWS=6,COLS=7;for(int r=0;r<ROWS;r++)for(int c=0;c<COLS;c++){int i=r*COLS+c;if(c+3<COLS&&b.charAt(i)==p&&b.charAt(i+1)==p&&b.charAt(i+2)==p&&b.charAt(i+3)==p)return true;if(r+3<ROWS&&b.charAt(i)==p&&b.charAt(i+COLS)==p&&b.charAt(i+2*COLS)==p&&b.charAt(i+3*COLS)==p)return true;if(c+3<COLS&&r+3<ROWS&&b.charAt(i)==p&&b.charAt(i+COLS+1)==p&&b.charAt(i+2*(COLS+1))==p&&b.charAt(i+3*(COLS+1))==p)return true;if(c-3>=0&&r+3<ROWS&&b.charAt(i)==p&&b.charAt(i+COLS-1)==p&&b.charAt(i+2*(COLS-1))==p&&b.charAt(i+3*(COLS-1))==p)return true;}return false;}
@@ -4878,14 +5762,14 @@ public class MainActivity extends Activity {
         LinearLayout panel=column();panel.setPadding(dp(10),dp(6),dp(10),dp(6));
         TextView status=text("",14,INK,true);status.setGravity(Gravity.CENTER);status.setPadding(dp(10),dp(10),dp(10),dp(10));status.setBackground(shape(PALE,14));panel.addView(status);
         LinearLayout board=column();board.setGravity(Gravity.CENTER);board.setPadding(dp(6),dp(6),dp(6),dp(6));board.setBackground(shape(0xFF4B3628,18));LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(-1,-2);bp.topMargin=dp(8);panel.addView(board,bp);
-        TextView restart=pill("Новая партия",PURPLE);restart.setGravity(Gravity.CENTER);LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,-2);rp.topMargin=dp(10);panel.addView(restart,rp);
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Шашки · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();
+        TextView restart=pill("Начать заново",PURPLE);restart.setGravity(Gravity.CENTER);LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,-2);rp.topMargin=dp(10);panel.addView(restart,rp);
+        AlertDialog dialog=VmesteDialogTheme.builder(this).setTitle("Шашки · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();
         Runnable[] draw={null};draw[0]=()->{JSONObject g=game[0],s=g.optJSONObject("state");if(s==null)return;String me=pairGames.userId(),p1=s.optString("p1"),p2=s.optString("p2"),boardState=s.optString("board",initialCheckersBoard()),turn=s.optString("turn"),winner=s.optString("winner"),whitePlayer=GameStartRules.checkersWhitePlayer(s.optString("first_player"),p1);int chain=s.optInt("chain",-1);boolean active="active".equals(g.optString("status")),participant=me.equals(p1)||me.equals(p2),whiteMovesUp=GameStartRules.checkersWhiteMovesUp(whitePlayer,p1);char mine=me.equals(whitePlayer)?'r':'b';boolean rotated=!me.equals(p1);
             String sideLabel="Ваши шашки "+(mine=='r'?"белые":"чёрные")+" · ваша сторона внизу";
             if(p2.isEmpty())status.setText("Игра создана. Ждём партнёра.");else if(!winner.isEmpty())status.setText((winner.equals(me)?"Вы победили! 🎉":"Партнёр победил.")+"\n"+sideLabel);else if(!active)status.setText("Партия завершена\n"+sideLabel);else status.setText((moveBusy[0]?"Сохраняю ход…":turn.equals(me)?"Ваш ход · выберите шашку":"Ход партнёра")+"\n"+sideLabel);
             java.util.Map<Integer,java.util.List<Integer>> legal=active&&participant&&!p2.isEmpty()&&turn.equals(me)?BoardGameRules.legalCheckersMoves(boardState,me,p1,whitePlayer,chain,whiteMovesUp):java.util.Collections.emptyMap();
             java.util.List<Integer> destinations=selected[0]<0?java.util.Collections.emptyList():legal.getOrDefault(selected[0],java.util.Collections.emptyList());
-            restart.setVisibility(!p2.isEmpty()&&"finished".equals(g.optString("status"))?View.VISIBLE:View.GONE);
+            restart.setVisibility(GameRestartPolicy.canRestart(g.optString("status"),p1,p2,me)?View.VISIBLE:View.GONE);
             board.removeAllViews();
             int cellSize=Math.max(dp(28),Math.min(dp(44),
                     (getResources().getDisplayMetrics().widthPixels-dp(92))/8));
@@ -4942,7 +5826,7 @@ public class MainActivity extends Activity {
                 }
             }
         };
-        restart.setOnClickListener(v->startNextGame("checkers",game,draw[0]));
+        restart.setOnClickListener(v->confirmGameReset("checkers",game,draw[0]));
         draw[0].run();dialog.setOnDismissListener(d->{closed[0]=true;});dialog.show();poll[0]=()->{if(closed[0])return;network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));if(fresh!=null)runOnUiThread(()->{try{game[0]=fresh;draw[0].run();}catch(Exception ignored){}});}catch(Exception ignored){}if(!closed[0])gameHandler.postDelayed(poll[0],1400);});};gameHandler.postDelayed(poll[0],1400);
     }
 
@@ -4961,12 +5845,12 @@ public class MainActivity extends Activity {
         LinearLayout panel=column();panel.setPadding(dp(8),dp(4),dp(8),dp(4));
         TextView status=text("",13,INK,true);status.setGravity(Gravity.CENTER);status.setPadding(dp(8),dp(8),dp(8),dp(8));status.setBackground(shape(PALE,12));panel.addView(status);
         LinearLayout board=column();board.setGravity(Gravity.CENTER);board.setPadding(dp(4),dp(4),dp(4),dp(4));board.setBackground(shape(0xFF604832,18));LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(-1,-2);bp.topMargin=dp(6);panel.addView(board,bp);
-        TextView restart=pill("Новая партия",PURPLE);restart.setGravity(Gravity.CENTER);LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,-2);rp.topMargin=dp(8);panel.addView(restart,rp);
-        AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Точки и квадратики · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();
+        TextView restart=pill("Начать заново",PURPLE);restart.setGravity(Gravity.CENTER);LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,-2);rp.topMargin=dp(8);panel.addView(restart,rp);
+        AlertDialog dialog=VmesteDialogTheme.builder(this).setTitle("Точки и квадратики · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();
         final boolean[] moveBusy={false};
         Runnable[] draw={null};draw[0]=()->{JSONObject g=game[0],s=g.optJSONObject("state");if(s==null)return;String me=pairGames.userId(),p1=s.optString("p1"),p2=s.optString("p2"),edgesState=s.optString("edges",emptyBoard(40)),boxesState=s.optString("boxes",emptyBoard(16)),turn=s.optString("turn"),winner=s.optString("winner"),firstPlayer=GameStartRules.firstPlayerOrPlayerOne(s.optString("first_player"),p1);int score1=s.optInt("score1",0),score2=s.optInt("score2",0);boolean active="active".equals(g.optString("status"));
             if(p2.isEmpty())status.setText("Игра создана. Ждём партнёра.");else if(!winner.isEmpty())status.setText("draw".equals(winner)?"Ничья!":winner.equals(me)?"Вы победили! 🎉":"Партнёр победил.");else if(!active)status.setText("Партия завершена");else status.setText((moveBusy[0]?"Сохраняю ход…":turn.equals(me)?"Ваш ход":"Ход партнёра")+" · "+(me.equals(firstPlayer)?"вы первый":"вы второй")+" · счёт "+score1+":"+score2);
-            restart.setVisibility(!p2.isEmpty()&&"finished".equals(g.optString("status"))?View.VISIBLE:View.GONE);
+            restart.setVisibility(GameRestartPolicy.canRestart(g.optString("status"),p1,p2,me)?View.VISIBLE:View.GONE);
             board.removeAllViews();
             int stepSize=Math.max(dp(26),Math.min(dp(38),
                     (getResources().getDisplayMetrics().widthPixels-dp(96))/9));
@@ -5001,7 +5885,7 @@ public class MainActivity extends Activity {
                 }
             }
         };
-        restart.setOnClickListener(v->startNextGame("dots_boxes",game,draw[0]));
+        restart.setOnClickListener(v->confirmGameReset("dots_boxes",game,draw[0]));
         draw[0].run();dialog.setOnDismissListener(d->{closed[0]=true;});dialog.show();poll[0]=()->{if(closed[0])return;network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));if(fresh!=null)runOnUiThread(()->{try{game[0]=fresh;draw[0].run();}catch(Exception ignored){}});}catch(Exception ignored){}if(!closed[0])gameHandler.postDelayed(poll[0],1400);});};gameHandler.postDelayed(poll[0],1400);
     }
 

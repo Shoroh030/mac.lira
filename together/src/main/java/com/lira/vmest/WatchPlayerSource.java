@@ -17,6 +17,10 @@ final class WatchPlayerSource {
     final String url;
     final String youtubeVideoId;
 
+    boolean supportsSynchronizedPlayback() {
+        return kind != Kind.WEBSITE;
+    }
+
     private WatchPlayerSource(Kind kind, String url, String youtubeVideoId) {
         this.kind = kind;
         this.url = url;

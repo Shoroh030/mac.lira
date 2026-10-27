@@ -17,6 +17,16 @@
         <item name="android:textColorSecondary">#6E6575</item>
     </style>
 
+    <style name="ThemeOverlay.Vmeste.Dialog.Dark" parent="android:style/Theme.Material.Dialog.Alert">
+        <item name="android:colorAccent">#D0B3E9</item>
+        <item name="android:windowBackground">@drawable/bg_dialog_dark</item>
+        <item name="android:backgroundDimAmount">0.48</item>
+        <item name="android:windowMinWidthMajor">88%</item>
+        <item name="android:windowMinWidthMinor">88%</item>
+        <item name="android:textColorPrimary">#F2EDF5</item>
+        <item name="android:textColorSecondary">#B8ACBF</item>
+    </style>
+
     <style name="Widget.Vmeste.EditText" parent="android:style/Widget.Material.EditText">
         <item name="android:background">@drawable/bg_dialog_input</item>
         <item name="android:paddingStart">14dp</item>

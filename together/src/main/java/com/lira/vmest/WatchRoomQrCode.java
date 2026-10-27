@@ -51,7 +51,7 @@ final class WatchRoomQrCode {
     static String shareText(String roomId) {
         String canonicalId = canonicalId(roomId);
         if (canonicalId == null) throw new IllegalArgumentException("Invalid watch room ID");
-        return "Подключайтесь к комнате просмотра «Вместе»:\n"
+        return "Подключайтесь к комнате просмотра I'm Here:\n"
                 + link(canonicalId) + "\nКод: " + PREFIX + canonicalId;
     }
 

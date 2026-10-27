@@ -63,6 +63,7 @@ import org.webrtc.MediaStreamTrack;
 import org.webrtc.PeerConnection;
 import org.webrtc.PeerConnectionFactory;
 import org.webrtc.RtpReceiver;
+import org.webrtc.RtpSender;
 import org.webrtc.RtpTransceiver;
 import org.webrtc.SdpObserver;
 import org.webrtc.SessionDescription;
@@ -130,6 +131,7 @@ public final class WatchPartyActivity extends Activity {
     private AudioTrack audioTrack;
     private RtpTransceiver audioTransceiver;
     private RtpTransceiver videoTransceiver;
+    private RtpSender cameraSender;
     private VideoSource videoSource;
     private CameraVideoCapturer cameraCapturer;
     private SurfaceTextureHelper textureHelper;
@@ -142,6 +144,7 @@ public final class WatchPartyActivity extends Activity {
     private boolean mediaStarted = false;
     private boolean offerReady, offerInProgress, offerPending;
     private boolean answerInProgress;
+    private boolean mediaNegotiationRequestPending;
     private String lastRemoteAnswerSdp = "";
     private final Runnable playbackPoll = new Runnable() {
         @Override public void run() {
@@ -236,7 +239,7 @@ public final class WatchPartyActivity extends Activity {
             playerAddress.setInputType(android.text.InputType.TYPE_CLASS_TEXT
                     | android.text.InputType.TYPE_TEXT_VARIATION_URI
                     | android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-            playerAddress.setHint("YouTube или HTTPS-ссылка на MP4/HLS");
+            playerAddress.setHint("HTTPS-ссылка на видео или сайт");
             if (playerUrl != null) playerAddress.setText(playerUrl);
             playerControls.addView(playerAddress, new LinearLayout.LayoutParams(0, dp(48), 1));
             Button play = buttonSafe("Открыть", Color.rgb(129, 88, 165), Color.WHITE);
@@ -382,7 +385,7 @@ public final class WatchPartyActivity extends Activity {
                     finishRoomSafe();
                     return;
                 }
-                new AlertDialog.Builder(this)
+                VmesteDialogTheme.builder(this)
                         .setTitle("Завершить комнату для обоих?")
                         .setMessage("Партнёр отключится, а эта комната перестанет быть активной.")
                         .setPositiveButton("Завершить комнату", (dialog, which) -> finishRoomSafe())
@@ -434,7 +437,7 @@ public final class WatchPartyActivity extends Activity {
         code.setGravity(Gravity.CENTER);
         code.setPadding(0, dp(10), 0, 0);
         content.addView(code);
-        new AlertDialog.Builder(this)
+        VmesteDialogTheme.builder(this)
                 .setTitle("Пригласить партнёра")
                 .setView(content)
                 .setPositiveButton("Поделиться", (dialog, which) -> shareRoomInviteSafe())
@@ -503,6 +506,10 @@ public final class WatchPartyActivity extends Activity {
                     "if(window.vmestePlayer)window.vmestePlayer.pauseVideo()", null);
         }
         playerSource = source;
+        if (playerAddress != null) {
+            playerAddress.setText(source.url);
+            playerAddress.setError(null);
+        }
         if (fullscreenButton != null) fullscreenButton.setEnabled(true);
         playerUrl = source.url;
         playbackRequestSent = false;
@@ -555,19 +562,38 @@ public final class WatchPartyActivity extends Activity {
                 status.setText("YouTube · воспроизведение синхронизируется между участниками");
             } else {
                 playerView.loadUrl(source.url);
-                status.setText("У этого сайта нет доступной синхронизации. DRM и закрытые плееры не обходятся.");
+                status.setText("Ссылка открыта у обоих · управление воспроизведением на сайте может не синхронизироваться. DRM не обходится.");
             }
         }
-        if (notifyPeer && source.kind != WatchPlayerSource.Kind.WEBSITE) {
+        if (notifyPeer) {
             try {
                 JSONObject payload = new JSONObject();
                 payload.put("url", source.url);
                 sendSignalSafe("player_source", payload);
+                persistMovieRoomSourceSafe(source.url);
             } catch (Exception e) {
                 status.setText("Не удалось отправить ссылку партнёру: " + e.getMessage());
             }
         }
-        if (source.kind != WatchPlayerSource.Kind.WEBSITE) main.post(playbackPoll);
+        if (source.supportsSynchronizedPlayback()) main.post(playbackPoll);
+    }
+
+    private void persistMovieRoomSourceSafe(String url) {
+        if (sync == null || !sync.ready() || closed || io.isShutdown()) return;
+        try {
+            io.execute(() -> {
+                try {
+                    sync.updateMovieRoomSource(url, title);
+                } catch (Exception e) {
+                    main.post(() -> {
+                        if (!closed && status != null)
+                            status.setText("Ссылка открыта, но не удалось сохранить её для следующего просмотра");
+                    });
+                }
+            });
+        } catch (Exception e) {
+            if (status != null) status.setText("Не удалось сохранить ссылку комнаты");
+        }
     }
 
     private String youtubePlayerPage(String videoId) {
@@ -759,7 +785,7 @@ public final class WatchPartyActivity extends Activity {
                     RtpTransceiver.RtpTransceiverDirection.SEND_RECV);
                 audioTransceiver = peer.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_AUDIO, sendReceive);
                 videoTransceiver = peer.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO,
-                    new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_RECV));
+                    new RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY));
                 if (audioTransceiver == null || videoTransceiver == null)
                     throw new IllegalStateException("WebRTC media transceivers are unavailable");
                 main.post(() -> {
@@ -831,30 +857,32 @@ public final class WatchPartyActivity extends Activity {
                 @Override public void onRemoveStream(MediaStream stream) {
                     if (!stream.videoTracks.isEmpty()) main.post(WatchPartyActivity.this::clearRemoteVideoSafe);
                 }
+                @Override public void onRemoveTrack(RtpReceiver receiver) {
+                    MediaStreamTrack track = receiver.track();
+                    if (track instanceof VideoTrack) main.post(() -> {
+                        if (remoteVideoTrack == track) clearRemoteVideoSafe();
+                    });
+                }
                 @Override public void onDataChannel(org.webrtc.DataChannel channel) { }
                 @Override public void onRenegotiationNeeded() {
-                    main.post(() -> {
-                        if (closed || !rtcReady) return;
-                        if (host) {
-                            if (offerReady) createOfferSafe();
-                        } else {
-                            try {
-                                JSONObject request = new JSONObject();
-                                request.put("renegotiation_request", true);
-                                sendSignalSafe("offer", request);
-                            } catch (Exception e) {
-                                showErrorSafe("Не удалось запросить подключение камеры или микрофона: " + e.getMessage());
-                            }
-                        }
-                    });
+                    if (host) {
+                        android.util.Log.i("VmesteRtc", "Host renegotiation needed");
+                        main.post(WatchPartyActivity.this::requestMediaNegotiationSafe);
+                    }
                 }
                 @Override public void onAddTrack(RtpReceiver receiver, MediaStream[] streams) {
                     MediaStreamTrack track = receiver.track();
-                    if (track instanceof VideoTrack) showRemoteVideoSafe((VideoTrack) track);
+                    if (track instanceof VideoTrack) {
+                        android.util.Log.i("VmesteRtc", "Remote video track received");
+                        showRemoteVideoSafe((VideoTrack) track);
+                    }
                 }
                 @Override public void onTrack(RtpTransceiver transceiver) {
                     MediaStreamTrack track = transceiver.getReceiver().track();
-                    if (track instanceof VideoTrack) showRemoteVideoSafe((VideoTrack) track);
+                    if (track instanceof VideoTrack) {
+                        android.util.Log.i("VmesteRtc", "Remote video track received");
+                        showRemoteVideoSafe((VideoTrack) track);
+                    }
                 }
             });
             if (peer == null) throw new IllegalStateException("WebRTC peer is unavailable");
@@ -905,6 +933,9 @@ public final class WatchPartyActivity extends Activity {
         }
         peer.createOffer(new SdpObserver() {
             @Override public void onCreateSuccess(SessionDescription sdp) {
+                android.util.Log.i("VmesteRtc", "Local offer created; camera="
+                        + (cameraTrack != null) + ", videoDirection="
+                        + (videoTransceiver == null ? "none" : videoTransceiver.getDirection()));
                 peer.setLocalDescription(new SdpObserver() {
                     @Override public void onSetSuccess() {
                         try { JSONObject p = new JSONObject(); p.put("sdp", sdp.description); sendSignalSafe("offer", p); }
@@ -1013,22 +1044,19 @@ public final class WatchPartyActivity extends Activity {
             return;
         }
         if ("renegotiate".equals(kind)) {
-            if (host) main.post(() -> {
-                if (offerReady && !closed) createOfferSafe();
-            });
+            if (host) main.post(this::requestMediaNegotiationSafe);
             return;
         }
         if ("offer".equals(kind) && host && data.optBoolean("renegotiation_request")) {
-            main.post(() -> {
-                if (offerReady && !closed) createOfferSafe();
-            });
+            android.util.Log.i("VmesteRtc", "Peer requested media renegotiation");
+            main.post(this::requestMediaNegotiationSafe);
             return;
         }
         if ("player_source".equals(kind)) {
             String remoteUrl = data.optString("url", "");
             try {
-                if (WatchPlayerSource.parse(remoteUrl).kind != WatchPlayerSource.Kind.WEBSITE)
-                    main.post(() -> openPlayerSafe(remoteUrl, false));
+                WatchPlayerSource source = WatchPlayerSource.parse(remoteUrl);
+                main.post(() -> openPlayerSafe(source.url, false));
             } catch (IllegalArgumentException ignored) { }
             return;
         }
@@ -1107,6 +1135,7 @@ public final class WatchPartyActivity extends Activity {
     }
 
     private void completeRemoteOfferSafe() {
+        mediaNegotiationRequestPending = false;
         String nextOffer = remoteOfferQueue.complete(
                 peer != null && peer.signalingState() == PeerConnection.SignalingState.STABLE);
         if (nextOffer != null) applyRemoteOfferSafe(nextOffer);
@@ -1176,6 +1205,8 @@ public final class WatchPartyActivity extends Activity {
             catch (Exception e) {
                 String reason = signalErrorLabel(e);
                 main.post(() -> {
+                    if ("offer".equals(kind) && payload.optBoolean("renegotiation_request"))
+                        mediaNegotiationRequestPending = false;
                     if (!closed && status != null)
                         status.setText("Не удалось передать сигнал " + kind + " (" + reason + ") · проверьте миграции и доступ Supabase");
                 });
@@ -1228,6 +1259,7 @@ public final class WatchPartyActivity extends Activity {
             audioTrack.setEnabled(true);
             updatePrivacyStatusSafe();
             updateMediaControlsSafe();
+            requestMediaNegotiationSafe();
         } catch (Exception e) {
             stopMicrophoneSafe();
             if (status != null) status.setText("Не удалось включить микрофон: " + e.getMessage());
@@ -1246,6 +1278,7 @@ public final class WatchPartyActivity extends Activity {
         if (source != null) source.dispose();
         updatePrivacyStatusSafe();
         updateMediaControlsSafe();
+        if (track != null) requestMediaNegotiationSafe();
     }
 
     private void toggleCameraSafe() {
@@ -1276,6 +1309,7 @@ public final class WatchPartyActivity extends Activity {
             SurfaceTextureHelper helper = null;
             VideoSource source = null;
             VideoTrack track = null;
+            RtpSender sender = null;
             try {
                 if (closed) return;
                 capturer = createCameraCapturerSafe();
@@ -1284,17 +1318,30 @@ public final class WatchPartyActivity extends Activity {
                 capturer.initialize(helper, getApplicationContext(), source.getCapturerObserver());
                 capturer.startCapture(640, 480, 24);
                 track = factory.createVideoTrack("vmeste_camera", source);
-                if (videoTransceiver == null || !videoTransceiver.getSender().setTrack(track, false))
+                track.setEnabled(true);
+                if (peer == null || videoTransceiver == null)
+                    throw new IllegalStateException("WebRTC video transceiver is unavailable");
+                videoTransceiver.setDirection(RtpTransceiver.RtpTransceiverDirection.SEND_RECV);
+                sender = videoTransceiver.getSender();
+                if (sender == null || !sender.setTrack(track, false))
                     throw new IllegalStateException("Не удалось включить камеру в WebRTC");
                 if (closed || cameraStopPending) {
-                    videoTransceiver.getSender().setTrack(null, false);
+                    sender.setTrack(null, false);
+                    videoTransceiver.setDirection(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY);
                     releaseCameraResourcesSafe(capturer, helper, source, track);
+                    if (!closed) main.post(() -> {
+                        cameraStarting = false;
+                        cameraStopPending = false;
+                        requestMediaNegotiationSafe();
+                        updateMediaControlsSafe();
+                    });
                     return;
                 }
                 cameraCapturer = capturer;
                 textureHelper = helper;
                 videoSource = source;
                 cameraTrack = track;
+                cameraSender = sender;
                 main.post(() -> {
                     cameraStarting = false;
                     if (closed) {
@@ -1306,8 +1353,12 @@ public final class WatchPartyActivity extends Activity {
                     updateVideoRowSafe();
                     updatePrivacyStatusSafe();
                     updateMediaControlsSafe();
+                    requestMediaNegotiationSafe();
                 });
             } catch (Exception e) {
+                if (sender != null) sender.setTrack(null, false);
+                if (videoTransceiver != null)
+                    videoTransceiver.setDirection(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY);
                 if (capturer != null || helper != null || source != null || track != null)
                     releaseCameraResourcesSafe(capturer, helper, source, track);
                 main.post(() -> {
@@ -1355,18 +1406,41 @@ public final class WatchPartyActivity extends Activity {
         SurfaceTextureHelper helper = textureHelper;
         VideoSource source = videoSource;
         VideoTrack track = cameraTrack;
+        RtpSender sender = cameraSender;
         cameraCapturer = null;
         textureHelper = null;
         videoSource = null;
         cameraTrack = null;
+        cameraSender = null;
         if (track != null) {
-            if (videoTransceiver != null) videoTransceiver.getSender().setTrack(null, false);
+            if (sender != null) sender.setTrack(null, false);
+            if (videoTransceiver != null)
+                videoTransceiver.setDirection(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY);
             if (localCameraView != null) track.removeSink(localCameraView);
         }
         releaseCameraResourcesSafe(capturer, helper, source, track);
         updateVideoRowSafe();
         updatePrivacyStatusSafe();
         updateMediaControlsSafe();
+        if (track != null) requestMediaNegotiationSafe();
+    }
+
+    private void requestMediaNegotiationSafe() {
+        if (closed || !rtcReady || !offerReady || peer == null) return;
+        if (host) {
+            createOfferSafe();
+            return;
+        }
+        if (mediaNegotiationRequestPending) return;
+        mediaNegotiationRequestPending = true;
+        try {
+            JSONObject request = new JSONObject();
+            request.put("renegotiation_request", true);
+            sendSignalSafe("offer", request);
+        } catch (Exception e) {
+            mediaNegotiationRequestPending = false;
+            showErrorSafe("Не удалось запросить подключение камеры или микрофона: " + e.getMessage());
+        }
     }
 
     private void releaseCameraResourcesSafe(CameraVideoCapturer capturer, SurfaceTextureHelper helper,
@@ -1451,8 +1525,8 @@ public final class WatchPartyActivity extends Activity {
     }
 
     private void finishRoomSafe() {
-        if (closed) return;
-        if (host) {
+        if (isFinishing()) return;
+        if (!closed && host) {
             new Thread(() -> {
                 try { sync.sendWatchSignal(roomId, "close", new JSONObject()); }
                 catch (Exception ignored) {}
@@ -1465,7 +1539,7 @@ public final class WatchPartyActivity extends Activity {
     private void showErrorSafe(String message) {
         main.post(() -> {
             if (closed || isFinishing()) return;
-            new AlertDialog.Builder(this)
+            VmesteDialogTheme.builder(this)
                 .setTitle("Кино-комната")
                 .setMessage(message)
                 .setPositiveButton("Закрыть", (d, w) -> finish())
@@ -1516,7 +1590,7 @@ public final class WatchPartyActivity extends Activity {
             toggleFullscreenSafe();
             return;
         }
-        new AlertDialog.Builder(this)
+        VmesteDialogTheme.builder(this)
             .setMessage("Завершить комнату просмотра?")
             .setNegativeButton("Остаться", null)
             .setPositiveButton("Завершить", (d, w) -> finishRoomSafe())

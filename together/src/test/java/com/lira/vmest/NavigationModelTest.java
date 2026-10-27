@@ -15,7 +15,7 @@ public final class NavigationModelTest {
         List<String> tabs = NavigationModel.bottomTabs(
                 NavigationModel.defaultOrder(), NavigationModel.defaultHidden());
 
-        assertEquals(Arrays.asList("Главная", "Чат", "Дела", "Настройки", "Ещё"), tabs);
+        assertEquals(Arrays.asList("Главная", "Чат", "Дела", "Ещё"), tabs);
     }
 
     @Test
@@ -25,25 +25,25 @@ public final class NavigationModelTest {
                 Collections.singleton("Ещё"));
 
         assertTrue(tabs.contains("Ещё"));
-        assertEquals(Arrays.asList("Главная", "Чат", "Дела", "Настройки", "Ещё"), tabs);
+        assertEquals(Arrays.asList("Главная", "Чат", "Дела", "Ещё"), tabs);
     }
 
     @Test
-    public void settingsRemainsPinnedForExistingCustomPreferences() {
+    public void settingsIsNotPinnedEvenWhenPresentInOldPreferences() {
         List<String> tabs = NavigationModel.bottomTabs(
                 Arrays.asList("Главная", "Чат", "Дела", "Настройки", "Ещё"),
                 new java.util.HashSet<>(Arrays.asList("Настройки", "Ещё")));
 
-        assertEquals(Arrays.asList("Главная", "Чат", "Дела", "Настройки", "Ещё"), tabs);
+        assertEquals(Arrays.asList("Главная", "Чат", "Дела", "Ещё"), tabs);
     }
 
     @Test
-    public void respectsVisibleCustomRoutesAndCapsBottomNavigationAtFive() {
+    public void respectsVisibleCustomRoutesAndCapsBottomNavigationAtFour() {
         List<String> tabs = NavigationModel.bottomTabs(
                 Arrays.asList("Игры", "Просмотр", "Карты", "Файлы", "Календарь", "Ещё"),
                 Collections.singleton("Просмотр"));
 
-        assertEquals(Arrays.asList("Игры", "Карты", "Файлы", "Настройки", "Ещё"), tabs);
+        assertEquals(Arrays.asList("Игры", "Карты", "Файлы", "Ещё"), tabs);
     }
 
     @Test
@@ -52,6 +52,6 @@ public final class NavigationModelTest {
                 Arrays.asList("Игры", "Просмотр"),
                 new java.util.HashSet<>(Arrays.asList("Игры", "Просмотр")));
 
-        assertEquals(Arrays.asList("Настройки", "Ещё"), tabs);
+        assertEquals(Collections.singletonList("Ещё"), tabs);
     }
 }

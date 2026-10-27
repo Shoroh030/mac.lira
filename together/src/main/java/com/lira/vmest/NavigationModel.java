@@ -15,7 +15,7 @@ final class NavigationModel {
 
     static List<String> defaultOrder() {
         return Arrays.asList(
-                "Главная", "Чат", "Дела", SETTINGS_TAB, MORE_TAB, "Календарь", "Хотим", "Игры",
+                "Главная", "Чат", "Дела", MORE_TAB, "Календарь", "Хотим", "Игры",
                 "Просмотр", "Пригласить", "Подарочный радар", "Истории", "Капсула",
                 "Карты", "Голосование", "Файлы");
     }
@@ -38,7 +38,6 @@ final class NavigationModel {
                 if (result.size() == MAX_PRIMARY_TABS) break;
             }
         }
-        result.add(SETTINGS_TAB);
         result.add(MORE_TAB);
         return result;
     }

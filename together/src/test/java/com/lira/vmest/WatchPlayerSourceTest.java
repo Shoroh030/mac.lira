@@ -3,8 +3,10 @@ package com.lira.vmest;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 
 public final class WatchPlayerSourceTest {
     @Test
@@ -16,6 +18,7 @@ public final class WatchPlayerSourceTest {
 
         assertEquals(WatchPlayerSource.Kind.YOUTUBE, watch.kind);
         assertEquals("M7lc1UVf-VE", watch.youtubeVideoId);
+        assertTrue(watch.supportsSynchronizedPlayback());
         assertEquals(WatchPlayerSource.Kind.YOUTUBE, shortLink.kind);
         assertEquals("M7lc1UVf-VE", shortLink.youtubeVideoId);
     }
@@ -33,6 +36,7 @@ public final class WatchPlayerSourceTest {
         WatchPlayerSource source = WatchPlayerSource.parse("https://www.youtube.com/channel/test");
 
         assertEquals(WatchPlayerSource.Kind.WEBSITE, source.kind);
+        assertFalse(source.supportsSynchronizedPlayback());
         assertNull(source.youtubeVideoId);
     }
 
@@ -44,6 +48,8 @@ public final class WatchPlayerSourceTest {
                 WatchPlayerSource.parse("https://cdn.example/live.m3u8?token=abc").kind);
         assertEquals(WatchPlayerSource.Kind.DIRECT_VIDEO,
                 WatchPlayerSource.parse("https://cdn.example/video.webm").kind);
+        assertTrue(WatchPlayerSource.parse("https://cdn.example/video.mp4")
+                .supportsSynchronizedPlayback());
     }
 
     @Test
@@ -51,6 +57,7 @@ public final class WatchPlayerSourceTest {
         WatchPlayerSource source = WatchPlayerSource.parse("https://kinogo.example/watch/123");
 
         assertEquals(WatchPlayerSource.Kind.WEBSITE, source.kind);
+        assertFalse(source.supportsSynchronizedPlayback());
     }
 
     @Test

@@ -1,4 +1,4 @@
-# Вместе Android releases
+# I'm Here Android releases
 
 The app checks the public GitHub repository's latest stable release and offers to download its APK. Android still requires the user to allow installs from this app and confirm the system installer; updates are never installed silently.
 
@@ -24,7 +24,7 @@ The room synchronizes YouTube videos and public HTTPS MP4, HLS (`.m3u8`), and We
 
 ## Navigation
 
-The bottom bar keeps **Главная**, **Чат**, **Дела**, **Календарь**, and **Ещё** reachable on first launch. **Ещё** is pinned so optional or less-frequent sections remain discoverable even when the other destinations are customized. It groups the remaining sections by communication, plans, shared activities, and tools. The profile shortcut remains in the top bar.
+The bottom bar keeps **Главная**, **Чат**, **Дела**, and **Ещё** reachable on first launch. **Ещё** is pinned so optional or less-frequent sections remain discoverable even when the other destinations are customized; **Настройки** stays in **Ещё** rather than taking a permanent bottom-bar slot. It groups the remaining sections by communication, plans, shared activities, and tools. The profile shortcut remains in the top bar.
 
 When no couple connection is ready, the home screen keeps the watch-room actions visible but disabled and explains that sign-in and pairing are required first. Once connected, creating a room and joining a partner's room remain separate actions. Navigation labels are announced to TalkBack, and touch actions use at least 48 dp targets.
 
@@ -51,18 +51,18 @@ One-time setup by a repository administrator: open **Settings → Secrets and va
 - `VMEST_KEY_ALIAS`: signing-key alias.
 - `VMEST_KEY_PASSWORD`: signing-key password.
 
+Configure these secrets only with the verified production release keystore. Never use `.android\debug.keystore` or a debug APK certificate for a public release. Before publishing, verify that the keystore certificate matches both the production certificate pinned in `.github/workflows/android-release.yml` and the certificate on the installed production app; stop if either comparison is unavailable or fails.
+
 On Windows, the Base64 value can be sent to the GitHub secret directly from PowerShell without printing it or pasting it into chat:
 
 ```powershell
-$keystore = Join-Path $env:USERPROFILE '.android\debug.keystore'
+$keystore = 'C:\path\to\verified\production.keystore'
 [Convert]::ToBase64String([IO.File]::ReadAllBytes($keystore)) |
   gh secret set VMEST_KEYSTORE_BASE64 --repo Shoroh030/mac.lira
 ```
 
-Use the exact keystore that signed the installed app. If it is not the default Android debug keystore, change the file path and set the matching passwords and alias in the other three secrets.
+Android rejects updates signed by another key. Do not create a new key, replace the production keystore, put it in source control, or send it in chat. Only the repository administrator should add the verified keystore and matching passwords/alias to GitHub Actions secrets. The release workflow fails clearly when any secret is missing or the signing certificate does not match.
 
-The signing certificate must match the one used by installed copies; Android rejects updates signed by another key. This repository currently verifies against the certificate already installed on the two test phones. Do not create a new key, replace the existing keystore, put it in source control, or send it in chat. Only the repository administrator should add it to GitHub Actions secrets. The release workflow fails clearly when any secret is missing, and checks the certificate before publishing.
-
-After the secrets are configured, push a version tag such as `v1.3.7`. The `Android release` workflow builds a signed APK and publishes it as `together-1.3.7.apk`. The in-app updater accepts only that version-matched asset, requires GitHub's SHA-256 asset digest, verifies the downloaded file, package name, version code and signing certificate, then hands it to Android's package installer. The version code is generated monotonically from the GitHub Actions run number.
+After the secrets are configured, publish only a version tag newer than the latest release and only after confirming its generated version code is greater than installed production versions. The `Android release` workflow builds a signed APK and publishes it as `together-<version>.apk`. The in-app updater accepts only that version-matched asset, requires GitHub's SHA-256 asset digest, verifies the downloaded file, package name, version code and signing certificate, then hands it to Android's package installer. The version code is generated monotonically from the GitHub Actions run number.
 
 The in-app updater uses the latest stable release endpoint for `Shoroh030/mac.lira`; the repository must remain public for unauthenticated clients to find releases. No GitHub token is embedded in the app.

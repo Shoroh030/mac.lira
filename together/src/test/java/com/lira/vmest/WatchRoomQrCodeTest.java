@@ -2,6 +2,7 @@ package com.lira.vmest;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
@@ -28,6 +29,8 @@ public final class WatchRoomQrCodeTest {
         String shareText = WatchRoomQrCode.shareText(roomId);
 
         assertEquals("vmeste://room/" + roomId, WatchRoomQrCode.link(roomId));
+        assertTrue(shareText.startsWith("Подключайтесь к комнате просмотра I'm Here:\n"));
+        assertTrue(shareText.contains("Код: VMESTE:ROOM:" + roomId));
         assertEquals(roomId, WatchRoomQrCode.decodeInvitation(shareText));
         assertEquals(roomId, WatchRoomQrCode.decodeInvitation(WatchRoomQrCode.link(roomId)));
         assertEquals(roomId, WatchRoomQrCode.decodeInvitation(roomId));

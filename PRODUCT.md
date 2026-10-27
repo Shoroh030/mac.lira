@@ -12,7 +12,7 @@ Two partners using separate accounts connected to the same couple space. The pri
 
 ## Product Purpose
 
-Together gives partners a private shared space for conversation, everyday plans and small activities. Success means either partner can quickly find the next useful action and understand whether an activity is local, shared, or waiting for the other person.
+I'm Here gives partners a private shared space for conversation, everyday plans and small activities. Success means either partner can quickly find the next useful action and understand whether an activity is local, shared, or waiting for the other person.
 
 ## Capabilities and Constraints
 
