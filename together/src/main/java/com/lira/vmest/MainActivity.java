@@ -466,7 +466,7 @@ public class MainActivity extends Activity {
         avatarText.setMaxLines(1);
         avatarText.setEllipsize(android.text.TextUtils.TruncateAt.END);
         avatars.addView(avatarText);
-        avatars.setBackground(shape(PALE, 22));
+        avatars.setBackground(glassSurface(PALE, 22));
         avatars.setContentDescription("Открыть настройки профиля" + (profileName.isEmpty() ? "" : ": " + profileName));
         header.addView(avatars, new LinearLayout.LayoutParams(dp(120), dp(48)));
         avatars.setOnClickListener(v -> { feature=null;tab=NavigationModel.SETTINGS_TAB;render(); });
@@ -644,12 +644,15 @@ public class MainActivity extends Activity {
     }
     private GradientDrawable navigationSurface() {
         GradientDrawable surface = new GradientDrawable();
-        surface.setColor(softDark ? 0xF729252F : 0xF7FFFFFF);
+        surface.setOrientation(GradientDrawable.Orientation.TOP_BOTTOM);
+        surface.setColors(softDark
+                ? new int[]{0xF74A414F,0xEB39333E,0xF7302A35}
+                : new int[]{0xF8FFFFFF,0xEAFBF8FD,0xF4F3EDF8});
         surface.setCornerRadii(new float[]{dp(18),dp(18),dp(18),dp(18),0,0,0,0});
-        surface.setStroke(dp(1), softDark ? 0xFF403945 : LINE);
+        surface.setStroke(dp(1), softDark ? 0x88988BA2 : 0xD6FFFFFF);
         return surface;
     }
-    private GradientDrawable navigationItem(boolean selected) {
+    private android.graphics.drawable.Drawable navigationItem(boolean selected) {
         GradientDrawable item = new GradientDrawable();
         if (selected) {
             item.setColor(softDark ? 0xFF493D53 : PALE);
@@ -659,7 +662,9 @@ public class MainActivity extends Activity {
             item.setColor(0x00000000);
             item.setCornerRadius(dp(15));
         }
-        return item;
+        int rippleColor = softDark ? 0x557A6889 : 0x557F58A4;
+        return new android.graphics.drawable.RippleDrawable(
+                android.content.res.ColorStateList.valueOf(rippleColor), item, null);
     }
     private String iconFor(String s) {
         switch(s) { case "Главная": return "⌂"; case "Дела": return "✓"; case "Чат": return "✉"; case "Календарь": return "▦"; case "Хотим": return "♡"; case "Ещё": return "⋯"; case "Настройки": return "⚙"; case "Игры": return "🎮"; case "Просмотр": return "🎬"; case "Пригласить": return "🤝"; case "Подарочный радар": return "🎁"; case "Истории": return "📖"; case "Капсула": return "⏳"; case "Карты": return "💳"; case "Голосование": return "🗳"; case "Файлы": return "📎"; default: return "•••"; }
@@ -3693,7 +3698,8 @@ public class MainActivity extends Activity {
         }
         if(!"sea_battle".equals(type)&&!state.optString("p2").isEmpty()
                 &&isRandomTurnGame(type)&&state.optString("first_player").isEmpty()){
-            setRandomFirstTurn(state,type);
+            if(isGameAtInitialPosition(type,state,p1))setRandomFirstTurn(state,type);
+            else state.put("first_player",p1);
             try{game=pairGames.update(game.getString("id"),game.optLong("version"),state,game.optString("status"));}
             catch(Exception race){
                 JSONObject latest=pairGames.fetch(game.getString("id"));
@@ -3704,17 +3710,32 @@ public class MainActivity extends Activity {
         }
         return game;
     }
+    private boolean isGameAtInitialPosition(String type,JSONObject state,String playerOne){
+        if("tic_tac_toe".equals(type))return ".........".equals(state.optString("board"));
+        if("connect_four".equals(type))return emptyBoard(42).equals(state.optString("board"));
+        if("checkers".equals(type))return initialCheckersBoard().equals(state.optString("board"));
+        if("dots_boxes".equals(type))return emptyBoard(40).equals(state.optString("edges"));
+        if("durak".equals(type))return state.optInt("attack",-1)<0
+                &&playerOne.equals(state.optString("attacker"));
+        return false;
+    }
     private boolean isRandomTurnGame(String type){
         return "tic_tac_toe".equals(type)||"connect_four".equals(type)||"checkers".equals(type)
                 ||"dots_boxes".equals(type)||"durak".equals(type);
     }
     private void setRandomFirstTurn(JSONObject state,String type)throws Exception{
+        boolean previouslySelected=!state.optString("first_player").isEmpty();
         String first=GameStartRules.chooseOrKeepFirstPlayer(
                 state.optString("p1"),state.optString("p2"),
                 state.optString("first_player"),new Random());
         state.put("first_player",first);
         if(state.has("turn"))state.put("turn",first);
         if("durak".equals(type))state.put("attacker",first);
+        if("checkers".equals(type)&&!previouslySelected){
+            String playerOne=state.optString("p1");
+            if(!first.equals(playerOne))
+                state.put("board",BoardGameRules.swapCheckersColors(state.optString("board")));
+        }
     }
     private void startNextGame(String type,JSONObject[] current,Runnable draw){
         network.execute(()->{
@@ -4600,13 +4621,15 @@ public class MainActivity extends Activity {
         TextView h=text(title,19,INK,true); LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.topMargin=dp(13);p.bottomMargin=dp(3);body.addView(h,p);
         if(sub!=null){TextView s=text(sub,12,MUTED,false);LinearLayout.LayoutParams q=new LinearLayout.LayoutParams(-1,-2);q.bottomMargin=dp(11);body.addView(s,q);}
     }
-    private TextView pill(String value,int color) { TextView b=text(value,13,color,true);b.setGravity(Gravity.CENTER);b.setMinHeight(dp(48));b.setPadding(dp(16),dp(11),dp(16),dp(11));b.setBackground(shape(PALE,22));LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-2,-2);p.bottomMargin=dp(10);b.setLayoutParams(p);return b; }
+    private TextView pill(String value,int color) { TextView b=text(value,13,color,true);b.setGravity(Gravity.CENTER);b.setMinHeight(dp(48));b.setPadding(dp(16),dp(11),dp(16),dp(11));b.setBackground(new android.graphics.drawable.RippleDrawable(android.content.res.ColorStateList.valueOf(softDark?0x667F688E:0x557F58A4),glassSurface(PALE,22),null));LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-2,-2);p.bottomMargin=dp(10);b.setLayoutParams(p);return b; }
     private GradientDrawable glassSurface(int fill,int radius) {
         GradientDrawable surface=new GradientDrawable();
-        int base=themedFill(fill);
-        surface.setColor((base&0x00FFFFFF)|(0xF7<<24));
+        surface.setOrientation(GradientDrawable.Orientation.TOP_BOTTOM);
+        surface.setColors(softDark
+                ? new int[]{0xF74A414F,0xE83A3340,0xF4332D39}
+                : new int[]{0xF8FFFFFF,0xEAFBF8FD,0xF4F4EFF8});
         surface.setCornerRadius(dp(radius));
-        surface.setStroke(dp(1),softDark?0x665F5268:0x99FFFFFF);
+        surface.setStroke(dp(1),softDark?0x88988BA2:0xD6FFFFFF);
         return surface;
     }
     private void addGap(LinearLayout parent,int h) { View gap=new View(this);parent.addView(gap,new LinearLayout.LayoutParams(1,dp(h))); }
@@ -4748,6 +4771,9 @@ public class MainActivity extends Activity {
             final String boardState=s.optString("board",emptyBoard(42));
             final String turn=s.optString("turn");
             final String winner=s.optString("winner");
+            final String firstPlayer=GameStartRules.firstPlayerOrPlayerOne(s.optString("first_player"),p1);
+            final char myToken=GameStartRules.connectFourTokenForPlayer(me,firstPlayer,p1);
+            final char partnerToken=myToken=='R'?'B':'R';
             final boolean active="active".equals(g.optString("status"));
             final boolean participant=me.equals(p1)||me.equals(p2);
             if(p2.isEmpty())status.setText("Игра создана. Ждём партнёра.");
@@ -4755,7 +4781,10 @@ public class MainActivity extends Activity {
             else if(!winner.isEmpty())status.setText(winner.equals(me)?"Вы победили! 🎉":"Партнёр победил.");
             else if(!active)status.setText("Партия завершена");
             else if(!participant)status.setText("Вы не участник этой партии");
-            else status.setText(moveBusy[0]?"Сохраняю ход…":turn.equals(me)?"Ваш ход — выберите колонку":"Ход партнёра");
+            else status.setText((moveBusy[0]?"Сохраняю ход…":turn.equals(me)
+                    ?"Ваш ход — выберите колонку":"Ход партнёра")
+                    +" · вы "+(myToken=='R'?"красные":"синие")
+                    +" / партнёр "+(partnerToken=='R'?"красные":"синие"));
             restart.setVisibility(participant&&!p2.isEmpty()&&"finished".equals(g.optString("status"))?View.VISIBLE:View.GONE);
             board.removeAllViews();
             int cellSize=Math.max(dp(34),Math.min(dp(48),
@@ -4800,7 +4829,8 @@ public class MainActivity extends Activity {
                                     throw new Exception("Сейчас ход партнёра или партия ещё не началась");
                                 int drop=BoardGameRules.connectFourLandingRow(b,col);
                                 if(drop<0)throw new Exception("Эта колонка заполнена");
-                                char player=me.equals(p1Fresh)?'R':'B';
+                                char player=GameStartRules.connectFourTokenForPlayer(
+                                        me,ns.optString("first_player"),p1Fresh);
                                 StringBuilder sb=new StringBuilder(b);sb.setCharAt(drop,player);
                                 ns.put("board",sb.toString());
                                 boolean won=BoardGameRules.hasConnectFour(sb.toString(),player);
@@ -4834,10 +4864,10 @@ public class MainActivity extends Activity {
         LinearLayout board=column();board.setGravity(Gravity.CENTER);board.setPadding(dp(6),dp(6),dp(6),dp(6));board.setBackground(shape(0xFF4B3628,18));LinearLayout.LayoutParams bp=new LinearLayout.LayoutParams(-1,-2);bp.topMargin=dp(8);panel.addView(board,bp);
         TextView restart=pill("Новая партия",PURPLE);restart.setGravity(Gravity.CENTER);LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,-2);rp.topMargin=dp(10);panel.addView(restart,rp);
         AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Шашки · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();
-        Runnable[] draw={null};draw[0]=()->{JSONObject g=game[0],s=g.optJSONObject("state");if(s==null)return;String me=pairGames.userId(),p1=s.optString("p1"),p2=s.optString("p2"),boardState=s.optString("board",initialCheckersBoard()),turn=s.optString("turn"),winner=s.optString("winner");int chain=s.optInt("chain",-1);boolean active="active".equals(g.optString("status")),participant=me.equals(p1)||me.equals(p2);char mine=me.equals(p1)?'r':'b';boolean rotated=!me.equals(p1);
-            String sideLabel="Ваши шашки "+(mine=='r'?"красные":"синие")+" · ваша сторона внизу";
+        Runnable[] draw={null};draw[0]=()->{JSONObject g=game[0],s=g.optJSONObject("state");if(s==null)return;String me=pairGames.userId(),p1=s.optString("p1"),p2=s.optString("p2"),boardState=s.optString("board",initialCheckersBoard()),turn=s.optString("turn"),winner=s.optString("winner"),whitePlayer=GameStartRules.checkersWhitePlayer(s.optString("first_player"),p1);int chain=s.optInt("chain",-1);boolean active="active".equals(g.optString("status")),participant=me.equals(p1)||me.equals(p2),whiteMovesUp=GameStartRules.checkersWhiteMovesUp(whitePlayer,p1);char mine=me.equals(whitePlayer)?'r':'b';boolean rotated=!me.equals(p1);
+            String sideLabel="Ваши шашки "+(mine=='r'?"белые":"чёрные")+" · ваша сторона внизу";
             if(p2.isEmpty())status.setText("Игра создана. Ждём партнёра.");else if(!winner.isEmpty())status.setText((winner.equals(me)?"Вы победили! 🎉":"Партнёр победил.")+"\n"+sideLabel);else if(!active)status.setText("Партия завершена\n"+sideLabel);else status.setText((moveBusy[0]?"Сохраняю ход…":turn.equals(me)?"Ваш ход · выберите шашку":"Ход партнёра")+"\n"+sideLabel);
-            java.util.Map<Integer,java.util.List<Integer>> legal=active&&participant&&!p2.isEmpty()&&turn.equals(me)?BoardGameRules.legalCheckersMoves(boardState,me,p1,chain):java.util.Collections.emptyMap();
+            java.util.Map<Integer,java.util.List<Integer>> legal=active&&participant&&!p2.isEmpty()&&turn.equals(me)?BoardGameRules.legalCheckersMoves(boardState,me,p1,whitePlayer,chain,whiteMovesUp):java.util.Collections.emptyMap();
             java.util.List<Integer> destinations=selected[0]<0?java.util.Collections.emptyList():legal.getOrDefault(selected[0],java.util.Collections.emptyList());
             restart.setVisibility(!p2.isEmpty()&&"finished".equals(g.optString("status"))?View.VISIBLE:View.GONE);
             board.removeAllViews();
@@ -4859,10 +4889,11 @@ public class MainActivity extends Activity {
                     else if(own&&active&&turn.equals(me)&&!moveBusy[0])bg=dark?0xFF916C42:0xFFF0D9AA;
                     cell.setBackground(shape(bg,4));
                     if(mark!='.'){
-                        int pieceColor=mark=='r'||mark=='R'?0xFFB9384D:0xFF3F568C;
+                        int pieceColor=mark=='r'||mark=='R'?0xFFF4F0E7:0xFF30313A;
+                        int pieceOutline=mark=='r'||mark=='R'?0xFFFFFFFF:0xFF878895;
                         int pieceSize=(int)(cellSize*.68f);
                         View piece=new View(this);
-                        piece.setBackground(gameDisc(pieceColor,0xFFF1DFC2));
+                        piece.setBackground(gameDisc(pieceColor,pieceOutline));
                         piece.setElevation(dp(2));
                         cell.addView(piece,new FrameLayout.LayoutParams(pieceSize,pieceSize,Gravity.CENTER));
                         if(Character.isUpperCase(mark)){
@@ -4900,7 +4931,9 @@ public class MainActivity extends Activity {
     }
 
     private void submitCheckersMove(JSONObject[] game,int from,int to,boolean[] busy,Runnable[] draw){
-        network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));if(fresh==null)throw new Exception("Партия не найдена");JSONObject state=new JSONObject(fresh.getJSONObject("state").toString());String me=pairGames.userId(),p1=state.optString("p1"),p2=state.optString("p2");if(!"active".equals(fresh.optString("status"))||p2.isEmpty()||!me.equals(state.optString("turn")))throw new Exception("Сейчас ход партнёра или партия ещё не началась");BoardGameRules.CheckersMove move=BoardGameRules.moveCheckers(state.optString("board"),me,p1,p2,state.optInt("chain",-1),from,to);state.put("board",move.board);state.put("turn",move.turn);state.put("winner",move.winner);state.put("chain",move.chain);JSONObject saved=pairGames.update(fresh.getString("id"),fresh.optLong("version"),state,move.winner.isEmpty()?"active":"finished");runOnUiThread(()->{busy[0]=false;game[0]=saved;draw[0].run();});}catch(Exception e){runOnUiThread(()->{busy[0]=false;draw[0].run();toast("Ход не сохранён: "+e.getMessage());});}});
+        network.execute(()->{try{JSONObject fresh=pairGames.fetch(game[0].getString("id"));if(fresh==null)throw new Exception("Партия не найдена");JSONObject state=new JSONObject(fresh.getJSONObject("state").toString());String me=pairGames.userId(),p1=state.optString("p1"),p2=state.optString("p2");if(!"active".equals(fresh.optString("status"))||p2.isEmpty()||!me.equals(state.optString("turn")))throw new Exception("Сейчас ход партнёра или партия ещё не началась");        String whitePlayer=GameStartRules.checkersWhitePlayer(state.optString("first_player"),p1);
+        boolean whiteMovesUp=GameStartRules.checkersWhiteMovesUp(whitePlayer,p1);
+        BoardGameRules.CheckersMove move=BoardGameRules.moveCheckers(state.optString("board"),me,p1,p2,whitePlayer,state.optInt("chain",-1),from,to,whiteMovesUp);state.put("board",move.board);state.put("turn",move.turn);state.put("winner",move.winner);state.put("chain",move.chain);JSONObject saved=pairGames.update(fresh.getString("id"),fresh.optLong("version"),state,move.winner.isEmpty()?"active":"finished");runOnUiThread(()->{busy[0]=false;game[0]=saved;draw[0].run();});}catch(Exception e){runOnUiThread(()->{busy[0]=false;draw[0].run();toast("Ход не сохранён: "+e.getMessage());});}});
     }
 
     private void onlineDotsAndBoxes(){
@@ -4915,8 +4948,8 @@ public class MainActivity extends Activity {
         TextView restart=pill("Новая партия",PURPLE);restart.setGravity(Gravity.CENTER);LinearLayout.LayoutParams rp=new LinearLayout.LayoutParams(-1,-2);rp.topMargin=dp(8);panel.addView(restart,rp);
         AlertDialog dialog=new AlertDialog.Builder(this).setTitle("Точки и квадратики · онлайн").setView(panel).setNegativeButton("Закрыть",null).create();
         final boolean[] moveBusy={false};
-        Runnable[] draw={null};draw[0]=()->{JSONObject g=game[0],s=g.optJSONObject("state");if(s==null)return;String me=pairGames.userId(),p1=s.optString("p1"),p2=s.optString("p2"),edgesState=s.optString("edges",emptyBoard(40)),boxesState=s.optString("boxes",emptyBoard(16)),turn=s.optString("turn"),winner=s.optString("winner");int score1=s.optInt("score1",0),score2=s.optInt("score2",0);boolean active="active".equals(g.optString("status"));
-            if(p2.isEmpty())status.setText("Игра создана. Ждём партнёра.");else if(!winner.isEmpty())status.setText("draw".equals(winner)?"Ничья!":winner.equals(me)?"Вы победили! 🎉":"Партнёр победил.");else if(!active)status.setText("Партия завершена");else status.setText((moveBusy[0]?"Сохраняю ход…":turn.equals(me)?"Ваш ход":"Ход партнёра")+" · "+score1+":"+score2);
+        Runnable[] draw={null};draw[0]=()->{JSONObject g=game[0],s=g.optJSONObject("state");if(s==null)return;String me=pairGames.userId(),p1=s.optString("p1"),p2=s.optString("p2"),edgesState=s.optString("edges",emptyBoard(40)),boxesState=s.optString("boxes",emptyBoard(16)),turn=s.optString("turn"),winner=s.optString("winner"),firstPlayer=GameStartRules.firstPlayerOrPlayerOne(s.optString("first_player"),p1);int score1=s.optInt("score1",0),score2=s.optInt("score2",0);boolean active="active".equals(g.optString("status"));
+            if(p2.isEmpty())status.setText("Игра создана. Ждём партнёра.");else if(!winner.isEmpty())status.setText("draw".equals(winner)?"Ничья!":winner.equals(me)?"Вы победили! 🎉":"Партнёр победил.");else if(!active)status.setText("Партия завершена");else status.setText((moveBusy[0]?"Сохраняю ход…":turn.equals(me)?"Ваш ход":"Ход партнёра")+" · "+(me.equals(firstPlayer)?"вы первый":"вы второй")+" · счёт "+score1+":"+score2);
             restart.setVisibility(!p2.isEmpty()&&"finished".equals(g.optString("status"))?View.VISIBLE:View.GONE);
             board.removeAllViews();
             int stepSize=Math.max(dp(26),Math.min(dp(38),
@@ -4946,7 +4979,7 @@ public class MainActivity extends Activity {
                         box.setBackground(shape(owner=='.'?0xFFF0E2C8:
                                 owner=='A'?0xFFF2D8D9:0xFFDDE2F0,4));
                         box.setContentDescription(owner=='.'?"Пустой квадрат":
-                                owner=='A'?"Квадрат игрока 1":"Квадрат игрока 2");
+                                owner=='A'?"Квадрат первого игрока":"Квадрат второго игрока");
                         row.addView(box,new LinearLayout.LayoutParams(stepSize,stepSize));
                     }
                 }
@@ -4984,9 +5017,10 @@ public class MainActivity extends Activity {
             if(!"active".equals(fresh.optString("status"))||p2.isEmpty()
                     ||(!me.equals(p1)&&!me.equals(p2))||!me.equals(state.optString("turn")))
                 throw new Exception("Сейчас ход партнёра или партия ещё не началась");
+            String firstPlayer=GameStartRules.firstPlayerOrPlayerOne(state.optString("first_player"),p1);
             BoardGameRules.DotsMove move=BoardGameRules.moveDotsAndBoxes(
                     state.optString("edges"),state.optString("boxes"),edge,me,p1,p2,
-                    state.optInt("score1"),state.optInt("score2"));
+                    state.optInt("score1"),state.optInt("score2"),firstPlayer);
             state.put("edges",move.edges);state.put("boxes",move.boxes);
             state.put("score1",move.score1);state.put("score2",move.score2);
             state.put("turn",move.turn);state.put("winner",move.winner);

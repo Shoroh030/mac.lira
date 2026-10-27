@@ -27,7 +27,31 @@ public final class GameStartRules {
     }
 
     static char ticTacToeMarkForPlayer(String player, String firstPlayer, String playerOne) {
-        String xPlayer = firstPlayer == null || firstPlayer.isEmpty() ? playerOne : firstPlayer;
-        return player != null && player.equals(xPlayer) ? 'X' : 'O';
+        return isFirstPlayer(player, firstPlayer, playerOne) ? 'X' : 'O';
+    }
+
+    static char connectFourTokenForPlayer(String player, String firstPlayer, String playerOne) {
+        return isFirstPlayer(player, firstPlayer, playerOne) ? 'R' : 'B';
+    }
+
+    static char dotsMarkerForPlayer(String player, String firstPlayer, String playerOne) {
+        return isFirstPlayer(player, firstPlayer, playerOne) ? 'A' : 'B';
+    }
+
+    static String checkersWhitePlayer(String firstPlayer, String playerOne) {
+        return firstPlayerOrPlayerOne(firstPlayer, playerOne);
+    }
+
+    static boolean checkersWhiteMovesUp(String whitePlayer, String playerOne) {
+        return whitePlayer == null || whitePlayer.isEmpty() || whitePlayer.equals(playerOne);
+    }
+
+    static String firstPlayerOrPlayerOne(String firstPlayer, String playerOne) {
+        return firstPlayer == null || firstPlayer.isEmpty() ? playerOne : firstPlayer;
+    }
+
+    private static boolean isFirstPlayer(String player, String firstPlayer, String playerOne) {
+        String starter = firstPlayer == null || firstPlayer.isEmpty() ? playerOne : firstPlayer;
+        return player != null && player.equals(starter);
     }
 }

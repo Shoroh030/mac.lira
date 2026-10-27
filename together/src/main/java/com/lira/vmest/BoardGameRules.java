@@ -74,8 +74,14 @@ final class BoardGameRules {
     }
 
     static Map<Integer, List<Integer>> legalCheckersMoves(String board, String player, String playerOne, int chainFrom) {
+        return legalCheckersMoves(board, player, playerOne, playerOne, chainFrom, true);
+    }
+
+    static Map<Integer, List<Integer>> legalCheckersMoves(String board, String player, String playerOne,
+                                                          String whitePlayer, int chainFrom, boolean whiteMovesUp) {
         if (board == null || board.length() != 64 || player == null || player.isEmpty()) return new LinkedHashMap<>();
-        char own = player.equals(playerOne) ? 'r' : 'b';
+        char own = player.equals(whitePlayer) ? 'r' : 'b';
+        int forward = own == 'r' ? (whiteMovesUp ? -1 : 1) : (whiteMovesUp ? 1 : -1);
         boolean forced = chainFrom >= 0;
         Map<Integer, List<Integer>> captures = new LinkedHashMap<>();
         Map<Integer, List<Integer>> regular = new LinkedHashMap<>();
@@ -92,7 +98,7 @@ final class BoardGameRules {
                 } else {
                     int stepRow = row + dr, stepCol = col + dc;
                     if (isInBoard(stepRow, stepCol) && board.charAt(stepRow * 8 + stepCol) == '.'
-                            && !forced && dr == (own == 'r' ? -1 : 1)) {
+                            && !forced && dr == forward) {
                         addMove(regular, from, stepRow * 8 + stepCol);
                     }
                     int jumpRow = row + dr * 2, jumpCol = col + dc * 2;
@@ -108,7 +114,15 @@ final class BoardGameRules {
 
     static CheckersMove moveCheckers(String board, String player, String playerOne, String playerTwo,
                                      int chainFrom, int from, int to) {
-        Map<Integer, List<Integer>> legal = legalCheckersMoves(board, player, playerOne, chainFrom);
+        return moveCheckers(board, player, playerOne, playerTwo, playerOne,
+                chainFrom, from, to, true);
+    }
+
+    static CheckersMove moveCheckers(String board, String player, String playerOne, String playerTwo,
+                                     String whitePlayer, int chainFrom, int from, int to,
+                                     boolean whiteMovesUp) {
+        Map<Integer, List<Integer>> legal =
+                legalCheckersMoves(board, player, playerOne, whitePlayer, chainFrom, whiteMovesUp);
         List<Integer> destinations = legal.get(from);
         if (destinations == null || !destinations.contains(to))
             throw new IllegalArgumentException("Недопустимый ход в шашках");
@@ -126,25 +140,44 @@ final class BoardGameRules {
             }
         }
         cells[from] = '.';
-        if (piece == 'r' && toRow == 0) piece = 'R';
-        else if (piece == 'b' && toRow == 7) piece = 'B';
+        if (piece == 'r' && toRow == (whiteMovesUp ? 0 : 7)) piece = 'R';
+        else if (piece == 'b' && toRow == (whiteMovesUp ? 7 : 0)) piece = 'B';
         cells[to] = piece;
 
         String nextBoard = new String(cells);
-        if (capture && !legalCheckersMoves(nextBoard, player, playerOne, to).isEmpty())
+        if (capture && !legalCheckersMoves(nextBoard, player, playerOne, whitePlayer, to, whiteMovesUp).isEmpty())
             return new CheckersMove(nextBoard, player, "", to);
 
         String nextPlayer = player.equals(playerOne) ? playerTwo : playerOne;
         char opponent = pieceColor(piece) == 'r' ? 'b' : 'r';
         boolean hasPieces = false;
         for (char cell : cells) if (isOwn(cell, opponent)) { hasPieces = true; break; }
-        if (!hasPieces || legalCheckersMoves(nextBoard, nextPlayer, playerOne, -1).isEmpty())
+        if (!hasPieces || legalCheckersMoves(nextBoard, nextPlayer, playerOne, whitePlayer, -1, whiteMovesUp).isEmpty())
             return new CheckersMove(nextBoard, player, player, -1);
         return new CheckersMove(nextBoard, nextPlayer, "", -1);
     }
 
+    static String swapCheckersColors(String board) {
+        if (board == null || board.length() != 64) return board;
+        char[] result = board.toCharArray();
+        for (int i = 0; i < result.length; i++) {
+            char piece = result[i];
+            if (piece == 'r') result[i] = 'b';
+            else if (piece == 'b') result[i] = 'r';
+            else if (piece == 'R') result[i] = 'B';
+            else if (piece == 'B') result[i] = 'R';
+        }
+        return new String(result);
+    }
+
     static DotsMove moveDotsAndBoxes(String edges, String boxes, int edge, String player,
                                      String playerOne, String playerTwo, int score1, int score2) {
+        return moveDotsAndBoxes(edges, boxes, edge, player, playerOne, playerTwo, score1, score2, playerOne);
+    }
+
+    static DotsMove moveDotsAndBoxes(String edges, String boxes, int edge, String player,
+                                     String playerOne, String playerTwo, int score1, int score2,
+                                     String firstPlayer) {
         if (edges == null || edges.length() != 40 || boxes == null || boxes.length() != 16
                 || edge < 0 || edge >= 40 || player == null || player.isEmpty()
                 || playerTwo == null || playerTwo.isEmpty()
@@ -152,7 +185,9 @@ final class BoardGameRules {
             throw new IllegalArgumentException("Поле игры некорректно или ожидает второго игрока");
         if (edges.charAt(edge) != '.') throw new IllegalArgumentException("Эта линия уже занята");
 
-        char marker = player.equals(playerOne) ? 'A' : 'B';
+        String starter = playerOne.equals(firstPlayer) || playerTwo.equals(firstPlayer)
+                ? firstPlayer : playerOne;
+        char marker = player.equals(starter) ? 'A' : 'B';
         char[] nextEdges = edges.toCharArray();
         char[] nextBoxes = boxes.toCharArray();
         nextEdges[edge] = marker;
@@ -174,7 +209,8 @@ final class BoardGameRules {
         boolean finished = true;
         for (char value : nextEdges) if (value == '.') { finished = false; break; }
         String winner = "";
-        if (finished) winner = score1 == score2 ? "draw" : score1 > score2 ? playerOne : playerTwo;
+        String secondPlayer = starter.equals(playerOne) ? playerTwo : playerOne;
+        if (finished) winner = score1 == score2 ? "draw" : score1 > score2 ? starter : secondPlayer;
         String nextTurn = completed > 0 ? player : player.equals(playerOne) ? playerTwo : playerOne;
         return new DotsMove(new String(nextEdges), new String(nextBoxes), score1, score2,
                 finished ? "" : nextTurn, winner);
