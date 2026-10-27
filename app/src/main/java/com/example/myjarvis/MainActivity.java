@@ -4,13 +4,20 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.hardware.camera2.CameraManager;
+import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.os.Bundle;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.Voice;
 import android.provider.MediaStore;
+import android.view.GestureDetector;
+import android.view.MotionEvent;
+import android.view.View;
+import android.view.ViewGroup;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.TextView;
@@ -19,6 +26,8 @@ import android.widget.Toast;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.annotation.NonNull;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.view.GravityCompat;
 import androidx.drawerlayout.widget.DrawerLayout;
@@ -28,14 +37,11 @@ import androidx.recyclerview.widget.RecyclerView;
 import com.google.android.material.navigation.NavigationView;
 
 import java.io.IOException;
-import java.text.Normalizer;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -54,18 +60,37 @@ public class MainActivity extends AppCompatActivity {
     private android.view.View btnTabChat;
     private android.view.View btnTabFinance;
     private android.view.View btnTabGoals;
+    private GestureDetector tabGestureDetector;
     private OfflineDataStore dataStore;
     private static final int REQUEST_CODE_CAMERA = 101;
     private static final int REQUEST_CODE_MICROPHONE = 102;
     private static final String STATE_SELECTED_TAB = "selected_tab";
     private OfflineVoiceRecognizer voiceRecognizer;
     private TextToSpeech textToSpeech;
+    private boolean speechEngineInitialized;
     private boolean speechReady;
     private boolean speechFailureReported;
     private int voiceRequestId;
     private boolean isFlashlightOn = false;
     private String selectedTab = "chat";
+    private ConnectivityManager.NetworkCallback networkCallback;
+    private ActivityResultLauncher<String> contactsPermissionLauncher;
+    private String pendingCallTarget;
     private final ExecutorService pcCommandExecutor = Executors.newSingleThreadExecutor();
+    private String userName = null;
+
+// Goal-setting assistant state
+private boolean isGoalSettingSessionActive = false;
+private StringBuilder goalSettingResponses = new StringBuilder();
+private int goalSettingStep = 0;
+private static final int GOAL_SETTING_STEPS = 5;
+private String[] goalSettingQuestions = {
+    "Р”РµР»РµР№ РѕС‚РєСЂС‹РІР°СЋ РѕС„Р»Р°Р№РЅ РґР»СЏ Р·Р°РїСЂРѕРіРЅРѕР· РїСЂРѕС‚РёРІР°С‚СЊ РїРѕР»Рµ? (Например: научиться играть на гитаре, пробежать марафон, выучить язык)",
+    "РћРїС‚РёРјРёСЂРѕРІР°РЅРёРµ РЅР° С†РµР»РµР№: РїСЂРѕРёСЃСЊ РєР»СЋС‡РµРЅРёРµ (1-30 РґРЅ.), РёРЅС‚РµСЂС†РµР»СЊ (1-12 РјЅ.), РіРµРЅСЊ (1+ РіРµРЅСЊ)",
+    "Р”РµР»РµР№ РѕС‚РєСЂС‹РІР°СЋ РІС‹РІРµ: РїСЂРѕРёСЃСЊ РєР»СЋС‡РµРЅРёРµ, РїСЂРѕРёРІРѕС‚СЊ РґР»СЏ РјРµР»Рµ, РѕС‚РјРµС‡РµРЅРѕ Рё СЃРѕСЂР° (1-24 Р·Р°СЃС‚Р°.)",
+    "РћРїС‚РёРјРёСЂРѕРІР°РЅРёРµ РЅР° РєР»СЋС‡РµРЅРёРµ РѕС‚РєСЂС‹С‚РѕРІР°С‚СЊ РєРѕРґРµР№: РЅРµС‚ РёР»Рё РЅР°С€Р»Р° (РёР»Рё СЃСЂРµРґС‹)",
+    "РћРїС‚РёРјРёСЂРѕРІР°РЅРёРµ РІС‹РІРµ: РїСЂРѕРёСЃСЊ РєР»СЋС‡РµРЅРёРµ, РїСЂРѕРёРІРѕС‚СЊ РґР»СЏ РјРµР»Рµ, РѕС‚РјРµС‡РµРЅРѕ Рё СЃРѕСЂР° (1-24 Р·Р°СЃС‚Р°.)"
+};
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -73,15 +98,21 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         dataStore = new OfflineDataStore(this);
+        contactsPermissionLauncher = registerForActivityResult(
+                new ActivityResultContracts.RequestPermission(), granted -> {
+                    String target = pendingCallTarget;
+                    pendingCallTarget = null;
+                    if (granted && target != null) {
+                        findAndCallContact(target);
+                    } else if (!granted) {
+                        addMessage("Чтобы искать контакт по имени, разреши доступ к контактам "
+                                + "или скажи номер телефона.", false);
+                    }
+                });
         textToSpeech = new TextToSpeech(this, status -> {
-            if (status == TextToSpeech.SUCCESS) {
-                int languageStatus = textToSpeech.setLanguage(new Locale("ru", "RU"));
-                boolean female = getSharedPreferences("LiraPrefs", MODE_PRIVATE)
-                        .getBoolean("voice_female", true);
-                textToSpeech.setPitch(female ? 1.12f : 0.88f);
-                textToSpeech.setSpeechRate(1.0f);
-                speechReady = languageStatus != TextToSpeech.LANG_MISSING_DATA
-                        && languageStatus != TextToSpeech.LANG_NOT_SUPPORTED;
+            if (status == TextToSpeech.SUCCESS && !isDestroyed() && textToSpeech != null) {
+                speechEngineInitialized = true;
+                configureTextToSpeech();
             }
         });
         drawerLayout = findViewById(R.id.drawerLayout);
@@ -97,6 +128,7 @@ public class MainActivity extends AppCompatActivity {
         btnTabChat = findViewById(R.id.btnTabChat);
         btnTabFinance = findViewById(R.id.btnTabFinance);
         btnTabGoals = findViewById(R.id.btnTabGoals);
+        configureTabSwipes();
 
         messageList = new ArrayList<>();
         chatAdapter = new ChatAdapter(this, messageList);
@@ -104,15 +136,11 @@ public class MainActivity extends AppCompatActivity {
         recyclerView.setAdapter(chatAdapter);
         messageList.addAll(dataStore.getChatMessages());
         if (messageList.isEmpty()) {
-            addMessage("Привет! Я L.I.R.A. Открываю приложения и сайты по названию, а историю чата и планы сохраняю на устройстве.", false);
+            addMessage("Привет! Я L.I.R.A. Найду приложения по русскому или английскому названию, "
+                    + "поставлю таймер или будильник и сохраню планы на устройстве.", false);
         } else {
             chatAdapter.notifyDataSetChanged();
             recyclerView.scrollToPosition(messageList.size() - 1);
-        }
-        if (textToSpeech != null) {
-            textToSpeech.stop();
-            textToSpeech.shutdown();
-            textToSpeech = null;
         }
         updateConnectionStatus();
 
@@ -191,6 +219,16 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private boolean speakScreenText(String text) {
+        if (getSharedPreferences("LiraPrefs", MODE_PRIVATE)
+                .getBoolean("quiet_mode", false)
+                || textToSpeech == null || !speechReady) {
+            return false;
+        }
+        return textToSpeech.speak(text, TextToSpeech.QUEUE_FLUSH, null,
+                "lira-screen-read") != TextToSpeech.ERROR;
+    }
+
     private void showTab(String tab) {
         boolean changed = !tab.equals(selectedTab);
         selectedTab = tab;
@@ -206,14 +244,74 @@ public class MainActivity extends AppCompatActivity {
                     ? new FinanceFragment() : new GoalsFragment();
             getSupportFragmentManager().beginTransaction()
                     .replace(R.id.moduleContainer, fragment, tab)
+                    .runOnCommit(() -> attachSwipeListener(moduleContainer))
                     .commit();
+        }
+    }
+
+    private void configureTabSwipes() {
+        tabGestureDetector = new GestureDetector(this,
+                new GestureDetector.SimpleOnGestureListener() {
+                    @Override
+                    public boolean onDown(MotionEvent event) {
+                        return true;
+                    }
+
+                    @Override
+                    public boolean onFling(MotionEvent start, MotionEvent end,
+                                           float velocityX, float velocityY) {
+                        if (start == null || end == null) {
+                            return false;
+                        }
+                        float distanceX = end.getX() - start.getX();
+                        float distanceY = end.getY() - start.getY();
+                        float threshold = 72 * getResources().getDisplayMetrics().density;
+                        if (Math.abs(distanceX) < threshold
+                                || Math.abs(distanceX) < Math.abs(distanceY) * 1.2f
+                                || Math.abs(velocityX) < 150) {
+                            return false;
+                        }
+                        String[] tabs = {"chat", "finance", "goals"};
+                        int index = selectedTab.equals("chat") ? 0
+                                : selectedTab.equals("finance") ? 1 : 2;
+                        int nextIndex = distanceX < 0
+                                ? Math.min(index + 1, tabs.length - 1)
+                                : Math.max(index - 1, 0);
+                        if (nextIndex == index) {
+                            return false;
+                        }
+                        showTab(tabs[nextIndex]);
+                        return true;
+                    }
+                });
+        recyclerView.addOnItemTouchListener(
+                new RecyclerView.SimpleOnItemTouchListener() {
+                    @Override
+                    public boolean onInterceptTouchEvent(RecyclerView view,
+                                                         MotionEvent event) {
+                        tabGestureDetector.onTouchEvent(event);
+                        return false;
+                    }
+                });
+    }
+
+    private void attachSwipeListener(View view) {
+        view.setOnTouchListener((target, event) -> {
+            tabGestureDetector.onTouchEvent(event);
+            return false;
+        });
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int index = 0; index < group.getChildCount(); index++) {
+                attachSwipeListener(group.getChildAt(index));
+            }
         }
     }
 
     private void setTabSelected(android.view.View tab, boolean selected) {
         if (tab instanceof TextView) {
             ((TextView) tab).setTextColor(ContextCompat.getColor(this,
-                    selected ? android.R.color.holo_blue_light : android.R.color.darker_gray));
+                    selected ? R.color.lira_accent : R.color.lira_muted));
         }
     }
 
@@ -229,12 +327,65 @@ public class MainActivity extends AppCompatActivity {
         if (connectivityManager == null) {
             return false;
         }
-        Network network = connectivityManager.getActiveNetwork();
-        NetworkCapabilities capabilities = network == null
-                ? null : connectivityManager.getNetworkCapabilities(network);
-        return capabilities != null
-                && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
+        for (Network network : connectivityManager.getAllNetworks()) {
+            NetworkCapabilities capabilities =
+                    connectivityManager.getNetworkCapabilities(network);
+            if (capabilities != null
+                    && !capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                    && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        ConnectivityManager connectivityManager =
+                (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        if (connectivityManager != null && networkCallback == null) {
+            networkCallback = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(Network network) {
+                    refreshConnectionStatus();
+                }
+
+                @Override
+                public void onLost(Network network) {
+                    refreshConnectionStatus();
+                }
+
+                @Override
+                public void onCapabilitiesChanged(Network network,
+                                                  NetworkCapabilities capabilities) {
+                    refreshConnectionStatus();
+                }
+            };
+            connectivityManager.registerDefaultNetworkCallback(networkCallback);
+        }
+    }
+
+    @Override
+    protected void onStop() {
+        if (networkCallback != null) {
+            ConnectivityManager connectivityManager =
+                    (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            if (connectivityManager != null) {
+                connectivityManager.unregisterNetworkCallback(networkCallback);
+            }
+            networkCallback = null;
+        }
+        super.onStop();
+    }
+
+    private void refreshConnectionStatus() {
+        runOnUiThread(() -> {
+            if (!isFinishing() && !isDestroyed() && connectionStatus != null) {
+                updateConnectionStatus();
+            }
+        });
     }
 
     @Override
@@ -250,20 +401,57 @@ public class MainActivity extends AppCompatActivity {
             updateConnectionStatus();
         }
         if (textToSpeech != null) {
-            boolean female = getSharedPreferences("LiraPrefs", MODE_PRIVATE)
-                    .getBoolean("voice_female", true);
-            textToSpeech.setPitch(female ? 1.12f : 0.88f);
+            configureTextToSpeech();
         }
     }
 
+    private void configureTextToSpeech() {
+        if (textToSpeech == null || !speechEngineInitialized) {
+            return;
+        }
+        Locale russian = new Locale("ru", "RU");
+        int languageStatus = textToSpeech.setLanguage(russian);
+        boolean female = getSharedPreferences("LiraPrefs", MODE_PRIVATE)
+                .getBoolean("voice_female", true);
+        java.util.Set<Voice> availableVoices = textToSpeech.getVoices();
+        List<Voice> offlineRussianVoices = availableVoices == null
+                ? new ArrayList<>()
+                : availableVoices.stream()
+                .filter(voice -> russian.getLanguage()
+                        .equals(voice.getLocale().getLanguage()))
+                .filter(voice -> !voice.isNetworkConnectionRequired())
+                .collect(java.util.stream.Collectors.toList());
+        Voice selectedVoice = female
+                ? offlineRussianVoices.stream()
+                        .filter(voice -> voice.getName().toLowerCase(Locale.ROOT)
+                                .matches(".*(female|woman|жен|irina|natasha|anna|elena).*"))
+                        .findFirst().orElse(null)
+                : null;
+        if (selectedVoice == null && !offlineRussianVoices.isEmpty()) {
+            selectedVoice = offlineRussianVoices.get(0);
+        }
+        if (selectedVoice != null) {
+            textToSpeech.setVoice(selectedVoice);
+        }
+        textToSpeech.setPitch(female ? 1.0f : 0.92f);
+        textToSpeech.setSpeechRate(0.9f);
+        speechReady = selectedVoice != null
+                && languageStatus != TextToSpeech.LANG_MISSING_DATA
+                && languageStatus != TextToSpeech.LANG_NOT_SUPPORTED;
+    }
+
     private void addMessage(String text, boolean isUser) {
+        addMessage(text, isUser, true);
+    }
+
+    private void addMessage(String text, boolean isUser, boolean speakResponse) {
         String time = new SimpleDateFormat("HH:mm", Locale.getDefault()).format(new Date());
         ChatMessage message = new ChatMessage(text, isUser, time);
         dataStore.saveChatMessage(message);
         messageList.add(message);
         chatAdapter.notifyItemInserted(messageList.size() - 1);
         recyclerView.scrollToPosition(messageList.size() - 1);
-        if (!isUser) {
+        if (!isUser && speakResponse) {
             speakAssistantResponse(text);
         }
     }
@@ -330,13 +518,144 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void processUserMessage(String text) {
+        text = canonicalizeKnownAppName(text);
         showTab("chat");
         addMessage(text, true);
         String lower = text.toLowerCase(Locale.ROOT);
 
+        if (isGoalSettingSessionActive) {
+            // Process the user's response to the current goal-setting question.
+            goalSettingResponses.append(text).append("; ");
+            goalSettingStep++;
+            if (goalSettingStep < GOAL_SETTING_STEPS) {
+                addMessage(goalSettingQuestions[goalSettingStep], false);
+            } else {
+                // All questions answered, create the goal and reset session.
+                String[] responses = goalSettingResponses.toString().split("; ");
+                // We expect 5 responses: title, description, deadline, priority, category.
+                // For simplicity, we'll store them as a single string or parse later.
+                // We'll create a goal in the dataStore.
+                // We'll use the first response as title, second as description, etc.
+                String title = responses.length > 0 ? responses[0] : "";
+                String description = responses.length > 1 ? responses[1] : "";
+                String deadline = responses.length > 2 ? responses[2] : "";
+                String priority = responses.length > 3 ? responses[3] : "";
+                String category = responses.length > 4 ? responses[4] : "";
+                dataStore.addGoal(title, deadline);
+                addMessage("Цель успешно сохранена!", false);
+                isGoalSettingSessionActive = false;
+                goalSettingResponses = new StringBuilder();
+                goalSettingStep = 0;
+            }
+            return;
+        }
+
         PcCommandClient.Command pcCommand = PcCommandClient.parse(text);
         if (pcCommand != null) {
             sendPcCommand(pcCommand);
+            return;
+        }
+
+        else if (startsWithCommand(lower, "цель", "задать цель", "новая цель", "goal", "set goal")) {
+            isGoalSettingSessionActive = true;
+            goalSettingResponses = new StringBuilder();
+            goalSettingStep = 0;
+            addMessage(goalSettingQuestions[0], false);
+            return;
+        }
+        else if (startsWithCommand(lower, "инструкция", "помощь", "help", "commands")) {
+            String helpText = "Доступные команды: \n" +
+                    "• \"цель\" - начать постановку цели\n" +
+                    "• \"инструкция\" - показать эту справку\n" +
+                    "• \"очистить чат\" - очистить историю чата\n" +
+                    "• \"меня зовут [имя]\" - представиться\n" +
+                    "• \"таймер [время]\" - установить таймер\n" +
+                    "• \"будильник [время]\" - установить будильник\n" +
+                    "• \"найти [приложение]\" - открыть приложение\n" +
+                    "• \"позвонить [контакт]\" - позвонить контакту\n" +
+                    "• \"фонарик\" - включить/выключить фонарик\n" +
+                    "• \"камера\" - сделать фото\n" +
+                    "• \"заметка [текст]\" - создать голосовую заметку\n" +
+                    "• \"поиск [запрос]\" - поиск в интернете\n" +
+                    "• \"финансы [доход/расход] [сумма] [категория]\" - записать финансовую операцию";
+            addMessage(helpText, false);
+            return;
+        }
+        else if (startsWithCommand(lower, "очистить чат", "clear chat", "очистить историю")) {
+            messageList.clear();
+            chatAdapter.notifyDataSetChanged();
+            addMessage("Чат очищен.", false);
+            return;
+        }
+        else if (startsWithCommand(lower, "меня зовут", "my name is", "зовут")) {
+            String name = removeCommandPrefix(text, "меня зовут", "my name is", "зовут");
+            if (name.isEmpty()) {
+                addMessage("Пожалуйста, укажите ваше имя после команды.", false);
+            } else {
+                userName = name;
+                addMessage("Приятно познакомиться, " + name + "!", false);
+            }
+            return;
+        }
+        if (ScreenReadCommand.matches(text)) {
+            String screenText = LiraScreenReaderService.lastExternalScreenText();
+            if (screenText.isBlank()) {
+                addMessage("Не нашла текст последнего экрана. Открой нужное приложение, "
+                        + "вернись в L.I.R.A. и повтори. Для этой функции сначала включи "
+                        + "«Настроить чтение экрана» в настройках.", false);
+                return;
+            }
+            if (!LiraScreenReaderService.speakLastExternalScreen()
+                    && !speakScreenText(screenText)) {
+                addMessage("Не удалось запустить чтение. Проверь, что служба чтения экрана "
+                        + "включена и в Android установлен русский офлайн-голос.", false);
+                return;
+            }
+            addMessage("Читаю текст последнего открытого экрана.", false, false);
+            return;
+        }
+
+        AndroidClockCommands.Result clockCommand = AndroidClockCommands.parse(text);
+        if (clockCommand != null) {
+            if (clockCommand.intent == null) {
+                addMessage(clockCommand.message, false);
+            } else if (clockCommand.intent.resolveActivity(getPackageManager()) == null) {
+                addMessage("На устройстве не найдено приложение для таймеров и будильников.",
+                        false);
+            } else {
+                try {
+                    addMessage(clockCommand.message, false);
+                    startActivity(clockCommand.intent);
+                } catch (android.content.ActivityNotFoundException
+                         | SecurityException | IllegalArgumentException exception) {
+                    addMessage("Не удалось открыть системные «Часы». Проверь, что приложение "
+                            + "«Часы» установлено и включено.", false);
+                }
+            }
+            return;
+        }
+
+        TelegramDraftCommand.Draft telegramDraft = TelegramDraftCommand.parse(text);
+        if (telegramDraft != null) {
+            openTelegramDraft(telegramDraft);
+            return;
+        }
+
+        String mediaResponse = MediaCommands.handle(this, text);
+        if (mediaResponse != null) {
+            addMessage(mediaResponse, false);
+            return;
+        }
+
+        String callTarget = PhoneCallCommands.targetFrom(text);
+        if (callTarget != null) {
+            if (callTarget.isEmpty()) {
+                addMessage("Скажи имя контакта или номер телефона.", false);
+            } else if (PhoneCallCommands.isPhoneNumber(callTarget)) {
+                confirmPhoneCall(callTarget, callTarget);
+            } else {
+                findAndCallContact(callTarget);
+            }
             return;
         }
 
@@ -385,24 +704,121 @@ public class MainActivity extends AppCompatActivity {
             String query = removeCommandPrefix(text, "найди", "найти", "поищи", "поиск",
                     "search for", "search");
             performWebSearch(query);
-        } else if (startsWithCommand(lower, "открой", "открыть", "запусти", "запустить", "open")) {
+        } else if (startsWithCommand(lower, "открой", "открыть", "запусти", "запустить",
+                "откройте", "запустите", "open", "launch", "start", "run")) {
             String appName = removeCommandPrefix(text, "открой", "открыть", "запусти",
-                    "запустить", "open");
+                    "запустить", "откройте", "запустите",
+                    "open", "launch", "start", "run")
+                    .replaceFirst("(?iu)^(?:(?:мне|пожалуйста|приложение|app|the)\\s+)+", "");
             if (appName.isEmpty()) {
                 addMessage("Назови приложение: например, «открой YouTube» или «открой WhatsApp».", false);
             } else {
                 openAppByName(appName);
             }
         } else {
-            addMessage("Команда принята. Используй меню слева или попроси меня открыть приложение/найти информацию!", false);
+            addMessage("Я могу открыть приложение, найти информацию, поставить таймер или "
+                    + "будильник, записать заметку, операцию или задачу. Для ПК скажи "
+                    + "«открой на ПК…» или «поставь таймер на ПК…».", false);
         }
+    }
+
+    private void openTelegramDraft(TelegramDraftCommand.Draft draft) {
+        String[] packages = {"org.telegram.messenger", "org.thunderdog.challegram"};
+        for (String packageName : packages) {
+            try {
+                if (getPackageManager().getPackageInfo(packageName, 0) != null) {
+                    Intent intent = TelegramDraftCommand.openTelegramDraft(draft, packageName);
+                    startActivity(intent);
+                    addMessage("Открываю Telegram и подготавливаю сообщение для «"
+                            + draft.recipient + "». Проверь текст и нажми «Отправить».", false);
+                    return;
+                }
+            } catch (PackageManager.NameNotFoundException ignored) {
+                // Try the next supported Telegram client.
+            } catch (ActivityNotFoundException exception) {
+                addMessage("Не удалось открыть Telegram для создания черновика.", false);
+                return;
+            }
+        }
+        addMessage("Telegram не найден на устройстве.", false);
+    }
+
+    private void findAndCallContact(String target) {
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.READ_CONTACTS)
+                != PackageManager.PERMISSION_GRANTED) {
+            pendingCallTarget = target;
+            contactsPermissionLauncher.launch(android.Manifest.permission.READ_CONTACTS);
+            return;
+        }
+        try {
+            List<PhoneCallCommands.Contact> contacts =
+                    PhoneCallCommands.findContacts(this, target);
+            if (contacts.isEmpty()) {
+                addMessage("Не нашла контакт «" + target
+                        + "». Проверь имя в контактах или скажи номер.", false);
+            } else if (contacts.size() == 1) {
+                PhoneCallCommands.Contact contact = contacts.get(0);
+                confirmPhoneCall(contact.name, contact.number);
+            } else {
+                String[] choices = new String[contacts.size()];
+                for (int index = 0; index < contacts.size(); index++) {
+                    PhoneCallCommands.Contact contact = contacts.get(index);
+                    choices[index] = contact.name + " — " + contact.number;
+                }
+                new AlertDialog.Builder(this)
+                        .setTitle("Выбери контакт")
+                        .setItems(choices, (dialog, index) -> {
+                            PhoneCallCommands.Contact contact = contacts.get(index);
+                            confirmPhoneCall(contact.name, contact.number);
+                        })
+                        .setNegativeButton("Отмена", null)
+                        .show();
+            }
+        } catch (SecurityException exception) {
+            addMessage("Android не разрешил читать контакты. Скажи номер телефона.", false);
+        }
+    }
+
+    private void confirmPhoneCall(String name, String number) {
+        new AlertDialog.Builder(this)
+                .setTitle("Позвонить?")
+                .setMessage(name + "\n" + number
+                        + "\n\nОткрою приложение «Телефон» с этим номером. Нажми вызов там.")
+                .setNegativeButton("Отмена", null)
+                .setPositiveButton("Открыть набор", (dialog, which) -> {
+                    Intent dial = new Intent(Intent.ACTION_DIAL, Uri.fromParts("tel", number, null));
+                    try {
+                        startActivity(dial);
+                    } catch (ActivityNotFoundException exception) {
+                        addMessage("На устройстве не найдено приложение для звонков.", false);
+                    }
+                })
+                .show();
+    }
+
+    private String canonicalizeKnownAppName(String text) {
+        if (!startsWithCommand(text.toLowerCase(Locale.ROOT),
+                "открой", "открыть", "запусти", "запустить", "откройте", "запустите",
+                "open", "launch", "start", "run")) {
+            return text;
+        }
+        return text.replaceFirst("(?iu)^((?:открой|открыть|запусти|запустить|откройте|"
+                + "запустите|open|launch|start|run)\\s+"
+                + "(?:(?:(?:мне|пожалуйста|приложение|app|the)\\s+)*))"
+                + "(?:клуб\\s+бери|клуббери|клаб\\s+бери|"
+                + "club\\s+berry|clubberry)(?=\\s|$)", "$1Клуббери");
     }
 
     private void sendPcCommand(PcCommandClient.Command command) {
         if (command.query.isEmpty()) {
-            addMessage(command.action.equals("search")
+            String prompt = command.action.equals("search")
                     ? "Скажи, что найти в браузере на ПК."
-                    : "Назови программу, документ или папку на ПК.", false);
+                    : command.action.equals("timer")
+                    ? "Назови длительность таймера на ПК."
+                    : command.action.equals("alarm")
+                    ? "Назови время будильника на ПК."
+                    : "Назови программу, документ или папку на ПК.";
+            addMessage(prompt, false);
             return;
         }
         addMessage("Отправляю команду на ПК…", false);
@@ -486,6 +902,11 @@ public class MainActivity extends AppCompatActivity {
             voiceRecognizer.stop();
             voiceRecognizer = null;
         }
+        if (textToSpeech != null) {
+            textToSpeech.stop();
+            textToSpeech.shutdown();
+            textToSpeech = null;
+        }
         pcCommandExecutor.shutdownNow();
         dataStore.close();
         super.onDestroy();
@@ -523,31 +944,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void openAppByName(String name) {
         PackageManager pm = getPackageManager();
-        String query = normalizeAppName(name);
-        String transliteratedQuery = normalizeAppName(transliterateAppName(name));
-        Intent exactPackageIntent = pm.getLaunchIntentForPackage(query);
-        if (exactPackageIntent != null) {
-            launchApp(pm, exactPackageIntent, query);
-            return;
-        }
-
-        Intent launcher = new Intent(Intent.ACTION_MAIN);
-        launcher.addCategory(Intent.CATEGORY_LAUNCHER);
-        List<ResolveInfo> apps = pm.queryIntentActivities(launcher, 0);
-        ResolveInfo bestMatch = null;
-        int bestScore = 0;
-        for (ResolveInfo app : apps) {
-            String label = app.loadLabel(pm).toString();
-            String normalizedLabel = normalizeAppName(label);
-            String packageName = normalizeAppName(app.activityInfo.packageName.replace('.', ' '));
-            int score = appNameMatchScore(normalizedLabel, query, packageName);
-            score = Math.max(score,
-                    appNameMatchScore(normalizedLabel, transliteratedQuery, packageName));
-            if (score > bestScore) {
-                bestScore = score;
-                bestMatch = app;
-            }
-        }
+        ResolveInfo bestMatch = AppNameMatcher.findLauncher(pm, name);
         if (bestMatch != null) {
             Intent launchIntent = pm.getLaunchIntentForPackage(bestMatch.activityInfo.packageName);
             if (launchIntent != null) {
@@ -556,104 +953,6 @@ public class MainActivity extends AppCompatActivity {
             }
         }
         addMessage("Приложение \"" + name + "\" не найдено", false);
-    }
-
-    private String normalizeAppName(String value) {
-        String normalized = Normalizer.normalize(value.toLowerCase(Locale.ROOT).trim(),
-                        Normalizer.Form.NFD)
-                .replaceAll("\\p{M}+", "")
-                .replaceAll("[^\\p{L}\\p{N}.]+", " ")
-                .trim();
-        Map<String, String> aliases = new HashMap<>();
-        aliases.put("яндекс музыка", "yandex music");
-        aliases.put("яндекс музыку", "yandex music");
-        aliases.put("яндекс музыки", "yandex music");
-        aliases.put("музыка яндекс", "yandex music");
-        aliases.put("телеграм", "telegram");
-        aliases.put("телеграмм", "telegram");
-        aliases.put("телега", "telegram");
-        aliases.put("ватсап", "whatsapp");
-        aliases.put("вотсап", "whatsapp");
-        aliases.put("вацап", "whatsapp");
-        aliases.put("гугл хром", "chrome");
-        aliases.put("хром", "chrome");
-        aliases.put("яндекс браузер", "yandex browser");
-        aliases.put("яндекс", "yandex");
-        aliases.put("вконтакте", "vk");
-        aliases.put("вк", "vk");
-        aliases.put("ютуб", "youtube");
-        aliases.put("ю туб", "youtube");
-        aliases.put("инстаграм", "instagram");
-        aliases.put("фейсбук", "facebook");
-        aliases.put("тикток", "tiktok");
-        aliases.put("почта", "mail");
-        aliases.put("карты", "maps");
-        aliases.put("галерея", "gallery");
-        aliases.put("музыка", "music");
-        aliases.put("сбербанк", "sberbank");
-        aliases.put("альфа банк", "alpha bank");
-        aliases.put("яндекс карты", "yandex maps");
-        aliases.put("яндекс навигатор", "yandex navigator");
-        return aliases.getOrDefault(normalized, normalized);
-    }
-
-    private int appNameMatchScore(String label, String query, String packageName) {
-        if (query.isEmpty()) {
-            return 0;
-        }
-        if (label.equals(query) || packageName.equals(query)) {
-            return 3;
-        }
-        if (label.startsWith(query) || packageName.startsWith(query)) {
-            return 2;
-        }
-        return label.contains(query) || packageName.contains(query) ? 1 : 0;
-    }
-
-    private String transliterateAppName(String value) {
-        StringBuilder result = new StringBuilder(value.length() * 2);
-        for (int index = 0; index < value.length(); index++) {
-            char letter = Character.toLowerCase(value.charAt(index));
-            switch (letter) {
-                case 'а': result.append("a"); break;
-                case 'б': result.append("b"); break;
-                case 'в': result.append("v"); break;
-                case 'г': result.append("g"); break;
-                case 'д': result.append("d"); break;
-                case 'е': result.append("e"); break;
-                case 'ё': result.append("yo"); break;
-                case 'ж': result.append("zh"); break;
-                case 'з': result.append("z"); break;
-                case 'и': result.append("i"); break;
-                case 'й': result.append("y"); break;
-                case 'к': result.append("k"); break;
-                case 'л': result.append("l"); break;
-                case 'м': result.append("m"); break;
-                case 'н': result.append("n"); break;
-                case 'о': result.append("o"); break;
-                case 'п': result.append("p"); break;
-                case 'р': result.append("r"); break;
-                case 'с': result.append("s"); break;
-                case 'т': result.append("t"); break;
-                case 'у': result.append("u"); break;
-                case 'ф': result.append("f"); break;
-                case 'х': result.append("kh"); break;
-                case 'ц': result.append("ts"); break;
-                case 'ч': result.append("ch"); break;
-                case 'ш': result.append("sh"); break;
-                case 'щ': result.append("shch"); break;
-                case 'ы': result.append("y"); break;
-                case 'э': result.append("e"); break;
-                case 'ю': result.append("yu"); break;
-                case 'я': result.append("ya"); break;
-                default:
-                    if (letter != 'ъ' && letter != 'ь') {
-                        result.append(letter);
-                    }
-                    break;
-            }
-        }
-        return result.toString();
     }
 
     private void launchApp(PackageManager packageManager, Intent launchIntent, String packageName) {

@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.Dialog;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.ComponentName;
 import android.content.SharedPreferences;
 import android.graphics.Paint;
 import android.graphics.drawable.ColorDrawable;
@@ -26,6 +27,9 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.app.AppCompatDelegate;
 import androidx.core.content.ContextCompat;
 
+import com.journeyapps.barcodescanner.ScanContract;
+import com.journeyapps.barcodescanner.ScanOptions;
+
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -45,8 +49,11 @@ public class SettingsActivity extends AppCompatActivity {
     private Switch backgroundVoiceSwitch;
     private Switch floatingWidgetSwitch;
     private ActivityResultLauncher<String> microphonePermissionLauncher;
+    private ActivityResultLauncher<String> widgetMicrophonePermissionLauncher;
     private ActivityResultLauncher<String> notificationPermissionLauncher;
+    private ActivityResultLauncher<ScanOptions> pairingQrLauncher;
     private boolean overlayPermissionPending;
+    private TextView screenReaderStatus;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -62,11 +69,29 @@ public class SettingsActivity extends AppCompatActivity {
         TextView privacyPolicyLink = findViewById(R.id.privacyPolicyLink);
         Button backButton = findViewById(R.id.backButton);
         Button syncButton = findViewById(R.id.syncWifiButton);
+        Button scanPairingQrButton = findViewById(R.id.scanPcPairingQrButton);
+        Button screenReaderButton = findViewById(R.id.screenReaderSettingsButton);
+        screenReaderStatus = findViewById(R.id.screenReaderStatus);
 
         privacyPolicyLink.setPaintFlags(
                 privacyPolicyLink.getPaintFlags() | Paint.UNDERLINE_TEXT_FLAG);
 
         prefs = getSharedPreferences("LiraPrefs", MODE_PRIVATE);
+        pairingQrLauncher = registerForActivityResult(new ScanContract(), result -> {
+            String contents = result.getContents();
+            if (contents == null) {
+                return;
+            }
+            String[] fields = contents.trim().split("\\|", -1);
+            if (fields.length != 5 || !fields[0].equals("LIRA")
+                    || !fields[1].equals("1") || !fields[3].equals("48522")
+                    || !isPrivateLanAddress(fields[2]) || !fields[4].matches("\\d{8}")) {
+                Toast.makeText(this, "Этот QR-код не является кодом подключения L.I.R.A.",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+            synchronizeWithPc(fields[2], fields[4]);
+        });
         themeSwitch.setChecked(prefs.getBoolean("theme_dark", true));
         voiceSwitch.setChecked(prefs.getBoolean("voice_female", true));
         quietSwitch.setChecked(prefs.getBoolean("quiet_mode", false));
@@ -90,6 +115,18 @@ public class SettingsActivity extends AppCompatActivity {
                     } else {
                         disableBackgroundVoice(
                                 "Без разрешения на уведомления фоновый режим не включён.");
+                    }
+                });
+        widgetMicrophonePermissionLauncher = registerForActivityResult(
+                new ActivityResultContracts.RequestPermission(), granted -> {
+                    if (granted) {
+                        startFloatingWidgetIfPermitted();
+                    } else {
+                        prefs.edit().putBoolean("floating_widget_enabled", false).apply();
+                        floatingWidgetSwitch.setChecked(false);
+                        Toast.makeText(this,
+                                "Для плавающей кнопки нужен доступ к микрофону.",
+                                Toast.LENGTH_LONG).show();
                     }
                 });
 
@@ -116,7 +153,12 @@ public class SettingsActivity extends AppCompatActivity {
         floatingWidgetSwitch.setOnCheckedChangeListener((button, enabled) -> {
             prefs.edit().putBoolean("floating_widget_enabled", enabled).apply();
             if (enabled) {
-                startFloatingWidgetIfPermitted();
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                        == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    startFloatingWidgetIfPermitted();
+                } else {
+                    widgetMicrophonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO);
+                }
             } else {
                 stopService(new Intent(this, FloatingWidgetService.class));
             }
@@ -124,10 +166,41 @@ public class SettingsActivity extends AppCompatActivity {
 
         privacyPolicyLink.setOnClickListener(view -> showPrivacyPolicyDialog());
         syncButton.setOnClickListener(view -> showWifiSyncDialog());
+        scanPairingQrButton.setOnClickListener(view -> {
+            ScanOptions options = new ScanOptions();
+            options.setDesiredBarcodeFormats(ScanOptions.QR_CODE);
+            options.setPrompt("Наведи камеру на QR-код в настройках L.I.R.A. на ПК");
+            options.setBeepEnabled(false);
+            options.setOrientationLocked(true);
+            options.setCaptureActivity(PortraitCaptureActivity.class);
+            pairingQrLauncher.launch(options);
+        });
+        screenReaderButton.setOnClickListener(view -> {
+            new AlertDialog.Builder(this)
+                    .setTitle("Чтение экрана")
+                    .setMessage("Android попросит включить специальную службу доступности. "
+                            + "Когда она включена, L.I.R.A. локально удерживает в памяти текст "
+                            + "последнего открытого экрана и читает его только по команде "
+                            + "«прочитай экран». Текст не сохраняется и не отправляется.")
+                    .setNegativeButton("Отмена", null)
+                    .setPositiveButton("Открыть настройки Android", (dialog, which) ->
+                            startActivity(new Intent(
+                                    android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)))
+                    .show();
+        });
         backButton.setOnClickListener(view -> {
             Toast.makeText(this, "Настройки сохранены!", Toast.LENGTH_SHORT).show();
             finish();
         });
+    }
+
+    private boolean isScreenReaderEnabled() {
+        String enabledServices = android.provider.Settings.Secure.getString(
+                getContentResolver(),
+                android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+        ComponentName service = new ComponentName(this, LiraScreenReaderService.class);
+        return enabledServices != null
+                && enabledServices.contains(service.flattenToString());
     }
 
     private void showWifiSyncDialog() {
@@ -287,6 +360,14 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void startFloatingWidgetIfPermitted() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            prefs.edit().putBoolean("floating_widget_enabled", false).apply();
+            floatingWidgetSwitch.setChecked(false);
+            Toast.makeText(this, "Для плавающей кнопки нужен доступ к микрофону.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
             overlayPermissionPending = true;
             Intent permission = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -305,10 +386,18 @@ public class SettingsActivity extends AppCompatActivity {
         if (prefs == null) {
             return;
         }
+        if (screenReaderStatus != null) {
+            screenReaderStatus.setText(isScreenReaderEnabled()
+                    ? "Чтение экрана включено"
+                    : "Чтение экрана выключено");
+        }
         if (overlayPermissionPending) {
             overlayPermissionPending = false;
             boolean granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
                     || Settings.canDrawOverlays(this);
+            granted = granted && ContextCompat.checkSelfPermission(this,
+                    Manifest.permission.RECORD_AUDIO)
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
             prefs.edit().putBoolean("floating_widget_enabled", granted).apply();
             floatingWidgetSwitch.setChecked(granted);
             if (granted) {
@@ -320,12 +409,19 @@ public class SettingsActivity extends AppCompatActivity {
             boolean widgetEnabled = prefs.getBoolean("floating_widget_enabled", false);
             boolean overlayGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.M
                     || Settings.canDrawOverlays(this);
-            if (widgetEnabled && overlayGranted) {
+            boolean microphoneGranted = ContextCompat.checkSelfPermission(this,
+                    Manifest.permission.RECORD_AUDIO)
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            if (widgetEnabled && overlayGranted && microphoneGranted) {
                 startService(new Intent(this, FloatingWidgetService.class));
             } else if (widgetEnabled) {
                 prefs.edit().putBoolean("floating_widget_enabled", false).apply();
                 floatingWidgetSwitch.setChecked(false);
                 stopService(new Intent(this, FloatingWidgetService.class));
+                if (!microphoneGranted) {
+                    Toast.makeText(this, "Для плавающей кнопки нужен доступ к микрофону.",
+                            Toast.LENGTH_LONG).show();
+                }
             }
         }
         if (prefs.getBoolean("background_voice_enabled", false)) {

@@ -27,14 +27,35 @@ final class PcCommandClient {
         String[] prefixes = {
                 "запусти на пк", "запусти на компьютере",
                 "открой на пк", "открой на компьютере",
-                "найди на пк", "найди на компьютере"
+                "найди на пк", "найди на компьютере",
+                "поставь таймер на пк", "поставь таймер на компьютере",
+                "установи таймер на пк", "установи таймер на компьютере",
+                "поставь будильник на пк", "поставь будильник на компьютере",
+                "установи будильник на пк", "установи будильник на компьютере",
+                "поставь музыку на паузу на пк", "поставь музыку на паузу на компьютере",
+                "поставь на паузу на пк", "поставь на паузу на компьютере",
+                "пауза на пк", "пауза на компьютере",
+                "следующий трек на пк", "следующий трек на компьютере",
+                "следующая песня на пк", "следующая песня на компьютере",
+                "предыдущий трек на пк", "предыдущий трек на компьютере",
+                "предыдущая песня на пк", "предыдущая песня на компьютере",
+                "продолжи музыку на пк", "продолжи музыку на компьютере",
+                "включи музыку на пк", "включи музыку на компьютере",
+                "переключи музыку на пк", "переключи музыку на компьютере"
         };
         String normalized = text == null ? "" : text.trim().toLowerCase(Locale.ROOT);
         for (String prefix : prefixes) {
             if (normalized.equals(prefix) || normalized.startsWith(prefix + " ")) {
-                String action = prefix.startsWith("запусти") ? "launch_app"
+                String action = prefix.contains("таймер") ? "timer"
+                        : prefix.contains("будильник") ? "alarm"
+                        : prefix.contains("музыку") || prefix.contains("трек")
+                        ? "media"
+                        : prefix.startsWith("запусти") ? "launch_app"
                         : prefix.startsWith("открой") ? "open" : "search";
-                return new Command(action, text.trim().substring(prefix.length()).trim());
+                String query = action.equals("media")
+                        ? prefix.substring(0, prefix.lastIndexOf(" на ")).trim()
+                        : text.trim().substring(prefix.length()).trim();
+                return new Command(action, query);
             }
         }
         return null;

@@ -12,7 +12,7 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
-        android:background="#0E1621">
+        android:background="@color/lira_background">
 
         <FrameLayout
             android:id="@+id/contentFrame"
@@ -25,7 +25,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 android:orientation="vertical"
-                android:background="#0E1621">
+                android:background="@color/lira_background">
 
                 <!-- Telegram-style Header -->
                 <LinearLayout
@@ -34,7 +34,7 @@
                     android:orientation="horizontal"
                     android:gravity="center_vertical"
                     android:paddingHorizontal="16dp"
-                    android:background="#17212B">
+                    android:background="@color/lira_surface">
 
                     <ImageButton
                         android:id="@+id/btnMenu"
@@ -42,7 +42,7 @@
                         android:layout_height="40dp"
                         android:src="@android:drawable/ic_menu_sort_by_size"
                         android:background="?attr/selectableItemBackgroundBorderless"
-                        android:tint="#FFFFFF"
+                        android:tint="@color/lira_text"
                         android:contentDescription="Меню"
                         android:layout_marginEnd="12dp"/>
 
@@ -56,7 +56,7 @@
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:text="L.I.R.A. Assistant"
-                            android:textColor="#FFFFFF"
+                            android:textColor="@color/lira_text"
                             android:textSize="16sp"
                             android:textStyle="bold" />
 
@@ -65,7 +65,7 @@
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:text="Локальный режим"
-                            android:textColor="#6AB2F2"
+                            android:textColor="@color/lira_accent"
                             android:textSize="12sp" />
                     </LinearLayout>
                 </LinearLayout>
@@ -83,7 +83,7 @@
                     android:layout_height="wrap_content"
                     android:orientation="horizontal"
                     android:padding="8dp"
-                    android:background="#17212B"
+                    android:background="@color/lira_surface"
                     android:gravity="center_vertical">
 
                     <ImageButton
@@ -92,7 +92,7 @@
                         android:layout_height="44dp"
                         android:src="@android:drawable/ic_btn_speak_now"
                         android:background="?attr/selectableItemBackgroundBorderless"
-                        android:tint="#788B9B"
+                        android:tint="@color/lira_muted"
                         android:contentDescription="Голосовой ввод" />
 
                     <EditText
@@ -102,8 +102,8 @@
                         android:layout_weight="1"
                         android:layout_marginHorizontal="8dp"
                         android:hint="Сообщение или команда..."
-                        android:textColor="#FFFFFF"
-                        android:textColorHint="#788B9B"
+                        android:textColor="@color/lira_text"
+                        android:textColorHint="@color/lira_muted"
                         android:background="@drawable/bg_message_input"
                         android:paddingHorizontal="16dp"
                         android:paddingVertical="10dp"
@@ -116,7 +116,7 @@
                         android:layout_height="44dp"
                         android:src="@android:drawable/ic_menu_send"
                         android:background="?attr/selectableItemBackgroundBorderless"
-                        android:tint="#5288C1"
+                        android:tint="@color/lira_accent"
                         android:contentDescription="Отправить" />
                 </LinearLayout>
             </LinearLayout>
@@ -133,7 +133,7 @@
             android:layout_width="match_parent"
             android:layout_height="56dp"
             android:orientation="horizontal"
-            android:background="#17212B"
+            android:background="@color/lira_surface"
             android:gravity="center">
 
             <TextView
@@ -143,7 +143,7 @@
                 android:layout_weight="1"
                 android:gravity="center"
                 android:text="Чат"
-                android:textColor="#6AB2F2"
+                android:textColor="@color/lira_accent"
                 android:textSize="14sp"
                 android:background="?attr/selectableItemBackground" />
 
@@ -154,7 +154,7 @@
                 android:layout_weight="1"
                 android:gravity="center"
                 android:text="Финансы"
-                android:textColor="#9AAAB7"
+                android:textColor="@color/lira_muted"
                 android:textSize="14sp"
                 android:background="?attr/selectableItemBackground" />
 
@@ -165,9 +165,10 @@
                 android:layout_weight="1"
                 android:gravity="center"
                 android:text="Цели"
-                android:textColor="#9AAAB7"
+                android:textColor="@color/lira_muted"
                 android:textSize="14sp"
                 android:background="?attr/selectableItemBackground" />
+
         </LinearLayout>
     </LinearLayout>
 
@@ -177,9 +178,9 @@
         android:layout_width="280dp"
         android:layout_height="match_parent"
         android:layout_gravity="start"
-        android:background="#17212B"
-        app:itemTextColor="#FFFFFF"
-        app:itemIconTint="#6AB2F2"
+        android:background="@color/lira_surface"
+        app:itemTextColor="@color/lira_text"
+        app:itemIconTint="@color/lira_accent"
         app:headerLayout="@layout/nav_header"
         app:menu="@menu/drawer_menu" />
 

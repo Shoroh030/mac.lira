@@ -90,6 +90,7 @@ public class OfflineVoiceRecognizer {
                 return;
             }
             recognizer = new Recognizer(model, SAMPLE_RATE);
+            recognizer.setMaxAlternatives(4);
 
             int minimumBufferSize = AudioRecord.getMinBufferSize(
                     SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT);
@@ -115,7 +116,8 @@ public class OfflineVoiceRecognizer {
                     break;
                 }
                 if (bytesRead > 0 && recognizer.acceptWaveForm(buffer, bytesRead)) {
-                    String text = new JSONObject(recognizer.getResult()).optString("text", "").trim();
+                    String text = SpeechTextSelector.select(
+                            new JSONObject(recognizer.getResult()));
                     if (!text.isEmpty()) {
                         if (continuous) {
                             synchronized (transcript) {

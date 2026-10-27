@@ -7,6 +7,65 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public final class BoardGameRulesTest {
+    @Test public void checkersPerspectivePutsEachPlayersSideAtTheBottom() {
+        assertEquals(0, BoardGameRules.checkersBoardIndexForView(0, 0, false));
+        assertEquals(63, BoardGameRules.checkersBoardIndexForView(0, 0, true));
+        assertEquals(0, BoardGameRules.checkersBoardIndexForView(7, 7, true));
+        assertEquals(1, BoardGameRules.checkersBoardIndexForView(7, 6, true));
+        assertEquals(57, BoardGameRules.checkersBoardIndexForView(7, 1, false));
+        assertEquals(-1, BoardGameRules.checkersBoardIndexForView(8, 0, false));
+        assertEquals(-1, BoardGameRules.checkersBoardIndexForView(0, 8, true));
+    }
+
+    @Test public void checkersAssignsWhiteToSecondPlayerAndAllowsWhiteToMoveDown() {
+        char[] cells = new char[64];
+        java.util.Arrays.fill(cells, '.');
+        cells[17] = 'r';
+        cells[42] = 'b';
+        String board = new String(cells);
+
+        java.util.Map<Integer, java.util.List<Integer>> moves =
+                BoardGameRules.legalCheckersMoves(board, "second", "first", "second", -1, false);
+        assertTrue(moves.get(17).contains(24));
+        assertTrue(moves.get(17).contains(26));
+        assertFalse(moves.containsKey(42));
+
+        BoardGameRules.CheckersMove result = BoardGameRules.moveCheckers(
+                board, "second", "first", "second", "second", -1, 17, 24, false);
+        assertEquals('r', result.board.charAt(24));
+        assertEquals('.', result.board.charAt(17));
+        assertEquals("first", result.turn);
+    }
+
+    @Test public void swappingCheckersColorsPreservesKingsAndBoardCoordinates() {
+        char[] cells = new char[64];
+        java.util.Arrays.fill(cells, '.');
+        cells[8] = 'r';
+        cells[17] = 'B';
+        String swapped = BoardGameRules.swapCheckersColors(new String(cells));
+        assertEquals('b', swapped.charAt(8));
+        assertEquals('R', swapped.charAt(17));
+        assertEquals('.', swapped.charAt(0));
+    }
+
+    @Test public void bothPlayersSeeTheirOwnCheckersOnTheNearSide() {
+        char[] cells = new char[64];
+        java.util.Arrays.fill(cells, '.');
+        cells[57] = 'r';
+        cells[1] = 'b';
+        String normalBoard = new String(cells);
+        assertEquals('r', normalBoard.charAt(
+                BoardGameRules.checkersBoardIndexForView(7, 1, false)));
+        assertEquals('b', normalBoard.charAt(
+                BoardGameRules.checkersBoardIndexForView(7, 6, true)));
+
+        String secondPlayerStarts = BoardGameRules.swapCheckersColors(normalBoard);
+        assertEquals('b', secondPlayerStarts.charAt(
+                BoardGameRules.checkersBoardIndexForView(7, 1, false)));
+        assertEquals('r', secondPlayerStarts.charAt(
+                BoardGameRules.checkersBoardIndexForView(7, 6, true)));
+    }
+
     @Test public void connectFourUsesGravityAndFindsWin() {
         String board = "..........................................";
         assertEquals(35, BoardGameRules.connectFourLandingRow(board, 0));
@@ -80,5 +139,20 @@ public final class BoardGameRulesTest {
         assertEquals(1, result.score1);
         assertEquals("one", result.turn);
         assertEquals("", result.winner);
+    }
+
+    @Test public void dotsAndBoxesGivesStarterTheStandardMarkerAndScore() {
+        char[] edges = new char[40];
+        java.util.Arrays.fill(edges, '.');
+        edges[0] = 'B';
+        edges[4] = 'B';
+        edges[20] = 'B';
+        BoardGameRules.DotsMove result = BoardGameRules.moveDotsAndBoxes(
+                new String(edges), "................", 21,
+                "second", "first", "second", 0, 0, "second");
+        assertEquals('A', result.edges.charAt(21));
+        assertEquals('A', result.boxes.charAt(0));
+        assertEquals(1, result.score1);
+        assertEquals(0, result.score2);
     }
 }

@@ -9,6 +9,7 @@ import android.view.ViewGroup;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import androidx.annotation.NonNull;
+import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.RecyclerView;
 import java.util.List;
 
@@ -36,17 +37,17 @@ public class ChatAdapter extends RecyclerView.Adapter<ChatAdapter.ChatViewHolder
         holder.tvTime.setText(message.getTime());
 
         if (message.isUser()) {
-            // Сообщение пользователя (справа, цвета Telegram: синий/голубой)
             holder.messageContainer.setGravity(Gravity.END);
             holder.bubbleLayout.setBackgroundResource(R.drawable.bg_bubble_user);
-            holder.tvMessage.setTextColor(Color.WHITE);
-            holder.tvTime.setTextColor(Color.parseColor("#A9E6FF"));
+            holder.tvMessage.setTextColor(ContextCompat.getColor(context,
+                    R.color.lira_user_bubble_text));
+            holder.tvTime.setTextColor(ContextCompat.getColor(context, R.color.lira_user_time));
         } else {
-            // Сообщение ассистента (слева, цвета Telegram: темно-серый/панель)
             holder.messageContainer.setGravity(Gravity.START);
             holder.bubbleLayout.setBackgroundResource(R.drawable.bg_bubble_assistant);
-            holder.tvMessage.setTextColor(Color.WHITE);
-            holder.tvTime.setTextColor(Color.parseColor("#8A9BA8"));
+            holder.tvMessage.setTextColor(ContextCompat.getColor(context, R.color.lira_text));
+            holder.tvTime.setTextColor(ContextCompat.getColor(context,
+                    R.color.lira_assistant_time));
         }
     }
 

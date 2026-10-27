@@ -26,6 +26,8 @@ import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.TilePane;
 import javafx.scene.layout.VBox;
+import javafx.scene.image.ImageView;
+import javafx.scene.image.WritableImage;
 import javafx.scene.control.ScrollPane;
 import javafx.stage.Stage;
 
@@ -43,17 +45,33 @@ import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 import java.security.SecureRandom;
+import com.google.zxing.WriterException;
+import com.google.zxing.common.BitMatrix;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 public final class LiraDesktopApp extends Application {
-    private static final String BACKGROUND = "#0e1621";
-    private static final String CARD = "#17212b";
-    private static final String TEXT = "#f2f5f7";
-    private static final String MUTED = "#91a2af";
-    private static final String ACCENT = "#00e676";
+    private String BACKGROUND = "#0e1621";
+    private String CARD = "#17212b";
+    private String TEXT = "#f2f5f7";
+    private String MUTED = "#91a2af";
+    private String ACCENT = "#00e676";
+    private String BORDER = "#263746";
+    private String INPUT = "#1e2934";
+    private String SECONDARY_BUTTON = "#253440";
+    private String BLUE = "#5288c1";
+    private String DANGER = "#ff6b6b";
+    private String DANGER_DARK = "#462e35";
+    private String SUCCESS = "#83efb8";
+    private String SUCCESS_DARK = "#263b33";
+    private String PILL = "#283d4b";
+    private String PILL_TEXT = "#9fd8ff";
+    private String USER_BUBBLE = "#1c3c36";
+    private String BUTTON_TEXT = "#101820";
+    private String SECONDARY_TEXT = "#dce7ed";
+    private boolean darkTheme = true;
 
     private DesktopStore store;
     private Stage stage;
@@ -87,6 +105,8 @@ public final class LiraDesktopApp extends Application {
         this.stage = stage;
         installSpeechModel();
         store = new DesktopStore();
+        darkTheme = Boolean.parseBoolean(store.setting("theme_dark", "true"));
+        applyPalette();
         shell = new BorderPane();
         shell.setStyle("-fx-background-color: " + BACKGROUND + ";");
         shell.setLeft(navigation());
@@ -104,12 +124,15 @@ public final class LiraDesktopApp extends Application {
         pageTitle.setText("Настройки");
         CheckBox speech = new CheckBox("Озвучивать ответы L.I.R.A.");
         CheckBox wakeWord = new CheckBox("Голосовой режим по слову «Лира»");
+        CheckBox darkMode = new CheckBox("Тёмная тема (выключи для светлой)");
         speech.setStyle("-fx-text-fill: " + TEXT + ";");
         wakeWord.setStyle("-fx-text-fill: " + TEXT + ";");
+        darkMode.setStyle("-fx-text-fill: " + TEXT + ";");
         try {
             speech.setSelected(Boolean.parseBoolean(store.setting("speech_output", "false")));
             wakeWord.setSelected(Boolean.parseBoolean(
                     store.setting("wake_word_mode", "false")));
+            darkMode.setSelected(Boolean.parseBoolean(store.setting("theme_dark", "true")));
         } catch (SQLException exception) {
             report("Не удалось загрузить настройки.", exception);
         }
@@ -119,7 +142,14 @@ public final class LiraDesktopApp extends Application {
             try {
                 store.saveSetting("speech_output", String.valueOf(speech.isSelected()));
                 store.saveSetting("wake_word_mode", String.valueOf(wakeWord.isSelected()));
+                store.saveSetting("theme_dark", String.valueOf(darkMode.isSelected()));
                 wakeWordMode = wakeWord.isSelected();
+                darkTheme = darkMode.isSelected();
+                applyPalette();
+                shell.setStyle("-fx-background-color: " + BACKGROUND + ";");
+                shell.setLeft(navigation());
+                shell.setTop(header());
+                showSettings();
                 Alert confirmation = new Alert(Alert.AlertType.INFORMATION,
                         "Настройки сохранены.", ButtonType.OK);
                 confirmation.showAndWait();
@@ -128,8 +158,8 @@ public final class LiraDesktopApp extends Application {
             }
         });
         Label syncStatus = label("Сервер синхронизации выключен.", 13, MUTED);
-        Button startSync = actionButton("Включить синхронизацию по Wi‑Fi", "#5288c1");
-        Button stopSync = actionButton("Выключить сервер синхронизации", "#516272");
+        Button startSync = actionButton("Включить синхронизацию по Wi‑Fi", BLUE);
+        Button stopSync = actionButton("Выключить сервер синхронизации", SECONDARY_BUTTON);
         startSync.setOnAction(event -> {
             try {
                 if (syncServer != null) {
@@ -141,12 +171,23 @@ public final class LiraDesktopApp extends Application {
                         new RemoteCommandHandler(applicationLauncher));
                 syncServer.start();
                 List<String> addresses = SyncServer.localAddresses();
-                syncStatus.setText("Адрес ПК: " + (addresses.isEmpty()
-                        ? "не удалось определить" : String.join(", ", addresses))
+                if (addresses.isEmpty()) {
+                    syncServer.close();
+                    syncServer = null;
+                    throw new IOException("Не удалось определить IPv4-адрес ПК.");
+                }
+                String address = addresses.get(0);
+                syncStatus.setText("Адрес ПК: " + String.join(", ", addresses)
                         + "\nПорт: " + SyncServer.PORT + "\nКод пары: " + token
-                        + "\nВведите адрес и код в настройках Android. Только доверенная Wi‑Fi сеть."
+                        + "\nОтсканируй QR-код в настройках приложения на Android."
                         + "\nКоманды с телефона: «запусти на ПК …», «открой на ПК …», "
-                        + "«найди на ПК …».");
+                        + "«найди на ПК …», «поставь таймер на ПК …», "
+                        + "«поставь будильник на ПК …».");
+                try {
+                    showPairingQrDialog(address, token);
+                } catch (WriterException exception) {
+                    throw new IOException("Не удалось создать QR-код подключения.", exception);
+                }
             } catch (IOException exception) {
                 report("Не удалось запустить синхронизацию.", exception);
             }
@@ -158,7 +199,7 @@ public final class LiraDesktopApp extends Application {
             }
             syncStatus.setText("Сервер синхронизации выключен.");
         });
-        VBox content = new VBox(18, speech, wakeWord, modelStatus, save,
+        VBox content = new VBox(18, speech, wakeWord, darkMode, modelStatus, save,
                 label("Синхронизация с Android по локальной Wi‑Fi сети", 16, TEXT),
                 startSync, stopSync, syncStatus,
                 label("Пока соединение незашифровано: включай только в доверенной сети.",
@@ -169,6 +210,75 @@ public final class LiraDesktopApp extends Application {
             wakeWordMode = Boolean.parseBoolean(store.setting("wake_word_mode", "false"));
         } catch (SQLException exception) {
             report("Не удалось загрузить режим активации.", exception);
+        }
+    }
+
+    private void showPairingQrDialog(String address, String token) throws WriterException {
+        BitMatrix matrix = PairingQrCode.encode(address, token);
+        WritableImage image = new WritableImage(matrix.getWidth(), matrix.getHeight());
+        for (int y = 0; y < matrix.getHeight(); y++) {
+            for (int x = 0; x < matrix.getWidth(); x++) {
+                image.getPixelWriter().setArgb(x, y,
+                        matrix.get(x, y) ? 0xff000000 : 0xffffffff);
+            }
+        }
+        ImageView qr = new ImageView(image);
+        qr.setFitWidth(320);
+        qr.setFitHeight(320);
+        qr.setPreserveRatio(true);
+        VBox content = new VBox(10, qr,
+                label(address + ":" + SyncServer.PORT + "  •  код " + token, 14, TEXT),
+                label("На телефоне открой настройки L.I.R.A. и нажми «Сканировать QR-код».",
+                        13, MUTED));
+        content.setAlignment(Pos.CENTER);
+        content.setPadding(new Insets(18));
+        Alert dialog = new Alert(Alert.AlertType.INFORMATION);
+        dialog.setTitle("Подключение L.I.R.A. по Wi-Fi");
+        dialog.setHeaderText("Отсканируй код телефоном");
+        dialog.getDialogPane().setContent(content);
+        dialog.getButtonTypes().setAll(ButtonType.OK);
+        dialog.show();
+    }
+
+    private void applyPalette() {
+        if (darkTheme) {
+            BACKGROUND = "#0e1621";
+            CARD = "#17212b";
+            TEXT = "#f2f5f7";
+            MUTED = "#91a2af";
+            ACCENT = "#00e676";
+            BORDER = "#263746";
+            INPUT = "#1e2934";
+            SECONDARY_BUTTON = "#253440";
+            BLUE = "#5288c1";
+            DANGER = "#ff6b6b";
+            DANGER_DARK = "#462e35";
+            SUCCESS = "#83efb8";
+            SUCCESS_DARK = "#263b33";
+            PILL = "#283d4b";
+            PILL_TEXT = "#9fd8ff";
+            USER_BUBBLE = "#1c3c36";
+            BUTTON_TEXT = "#101820";
+            SECONDARY_TEXT = "#dce7ed";
+        } else {
+            BACKGROUND = "#f2f5fa";
+            CARD = "#ffffff";
+            TEXT = "#202b3a";
+            MUTED = "#68788b";
+            ACCENT = "#1878dc";
+            BORDER = "#dce4ef";
+            INPUT = "#e9eef5";
+            SECONDARY_BUTTON = "#e5ebf3";
+            BLUE = "#2878c8";
+            DANGER = "#c64552";
+            DANGER_DARK = "#fde8e8";
+            SUCCESS = "#237d58";
+            SUCCESS_DARK = "#dff3e9";
+            PILL = "#e5eef9";
+            PILL_TEXT = "#285d98";
+            USER_BUBBLE = "#dcecff";
+            BUTTON_TEXT = "#ffffff";
+            SECONDARY_TEXT = "#243247";
         }
     }
 
@@ -183,7 +293,15 @@ public final class LiraDesktopApp extends Application {
                         text.getBytes(java.nio.charset.StandardCharsets.UTF_16LE));
                 String script = "$t=[Text.Encoding]::Unicode.GetString("
                         + "[Convert]::FromBase64String('" + encoded + "'));"
-                        + "(New-Object -ComObject SAPI.SpVoice).Speak($t) | Out-Null";
+                        + "$s=New-Object -ComObject SAPI.SpVoice;"
+                        + "$voices=$s.GetVoices('Language=419');"
+                        + "if($voices.Count -gt 0){$v=$null;"
+                        + "foreach($candidate in $voices){"
+                        + "if($candidate.GetAttribute('Gender') -eq 'Female')"
+                        + "{$v=$candidate;break}};"
+                        + "if(-not $v){$v=$voices.Item(0)};"
+                        + "$s.Voice=$v};"
+                        + "$s.Speak($t) | Out-Null";
                 new ProcessBuilder("powershell.exe", "-NoLogo", "-NoProfile",
                         "-WindowStyle", "Hidden", "-EncodedCommand",
                         java.util.Base64.getEncoder().encodeToString(script.getBytes(
@@ -230,7 +348,7 @@ public final class LiraDesktopApp extends Application {
         HBox header = new HBox();
         header.setAlignment(Pos.CENTER_LEFT);
         header.setPadding(new Insets(18, 26, 16, 28));
-        header.setStyle("-fx-border-color: transparent transparent #263746 transparent;");
+        header.setStyle("-fx-border-color: transparent transparent " + BORDER + " transparent;");
         pageTitle = label("Чат", 22, TEXT);
         header.getChildren().add(pageTitle);
         return header;
@@ -262,7 +380,7 @@ public final class LiraDesktopApp extends Application {
         input.setPromptText("Напиши сообщение или команду");
         styleInput(input);
         Button send = actionButton("Отправить", ACCENT);
-        voiceButton = actionButton("🎙 Голос", "#5288c1");
+        voiceButton = actionButton("🎙 Голос", BLUE);
         voiceButton.setOnAction(event -> toggleVoiceInput());
         send.setOnAction(event -> {
             String text = input.getText().trim();
@@ -290,6 +408,26 @@ public final class LiraDesktopApp extends Application {
         appendMessage(text, true, true);
         String normalized = text.trim();
         String lower = normalized.toLowerCase(Locale.ROOT);
+        ClockCommandParser.Command clockCommand = ClockCommandParser.parse(normalized);
+        if (clockCommand != null) {
+            appendMessage(clockCommand.error() == null
+                    ? DesktopClockScheduler.schedule(clockCommand) : clockCommand.error(),
+                    false, true);
+            return;
+        }
+        String mediaCommand = DesktopMediaCommands.normalizeCommand(normalized);
+        if (mediaCommand != null) {
+            try {
+                appendMessage(DesktopMediaCommands.execute(mediaCommand).message(), false, true);
+            } catch (IOException | InterruptedException exception) {
+                if (exception instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                }
+                appendMessage("Не удалось управлять воспроизведением: "
+                        + exception.getMessage(), false, true);
+            }
+            return;
+        }
         if (lower.startsWith("найди ") || lower.startsWith("найти ")) {
             String query = normalized.substring(normalized.indexOf(' ') + 1).trim();
             openSearch(query);
@@ -328,8 +466,9 @@ public final class LiraDesktopApp extends Application {
                     .replaceFirst("(?iu)^задачу\\s+", ""));
             return;
         }
-        appendMessage("Я работаю офлайн: могу открыть программу или найти запрос в интернете. "
-                + "Можно также записать расход, доход, заметку или задачу.", false, true);
+        appendMessage("Я работаю офлайн: могу открыть программу, папку или документ, "
+                + "поставить таймер/будильник, записать расход, доход, заметку или задачу. "
+                + "Веб-поиск требует интернета.", false, true);
     }
 
     private void launchApplication(String requestedName) {
@@ -340,11 +479,11 @@ public final class LiraDesktopApp extends Application {
                     Platform.runLater(() ->
                             appendMessage("Запускаю «" + requestedName + "».", false, true));
                 } else {
-                    Platform.runLater(() -> {
-                        openSearch(requestedName);
-                        appendMessage("Не нашла установленную программу «" + requestedName
-                                + "». Открыла поиск в браузере.", false, true);
-                    });
+                    RemoteCommandHandler.Result result =
+                            new RemoteCommandHandler(applicationLauncher)
+                                    .execute("open", requestedName);
+                    Platform.runLater(() ->
+                            appendMessage(result.message(), false, true));
                 }
             } catch (IOException exception) {
                 Platform.runLater(() -> report("Не удалось найти или открыть программу.",
@@ -471,8 +610,9 @@ public final class LiraDesktopApp extends Application {
         bubble.setWrapText(true);
         bubble.setMaxWidth(700);
         bubble.setPadding(new Insets(12, 16, 12, 16));
-        bubble.setStyle("-fx-background-color: " + (user ? "#1c3c36" : CARD)
-                + "; -fx-background-radius: 14;");
+        bubble.setStyle("-fx-background-color: " + (user ? USER_BUBBLE : CARD)
+                + "; -fx-background-radius: 18; -fx-border-color: " + BORDER
+                + "; -fx-border-radius: 18;");
         HBox row = new HBox(bubble);
         row.setAlignment(user ? Pos.CENTER_RIGHT : Pos.CENTER_LEFT);
         chatMessages.getChildren().add(row);
@@ -534,14 +674,14 @@ public final class LiraDesktopApp extends Application {
             });
             return row;
         });
-        Button expense = actionButton("＋ Расход", "#ff6b6b");
+        Button expense = actionButton("＋ Расход", DANGER);
         Button income = actionButton("＋ Доход", ACCENT);
-        Button edit = actionButton("Изменить операцию", "#5288c1");
-        Button delete = actionButton("Удалить операцию", "#516272");
-        Button setBudget = actionButton("Настроить бюджет", "#5288c1");
-        Button addIncomeCategory = actionButton("＋ Категория дохода", "#5288c1");
-        Button editIncomeCategory = actionButton("Переименовать", "#516272");
-        Button deleteIncomeCategory = actionButton("Удалить категорию", "#516272");
+        Button edit = actionButton("Изменить операцию", BLUE);
+        Button delete = actionButton("Удалить операцию", SECONDARY_BUTTON);
+        Button setBudget = actionButton("Настроить бюджет", BLUE);
+        Button addIncomeCategory = actionButton("＋ Категория дохода", BLUE);
+        Button editIncomeCategory = actionButton("Переименовать", SECONDARY_BUTTON);
+        Button deleteIncomeCategory = actionButton("Удалить категорию", SECONDARY_BUTTON);
         expense.setOnAction(event -> showTransactionDialog(false));
         income.setOnAction(event -> showTransactionDialog(true));
         edit.setOnAction(event -> {
@@ -586,8 +726,8 @@ public final class LiraDesktopApp extends Application {
             long[] totals = store.monthlyTotals(month.toString().substring(0, 7));
             HBox summary = new HBox(14,
                     metric("ДОХОДЫ", money(totals[0]), ACCENT),
-                    metric("РАСХОДЫ", money(totals[1]), "#ff6b6b"),
-                    metric("БАЛАНС", money(totals[0] - totals[1]), "#77aaff"));
+                    metric("РАСХОДЫ", money(totals[1]), DANGER),
+                    metric("БАЛАНС", money(totals[0] - totals[1]), BLUE));
             for (Node node : summary.getChildren()) {
                 HBox.setHgrow(node, Priority.ALWAYS);
             }
@@ -827,13 +967,13 @@ public final class LiraDesktopApp extends Application {
         });
         Button addTask = actionButton("＋ Задача", ACCENT);
         addTask.setOnAction(event -> showTaskDialog());
-        Button addBlock = actionButton("＋ Пункт дня", "#5288c1");
+        Button addBlock = actionButton("＋ Пункт дня", BLUE);
         addBlock.setOnAction(event -> showDailyBlockDialog());
-        Button configureCycle = actionButton("Настроить цикл работы / отдыха", "#516272");
+        Button configureCycle = actionButton("Настроить цикл работы / отдыха", SECONDARY_BUTTON);
         configureCycle.setOnAction(event -> configureWorkCycle());
-        Button previousDay = compactButton("‹", "#253440");
-        Button today = compactButton("Сегодня", "#253440");
-        Button nextDay = compactButton("›", "#253440");
+        Button previousDay = compactButton("‹", SECONDARY_BUTTON);
+        Button today = compactButton("Сегодня", SECONDARY_BUTTON);
+        Button nextDay = compactButton("›", SECONDARY_BUTTON);
         previousDay.setOnAction(event -> {
             plannerDate = plannerDate.minusDays(1);
             date.setValue(plannerDate);
@@ -864,7 +1004,7 @@ public final class LiraDesktopApp extends Application {
                 new Region(), plannerHeader, plannerControls, plannerPanel);
         content.setPadding(new Insets(28, 32, 36, 32));
         content.getChildren().get(3).setStyle(
-                "-fx-background-color: #263746; -fx-pref-height: 1;");
+                "-fx-background-color: " + BORDER + "; -fx-pref-height: 1;");
         ScrollPane scroller = new ScrollPane(content);
         scroller.setFitToWidth(true);
         scroller.setStyle("-fx-background: " + BACKGROUND + "; -fx-background-color: "
@@ -910,17 +1050,17 @@ public final class LiraDesktopApp extends Application {
 
         Label title = label(goal.title(), 17, TEXT);
         title.setWrapText(true);
-        Label term = pill(goal.term(), "#283d4b", "#9fd8ff");
+        Label term = pill(goal.term(), PILL, PILL_TEXT);
         Label days = pill(daysLeft < 0 ? "Срок прошёл"
                 : daysLeft == 0 ? "Дедлайн сегодня" : daysLeft + " дн. осталось",
-                daysLeft < 0 ? "#482f35" : "#263b33",
-                daysLeft < 0 ? "#ff9a9a" : "#83efb8");
+                daysLeft < 0 ? DANGER_DARK : SUCCESS_DARK,
+                daysLeft < 0 ? DANGER : SUCCESS);
         HBox badges = new HBox(8, term, days);
         badges.setAlignment(Pos.CENTER_LEFT);
 
         ProgressBar timeline = new ProgressBar(scheduleProgress);
         timeline.setMaxWidth(Double.MAX_VALUE);
-        timeline.setStyle("-fx-accent: " + (scheduleProgress >= 1 ? "#f5bd66" : ACCENT)
+        timeline.setStyle("-fx-accent: " + (scheduleProgress >= 1 ? DANGER : ACCENT)
                 + ";");
         Label timelineCaption = label(
                 "Срок: " + elapsedDays + " из " + totalDays + " дн.", 11, MUTED);
@@ -928,25 +1068,25 @@ public final class LiraDesktopApp extends Application {
         Label progressCaption;
         try {
             int entries = store.goalProgress(goal.id()).size();
-            progressCaption = label("Отметок прогресса: " + entries, 12, "#a7b8c4");
+            progressCaption = label("Отметок прогресса: " + entries, 12, MUTED);
         } catch (SQLException exception) {
             report("Не удалось загрузить прогресс цели.", exception);
             progressCaption = label("Прогресс временно недоступен", 12, MUTED);
         }
 
-        Button edit = compactButton("Изменить", "#283d4b");
+        Button edit = compactButton("Изменить", PILL);
         edit.setOnAction(event -> showGoalDialog(goal));
-        Button mark = compactButton("＋ Шаг", "#20583e");
+        Button mark = compactButton("＋ Шаг", SUCCESS_DARK);
         mark.setOnAction(event -> {
             selectedGoal = goal;
             markGoalProgress();
         });
-        Button history = compactButton("История", "#253440");
+        Button history = compactButton("История", SECONDARY_BUTTON);
         history.setOnAction(event -> {
             selectedGoal = goal;
             showGoalProgressHistory();
         });
-        Button delete = compactButton("Удалить", "#462e35");
+        Button delete = compactButton("Удалить", DANGER_DARK);
         delete.setOnAction(event -> {
             Alert confirmation = new Alert(Alert.AlertType.CONFIRMATION,
                     "Удалить цель и связанные с ней отметки прогресса?", ButtonType.CANCEL,
@@ -976,7 +1116,7 @@ public final class LiraDesktopApp extends Application {
         card.setMinWidth(260);
         card.setPrefWidth(420);
         card.setStyle("-fx-background-color: " + CARD + "; -fx-background-radius: 16;"
-                + " -fx-border-color: #253746; -fx-border-radius: 16;");
+                + " -fx-border-color: " + BORDER + "; -fx-border-radius: 16;");
         return card;
     }
 
@@ -1092,7 +1232,7 @@ public final class LiraDesktopApp extends Application {
                     ? "Сегодня" : plannerDate.format(
                             java.time.format.DateTimeFormatter.ofPattern("EEEE, d MMMM",
                                     new Locale("ru", "RU"))), 17, TEXT);
-            Label cycle = label(cycleSummary().replaceFirst("^ · ", ""), 12, "#a8c9df");
+            Label cycle = label(cycleSummary().replaceFirst("^ · ", ""), 12, PILL_TEXT);
             ProgressBar completionBar = new ProgressBar(completion);
             completionBar.setMaxWidth(Double.MAX_VALUE);
             completionBar.setStyle("-fx-accent: " + ACCENT + ";");
@@ -1101,12 +1241,13 @@ public final class LiraDesktopApp extends Application {
                     : completedEntries + " из " + totalEntries + " пунктов выполнено",
                     12, MUTED);
             HBox dayHeading = new HBox(10, dayTitle, pill(
-                    Math.round(completion * 100) + "% дня", "#263b33", "#83efb8"));
+                    Math.round(completion * 100) + "% дня", SUCCESS_DARK, SUCCESS));
             dayHeading.setAlignment(Pos.CENTER_LEFT);
             VBox overview = new VBox(10, dayHeading, cycle, completionBar, completionCaption);
             overview.setPadding(new Insets(18));
-            overview.setStyle("-fx-background-color: linear-gradient(to right, #1b302b, "
-                    + "#17212b); -fx-background-radius: 16; -fx-border-color: #285142;"
+            overview.setStyle("-fx-background-color: linear-gradient(to right, " + SUCCESS_DARK
+                    + ", " + CARD + "); -fx-background-radius: 16; -fx-border-color: "
+                    + BORDER + ";"
                     + " -fx-border-radius: 16;");
             plannerPanel.getChildren().add(overview);
 
@@ -1127,7 +1268,7 @@ public final class LiraDesktopApp extends Application {
                         report("Не удалось обновить задачу.", exception);
                     }
                 });
-                Label time = pill(task.time(), "#263b4b", "#9fd8ff");
+                Label time = pill(task.time(), PILL, PILL_TEXT);
                 Label title = label(task.title(), 13, task.done() ? MUTED : TEXT);
                 title.setWrapText(true);
                 if (task.done()) {
@@ -1139,9 +1280,9 @@ public final class LiraDesktopApp extends Application {
                     description.getChildren().add(label("Цель: " + task.goalTitle(), 11, MUTED));
                 }
                 HBox.setHgrow(description, Priority.ALWAYS);
-                Button edit = compactButton("Изменить", "#283d4b");
+                Button edit = compactButton("Изменить", PILL);
                 edit.setOnAction(event -> showTaskDialog(task));
-                Button remove = compactButton("Удалить", "#462e35");
+                Button remove = compactButton("Удалить", DANGER_DARK);
                 remove.setOnAction(event -> {
                     try {
                         store.deleteTask(task.id());
@@ -1153,7 +1294,7 @@ public final class LiraDesktopApp extends Application {
                 HBox row = new HBox(10, done, time, description, edit, remove);
                 row.setAlignment(Pos.CENTER_LEFT);
                 row.setPadding(new Insets(9, 10, 9, 10));
-                row.setStyle("-fx-background-color: #1e2b36; -fx-background-radius: 11;");
+                row.setStyle("-fx-background-color: " + INPUT + "; -fx-background-radius: 11;");
                 taskCard.getChildren().add(row);
             }
             styleCard(taskCard);
@@ -1162,7 +1303,7 @@ public final class LiraDesktopApp extends Application {
             VBox habitCard = new VBox(10);
             HBox habitHeader = new HBox(8,
                     label("Ежедневные привычки", 16, TEXT),
-                    pill(completedHabits + "/" + habits.size(), "#263b33", "#83efb8"));
+                    pill(completedHabits + "/" + habits.size(), SUCCESS_DARK, SUCCESS));
             habitHeader.setAlignment(Pos.CENTER_LEFT);
             habitCard.getChildren().add(habitHeader);
             if (habits.isEmpty()) {
@@ -1182,7 +1323,7 @@ public final class LiraDesktopApp extends Application {
                     }
                 });
                 Label subtitle = label(block.subtitle(), 11, MUTED);
-                Button edit = compactButton("⋯", "#253440");
+                Button edit = compactButton("⋯", SECONDARY_BUTTON);
                 edit.setOnAction(event -> showDailyBlockActions(block));
                 HBox row = new HBox(10, check, subtitle, new Region(), edit);
                 HBox.setHgrow(row.getChildren().get(2), Priority.ALWAYS);
@@ -1205,8 +1346,8 @@ public final class LiraDesktopApp extends Application {
             energy.setValue(record.energy());
             effort.setMaxWidth(Double.MAX_VALUE);
             energy.setMaxWidth(Double.MAX_VALUE);
-            effort.setStyle("-fx-background-color: #1e2934; -fx-text-fill: " + TEXT + ";");
-            energy.setStyle("-fx-background-color: #1e2934; -fx-text-fill: " + TEXT + ";");
+            effort.setStyle("-fx-background-color: " + INPUT + "; -fx-text-fill: " + TEXT + ";");
+            energy.setStyle("-fx-background-color: " + INPUT + "; -fx-text-fill: " + TEXT + ";");
             Button saveDay = actionButton("Сохранить дневник дня", ACCENT);
             Label saveHint = label("Самочувствие, заметки и отдых сохраняются на этом устройстве.",
                     11, MUTED);
@@ -1458,8 +1599,8 @@ public final class LiraDesktopApp extends Application {
         notesTable.getColumns().add(column("Текст", note -> note.content()));
         refreshNotes();
         Button add = actionButton("＋ Новая заметка", ACCENT);
-        Button edit = actionButton("Изменить", "#5288c1");
-        Button delete = actionButton("Удалить выбранную", "#516272");
+        Button edit = actionButton("Изменить", BLUE);
+        Button delete = actionButton("Удалить выбранную", SECONDARY_BUTTON);
         add.setOnAction(event -> showNoteDialog());
         edit.setOnAction(event -> {
             DesktopStore.NoteEntry selected = notesTable.getSelectionModel().getSelectedItem();
@@ -1564,7 +1705,7 @@ public final class LiraDesktopApp extends Application {
     private Button actionButton(String title, String color) {
         Button button = new Button(title);
         button.setPadding(new Insets(10, 16, 10, 16));
-        button.setStyle("-fx-background-color: " + color + "; -fx-text-fill: #101820;"
+        button.setStyle("-fx-background-color: " + color + "; -fx-text-fill: " + BUTTON_TEXT + ";"
                 + " -fx-font-weight: bold; -fx-background-radius: 10;");
         return button;
     }
@@ -1572,7 +1713,8 @@ public final class LiraDesktopApp extends Application {
     private Button compactButton(String title, String color) {
         Button button = new Button(title);
         button.setPadding(new Insets(7, 10, 7, 10));
-        button.setStyle("-fx-background-color: " + color + "; -fx-text-fill: #dce7ed;"
+        button.setStyle("-fx-background-color: " + color + "; -fx-text-fill: "
+                + SECONDARY_TEXT + ";"
                 + " -fx-font-size: 11px; -fx-background-radius: 9;");
         return button;
     }
@@ -1592,7 +1734,7 @@ public final class LiraDesktopApp extends Application {
     private void styleCard(VBox card) {
         card.setPadding(new Insets(16));
         card.setStyle("-fx-background-color: " + CARD + "; -fx-background-radius: 15;"
-                + " -fx-border-color: #253746; -fx-border-radius: 15;");
+                + " -fx-border-color: " + BORDER + "; -fx-border-radius: 15;");
     }
 
     private Label label(String text, int size, String color) {
@@ -1608,7 +1750,7 @@ public final class LiraDesktopApp extends Application {
     }
 
     private void styleInput(javafx.scene.control.TextInputControl input) {
-        input.setStyle("-fx-background-color: #1e2934; -fx-text-fill: " + TEXT
+        input.setStyle("-fx-background-color: " + INPUT + "; -fx-text-fill: " + TEXT
                 + "; -fx-prompt-text-fill: " + MUTED + "; -fx-background-radius: 8;");
     }
 

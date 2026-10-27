@@ -128,11 +128,9 @@ public class FloatingWidgetService extends Service {
     }
 
     private void startListening() {
-        Intent intent = new Intent(this, MainActivity.class);
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP
-                | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        intent.putExtra(LiraBackgroundService.EXTRA_START_VOICE, true);
-        startActivity(intent);
+        Intent intent = new Intent(this, LiraBackgroundService.class);
+        intent.setAction(LiraBackgroundService.ACTION_WIDGET_LISTEN);
+        androidx.core.content.ContextCompat.startForegroundService(this, intent);
     }
 
     @Override

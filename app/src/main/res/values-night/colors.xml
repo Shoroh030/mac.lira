@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="lira_background">#111720</color>
+    <color name="lira_surface">#1A2430</color>
+    <color name="lira_text">#EDF1F7</color>
+    <color name="lira_muted">#9AA7B7</color>
+    <color name="lira_accent">#9AA9FF</color>
+    <color name="lira_accent_text">#FFFFFF</color>
+    <color name="lira_button_text">#101520</color>
+    <color name="lira_assistant_bubble">#202C3A</color>
+    <color name="lira_user_bubble">#3A466B</color>
+    <color name="lira_user_bubble_text">#FFFFFF</color>
+    <color name="lira_user_time">#D2DBFF</color>
+    <color name="lira_assistant_time">#A2AFBF</color>
+    <color name="lira_card_stroke">#303C4C</color>
+    <color name="lira_input">#242F3D</color>
+    <color name="lira_green">#78D6AA</color>
+    <color name="lira_red">#F18D91</color>
+    <color name="lira_yellow">#F0CC7A</color>
+</resources>

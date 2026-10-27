@@ -56,9 +56,13 @@ jobs:
           VMEST_KEY_PASSWORD: ${{ secrets.VMEST_KEY_PASSWORD }}
         run: bash ./desktop/gradlew -p . :together:assembleRelease
       - name: Name APK for in-app updater
-        run: cp together/build/outputs/apk/release/together-release.apk "together/build/outputs/apk/release/together-${APP_VERSION}.apk"
+        run: |
+          cp together/build/outputs/apk/release/together-release.apk "together/build/outputs/apk/release/together-${APP_VERSION}.apk"
+          cp together/build/outputs/apk/release/together-${APP_VERSION}.apk together/build/outputs/apk/release/together-latest.apk
       - name: Verify release signing certificate
         shell: bash
+        env:
+          PRODUCTION_CERT_SHA256: ${{ vars.VMEST_PRODUCTION_CERT_SHA256 }}
         run: |
           sdk_root="${ANDROID_HOME:-}"
           if [ ! -d "$sdk_root/build-tools" ]; then
@@ -76,24 +80,47 @@ jobs:
             echo "apksigner was not found in Android SDK build-tools." >&2
             exit 1
           fi
-          actual="$("$signer" verify --print-certs "together/build/outputs/apk/release/together-${APP_VERSION}.apk" | awk -F': ' '/Signer #1 certificate SHA-256 digest:/ { print $2; exit }')"
+          verification="$("$signer" verify --print-certs "together/build/outputs/apk/release/together-${APP_VERSION}.apk" 2>&1)"
+          printf '%s\n' "$verification"
+          actual="$(printf '%s\n' "$verification" | sed -nE 's/.*certificate SHA-256 digest: ([[:xdigit:]]{64}).*/\1/ip' | head -n 1 | tr '[:upper:]' '[:lower:]')"
           if [ -z "$actual" ]; then
             echo "Could not read the APK signing certificate." >&2
             exit 1
           fi
-          expected="9489b3c2541bd20259026ec6d6c185b84edaf39245bb2a442beb26b3b4534808"
+          if printf '%s\n' "$verification" | grep -iqE 'certificate DN:.*CN=Android Debug'; then
+            echo "Refusing to publish an APK signed with the Android debug certificate." >&2
+            exit 1
+          fi
+          expected="$(printf '%s' "$PRODUCTION_CERT_SHA256" | tr '[:upper:]' '[:lower:]')"
+          if [[ ! "$expected" =~ ^[[:xdigit:]]{64}$ ]]; then
+            echo "Configure the VMEST_PRODUCTION_CERT_SHA256 repository variable before publishing." >&2
+            exit 1
+          fi
           echo "Release APK signer SHA-256: $actual"
           if [ "$actual" != "$expected" ]; then
             echo "Release APK signing certificate does not match existing app installations." >&2
             exit 1
           fi
+      - name: Verify 16 KB compatibility
+        shell: pwsh
+        run: |
+          $sdk = $env:ANDROID_HOME
+          if (-not (Test-Path (Join-Path $sdk "build-tools"))) { $sdk = $env:ANDROID_SDK_ROOT }
+          $zipAlign = Get-ChildItem (Join-Path $sdk "build-tools") -Filter zipalign -Recurse |
+            Sort-Object FullName | Select-Object -Last 1
+          if (-not $zipAlign) { throw "Android SDK zipalign was not found." }
+          & ./together/scripts/check-16kb-compatibility.ps1 `
+            -ApkPath "together/build/outputs/apk/release/together-${env:APP_VERSION}.apk" `
+            -ZipAlignPath $zipAlign.FullName
       - name: Publish APK release
         uses: softprops/action-gh-release@v2
         with:
-          name: Вместе ${{ github.ref_name }}
+          name: "I'm Here ${{ github.ref_name }}"
           generate_release_notes: true
           overwrite_files: true
-          files: together/build/outputs/apk/release/together-${{ env.APP_VERSION }}.apk
+          files: |
+            together/build/outputs/apk/release/together-${{ env.APP_VERSION }}.apk
+            together/build/outputs/apk/release/together-latest.apk
       - name: Remove temporary signing key
         if: always()
         run: |

@@ -64,10 +64,10 @@ build_image() {
   package_args=(
     --type dmg
     --name LIRA
-    --app-version 1.0.0
+    --app-version 2.32
     --vendor "L.I.R.A."
     --input "$SCRIPT_DIR/build/libs"
-    --main-jar lira-desktop-1.0.0-all.jar
+    --main-jar lira-desktop-2.32-all.jar
     --main-class com.example.lira.desktop.LiraDesktopApp
     --module-path "$module_path"
     --add-modules "$runtime_modules"

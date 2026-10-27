@@ -48,6 +48,8 @@ final class RemoteCommandHandler {
                 case "launch_app" -> launchApplication(query);
                 case "open" -> openApplicationOrFile(query);
                 case "search" -> searchWeb(query);
+                case "timer", "alarm" -> scheduleClockCommand(action, query);
+                case "media" -> DesktopMediaCommands.execute(query);
                 default -> new Result(false, "Неизвестный тип команды.");
             };
         } catch (IOException exception) {
@@ -66,6 +68,13 @@ final class RemoteCommandHandler {
     }
 
     private Result openApplicationOrFile(String name) throws IOException, InterruptedException {
+        if (isRecycleBin(name)) {
+            return openRecycleBin();
+        }
+        Result systemFolder = openSystemFolder(name);
+        if (systemFolder != null) {
+            return systemFolder;
+        }
         if (applicationLauncher.open(name)) {
             return new Result(true, "Открываю на ПК «" + name + "».");
         }
@@ -82,6 +91,114 @@ final class RemoteCommandHandler {
         return new Result(true, "Открываю на ПК: " + match.getFileName() + ".");
     }
 
+    private Result openSystemFolder(String name) throws IOException {
+        String normalized = name.toLowerCase(Locale.ROOT)
+                .replaceFirst("^(?:(?:системную|system)\\s+)?(?:папку|папка|folder)\\s+", "")
+                .replaceAll("[^\\p{L}\\p{N}]", "");
+        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        Path directory = null;
+        if (os.contains("win")) {
+            String windows = System.getenv("SystemRoot");
+            switch (normalized) {
+                case "windows", "виндовс", "папкаwindows" ->
+                        directory = windows == null ? null : Path.of(windows);
+                case "system32", "систем32", "система32" ->
+                        directory = windows == null ? null : Path.of(windows, "System32");
+                case "drivers", "драйверы" ->
+                        directory = windows == null ? null
+                                : Path.of(windows, "System32", "drivers");
+                case "programfiles", "файлыпрограмм", "программныефайлы" ->
+                        directory = systemDirectoryFromEnvironment("ProgramFiles");
+                case "programfilesx86", "файлыпрограммx86", "программныефайлыx86" ->
+                        directory = systemDirectoryFromEnvironment("ProgramFiles(x86)");
+                case "programdata", "общиеданныепрограмм" ->
+                        directory = systemDirectoryFromEnvironment("ProgramData");
+                case "appdata", "данныеприложений" ->
+                        directory = systemDirectoryFromEnvironment("APPDATA");
+                case "temp", "временныефайлы" ->
+                        directory = systemDirectoryFromEnvironment("TEMP");
+                default -> {
+                    return null;
+                }
+            }
+        } else if (os.contains("mac")) {
+            directory = switch (normalized) {
+                case "system", "система" -> Path.of("/System");
+                case "library", "библиотека" -> Path.of("/Library");
+                case "applications", "программы" -> Path.of("/Applications");
+                default -> null;
+            };
+        } else {
+            directory = switch (normalized) {
+                case "etc", "настройкисистемы" -> Path.of("/etc");
+                case "usr", "программысистемы" -> Path.of("/usr");
+                case "var", "системныеданные" -> Path.of("/var");
+                case "opt" -> Path.of("/opt");
+                default -> null;
+            };
+        }
+        if (directory == null) {
+            return null;
+        }
+        if (!Files.isDirectory(directory)) {
+            return new Result(false, "Системная папка недоступна: " + directory + ".");
+        }
+        if (!Desktop.isDesktopSupported()
+                || !Desktop.getDesktop().isSupported(Desktop.Action.OPEN)) {
+            return new Result(false, "Открытие системных папок не поддерживается.");
+        }
+        Desktop.getDesktop().open(directory.toFile());
+        return new Result(true, "Открываю системную папку: " + directory + ".");
+    }
+
+    private Path systemDirectoryFromEnvironment(String variable) {
+        String value = System.getenv(variable);
+        return value == null || value.isBlank() ? null : Path.of(value);
+    }
+
+    private Result scheduleClockCommand(String action, String query) {
+        ClockCommandParser.Command command = ClockCommandParser.parseRemote(action, query);
+        if (command == null) {
+            return new Result(false, "Не удалось распознать команду таймера или будильника.");
+        }
+        if (command.error() != null) {
+            return new Result(false, command.error());
+        }
+        return new Result(true, DesktopClockScheduler.schedule(command));
+    }
+
+    private Result openRecycleBin() throws IOException {
+        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        if (os.contains("win")) {
+            new ProcessBuilder("explorer.exe", "shell:RecycleBinFolder").start();
+            return new Result(true, "Открываю Корзину на ПК.");
+        }
+        if (os.contains("mac")) {
+            Path trash = Path.of(System.getProperty("user.home"), ".Trash");
+            if (!Desktop.isDesktopSupported()
+                    || !Desktop.getDesktop().isSupported(Desktop.Action.OPEN)) {
+                return new Result(false, "Не удалось открыть Корзину на этом Mac.");
+            }
+            Desktop.getDesktop().open(trash.toFile());
+            return new Result(true, "Открываю Корзину на Mac.");
+        }
+        if (Desktop.isDesktopSupported()
+                && Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
+            Desktop.getDesktop().browse(URI.create("trash:///"));
+            return new Result(true, "Открываю Корзину на ПК.");
+        }
+        return new Result(false, "Открытие Корзины не поддерживается этой системой.");
+    }
+
+    private boolean isRecycleBin(String name) {
+        String normalized = name.toLowerCase(Locale.ROOT)
+                .replaceAll("[^\\p{L}\\p{N}]", "");
+        return normalized.equals("корзина") || normalized.equals("корзину")
+                || normalized.equals("карзина") || normalized.equals("карзину")
+                || normalized.equals("recyclebin") || normalized.equals("trash")
+                || normalized.equals("rubbishbin");
+    }
+
     private Result searchWeb(String query) throws IOException {
         if (!Desktop.isDesktopSupported()
                 || !Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
@@ -96,33 +213,77 @@ final class RemoteCommandHandler {
         String normalized = query.toLowerCase(Locale.ROOT);
         List<Path> exactMatches = new ArrayList<>();
         List<Path> partialMatches = new ArrayList<>();
-        SearchState state = new SearchState(System.nanoTime()
+        SearchState desktopState = new SearchState(System.nanoTime()
                 + SEARCH_TIMEOUT.toNanos(), normalized, exactMatches, partialMatches);
-
-        for (Path root : Path.of("").getFileSystem().getRootDirectories()) {
-            if (state.limitReached) {
+        for (Path desktop : desktopDirectories()) {
+            scanRoot(desktop, desktopState);
+            if (desktopState.limitReached) {
                 break;
             }
-            try {
-                Files.walkFileTree(root, EnumSet.noneOf(FileVisitOption.class), 20, state);
-            } catch (AmbiguousMatch exception) {
-                throw exception;
-            } catch (SearchLimitReached ignored) {
-                state.limitReached = true;
-            } catch (IOException | SecurityException ignored) {
-                // Unreadable folders and removable drives must not stop the search elsewhere.
-            }
+        }
+        Path desktopMatch = resolveMatches(desktopState, "Рабочем столе");
+        if (desktopMatch != null) {
+            return desktopMatch;
+        }
+        if (desktopState.limitReached) {
+            throw new IOException("Поиск на Рабочем столе занял слишком много времени. "
+                    + "Уточни название.");
         }
 
-        List<Path> matches = exactMatches.isEmpty() ? partialMatches : exactMatches;
+        exactMatches.clear();
+        partialMatches.clear();
+        SearchState driveState = new SearchState(System.nanoTime()
+                + SEARCH_TIMEOUT.toNanos(), normalized, exactMatches, partialMatches);
+        for (Path root : Path.of("").getFileSystem().getRootDirectories()) {
+            if (driveState.limitReached) {
+                break;
+            }
+            scanRoot(root, driveState);
+        }
+        Path diskMatch = resolveMatches(driveState, "дисках");
+        if (diskMatch != null) {
+            return diskMatch;
+        }
+        if (driveState.limitReached) {
+            throw new IOException("Поиск по дискам занял слишком много времени. Уточни название.");
+        }
+        return null;
+    }
+
+    private List<Path> desktopDirectories() {
+        Path home = Path.of(System.getProperty("user.home"));
+        List<Path> candidates = new ArrayList<>();
+        candidates.add(home.resolve("Desktop"));
+        for (String key : List.of("OneDrive", "OneDriveConsumer", "OneDriveCommercial")) {
+            String environmentPath = System.getenv(key);
+            if (environmentPath != null && !environmentPath.isBlank()) {
+                candidates.add(Path.of(environmentPath).resolve("Desktop"));
+            }
+        }
+        return candidates.stream().distinct().filter(Files::isDirectory).toList();
+    }
+
+    private void scanRoot(Path root, SearchState state) throws IOException {
+        try {
+            Files.walkFileTree(root, EnumSet.noneOf(FileVisitOption.class), 20, state);
+        } catch (AmbiguousMatch exception) {
+            throw exception;
+        } catch (SearchLimitReached ignored) {
+            state.limitReached = true;
+        } catch (IOException | SecurityException ignored) {
+            // Unreadable folders and removable drives must not stop the search elsewhere.
+        }
+    }
+
+    private Path resolveMatches(SearchState state, String location) throws IOException {
+        List<Path> matches = state.exactMatches.isEmpty()
+                ? state.partialMatches : state.exactMatches;
         if (matches.size() == 1) {
             return matches.get(0);
         }
         if (matches.size() > 1) {
-            throw new IOException("Найдено несколько совпадений. Уточни название или расширение.");
-        }
-        if (state.limitReached) {
-            throw new IOException("Поиск по дискам занял слишком много времени. Уточни название.");
+            throw new IOException("Найдено несколько совпадений на " + location
+                    + ". Уточни название или расширение.");
         }
         return null;
     }
