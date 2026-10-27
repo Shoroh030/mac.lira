@@ -99,6 +99,7 @@ public class MainActivity extends Activity {
     private int chatScrollY;
     private Runnable chatRefreshRunnable;
     private boolean activityResumed;
+    private int navigationTransitionGeneration;
     private Runnable sharedTimerTick, sharedTimerPoll;
     private Calendar visibleMonth = Calendar.getInstance();
     private Calendar selectedDay = Calendar.getInstance();
@@ -520,12 +521,25 @@ public class MainActivity extends Activity {
             itemParams.setMargins(dp(2), 0, dp(2), 0);
             nav.addView(b, itemParams);
             b.setTag(dest);
-            b.setOnClickListener(v -> { feature = null; tab = dest; if ("Чат".equals(dest)) chatScrollPolicy.jumpToLatest(); render(); });
+            b.setOnClickListener(v -> selectNavigationTab(dest));
         }
         if ((feature != null && feature.contains("Чат")) || "Чат".equals(tab)) {
             chatComposer = createChatComposer();
             root.addView(chatComposer, root.indexOfChild(nav));
         }
+    }
+    private void selectNavigationTab(String destination) {
+        navigationTransitionGeneration++;
+        if (contentScroll != null) {
+            contentScroll.animate().cancel();
+            contentScroll.setAlpha(1f);
+            contentScroll.setTranslationX(0f);
+        }
+        feature = null;
+        tab = destination;
+        if ("Чат".equals(destination)) chatScrollPolicy.jumpToLatest();
+        render();
+        if (contentScroll != null) contentScroll.scrollTo(0, 0);
     }
     private ArrayList<String> navigationTabs(){
         List<String> defaults = NavigationModel.defaultOrder();
@@ -2462,10 +2476,12 @@ public class MainActivity extends Activity {
         if("Чат".equals(nextTab))chatScrollPolicy.jumpToLatest();
         boolean reduceMotion=false;
         try{reduceMotion=android.provider.Settings.Global.getFloat(getContentResolver(),android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,1f)==0f;}catch(Exception ignored){}
-        if(reduceMotion||contentScroll==null){tab=nextTab;feature=null;render();if(contentScroll!=null)contentScroll.scrollTo(0,0);return;}
+        if(reduceMotion||contentScroll==null){selectNavigationTab(nextTab);return;}
         View page=contentScroll;float direction=forward?-1f:1f;
+        int transition = ++navigationTransitionGeneration;
         page.animate().cancel();
         page.animate().alpha(0f).translationX(direction*dp(24)).setDuration(90).withEndAction(()->{
+            if (transition != navigationTransitionGeneration) return;
             tab=nextTab;feature=null;render();page.setTranslationX(-direction*dp(12));
             page.animate().alpha(1f).translationX(0).setDuration(150).start();
             page.scrollTo(0,0);
@@ -3764,7 +3780,7 @@ public class MainActivity extends Activity {
     private String initialCheckersBoard() { char[] cells=emptyBoard(64).toCharArray();for(int r=0;r<3;r++)for(int c=0;c<8;c++)if((r+c)%2==1)cells[r*8+c]='b';for(int r=5;r<8;r++)for(int c=0;c<8;c++)if((r+c)%2==1)cells[r*8+c]='r';return new String(cells); }
     private void renderGameRating() {
         LinearLayout rating=card();rating.setBackground(shape(softDark?0xFF403648:PALE,20));rating.addView(text("🏆  Счёт ваших партий",16,INK,true));
-        TextView score=text("Считаем победы…",13,MUTED,false);score.setPadding(0,dp(5),0,0);rating.addView(score);body.addView(rating);
+        TextView score=text("Считаем победы…",13,MUTED,false);score.setPadding(0,dp(5),0,0);rating.addView(score);
         if(!pairGames.ready()){score.setText("Подключите пару, чтобы вести общий счёт");return;}
         score.setOnClickListener(v->render());
         network.execute(()->{
